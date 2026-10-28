@@ -40,6 +40,7 @@ export function useBankAccounts() {
         ifscCode: string;
         bankName: string;
         makeDefault?: boolean;
+        currentPassword?: string;
     }): Promise<{ ok: true } | { ok: false; error: string; field?: string }> => {
         setIsMutating(true);
         try {
@@ -54,21 +55,29 @@ export function useBankAccounts() {
         }
     };
 
-    const setDefault = async (accountId: string) => {
+    // Both need the account password (the server checks it): they change where
+    // earnings are paid. Resolve to an error message rather than throwing.
+    const setDefault = async (accountId: string, currentPassword: string): Promise<{ ok: true } | { ok: false; error: string }> => {
         setIsMutating(true);
         try {
-            const { accounts: list } = await usersApi.setDefaultBankAccount(accountId);
+            const { accounts: list } = await usersApi.setDefaultBankAccount(accountId, currentPassword);
             setAccounts(list || []);
+            return { ok: true };
+        } catch (err: unknown) {
+            return { ok: false, error: (err as { message?: string })?.message || 'Could not change the default account' };
         } finally {
             setIsMutating(false);
         }
     };
 
-    const remove = async (accountId: string) => {
+    const remove = async (accountId: string, currentPassword: string): Promise<{ ok: true } | { ok: false; error: string }> => {
         setIsMutating(true);
         try {
-            const { accounts: list } = await usersApi.deleteBankAccount(accountId);
+            const { accounts: list } = await usersApi.deleteBankAccount(accountId, currentPassword);
             setAccounts(list || []);
+            return { ok: true };
+        } catch (err: unknown) {
+            return { ok: false, error: (err as { message?: string })?.message || 'Could not delete this account' };
         } finally {
             setIsMutating(false);
         }

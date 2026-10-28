@@ -48,6 +48,24 @@ const otpLimiter = rateLimit({
 });
 
 /**
+ * Codes sent to one email address, whichever IPs ask. The per-IP limit above is
+ * no defence against someone spreading requests over many addresses, and every
+ * fresh reset code is another 5 guesses at that account. 6 a day is plenty for a
+ * person who mistypes or loses an email. Keyed on the normalized address;
+ * requests without one fall back to the IP.
+ */
+const otpPerEmailLimiter = rateLimit({
+    ...base,
+    windowMs: 24 * 60 * 60 * 1000,
+    max: 6,
+    keyGenerator: (req, res) => {
+        const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        return email ? `email:${email}` : ipKeyGenerator(req, res);
+    },
+    message: { error: 'Too many codes requested for this email today. Please try again tomorrow or contact support.' },
+});
+
+/**
  * Login and password reset. Not email-heavy, but worth limiting to slow
  * credential stuffing.
  */
@@ -89,4 +107,4 @@ const locationLimiter = rateLimit({
     message: { error: 'Too many city lookups. Please wait a moment and try again.' },
 });
 
-module.exports = { registerLimiter, otpLimiter, loginLimiter, messageLimiter, locationLimiter };
+module.exports = { registerLimiter, otpLimiter, otpPerEmailLimiter, loginLimiter, messageLimiter, locationLimiter };

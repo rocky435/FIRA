@@ -164,6 +164,17 @@ const eventSchema = new mongoose.Schema({
         type: Date,
         default: null
     },
+    /**
+     * Set when the owner asks to remove a listing that customers have already
+     * paid for (sold tickets / upcoming bookings). The owner cannot remove it
+     * themselves; an admin reviews the request and removes it from the admin
+     * panel, which cancels what was sold and raises the refunds.
+     */
+    deletionRequest: {
+        requestedAt: { type: Date, default: null },
+        requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        reason: { type: String, default: null }
+    },
     isFeatured: {
         type: Boolean,
         default: false

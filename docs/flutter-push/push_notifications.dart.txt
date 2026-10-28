@@ -1,0 +1,225 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show Platform;
+import 'dart:math';
+
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../firebase_options.dart';
+
+/// FIRA API base. Same server as the website.
+const String kFiraApiBase = 'https://api.letsfira.com/api';
+
+/// Runs in a background isolate when a push arrives while the app is in the
+/// background or closed. FIRA pushes carry a `notification` block, so Android
+/// and iOS show them themselves - nothing to do here except initialise Firebase.
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+}
+
+/// Native push for FIRA (Firebase Cloud Messaging).
+///
+/// 1. `init()` once at startup.
+/// 2. `registerDevice()` after sign-in, and at startup when already signed in.
+/// 3. `unregisterDevice()` before logout, while the login token still works.
+///
+/// The device is identified by its Firebase Installation ID (FID), from
+/// firebase_messaging's register()/onRegistered, sent to FIRA as `fid`.
+class PushNotifications {
+  PushNotifications._();
+  static final PushNotifications instance = PushNotifications._();
+
+  /// Must match the channel id the server sends (`fira_default`).
+  static const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'fira_default',
+    'FIRA notifications',
+    description: 'Bookings, payments, tickets and messages',
+    importance: Importance.high,
+  );
+
+  static const _fidKey = 'fira_fcm_fid';
+  static const _installIdKey = 'fira_install_id';
+
+  final FirebaseMessaging _messaging = FirebaseMessaging.instance;
+  final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
+
+  Future<String?> Function()? _authToken;
+  void Function(String link)? _onOpen;
+  StreamSubscription<String>? _registeredSub;
+
+  /// [authToken] returns the user's FIRA login token (the same one your API
+  /// calls send as `Authorization: Bearer ...`), or null when signed out.
+  /// [onOpen] is called with the website-style path to open, e.g.
+  /// `/dashboard/bookings/123` or `/messages?conversation=456`.
+  Future<void> init({
+    required Future<String?> Function() authToken,
+    required void Function(String link) onOpen,
+  }) async {
+    _authToken = authToken;
+    _onOpen = onOpen;
+
+    // iOS: let the system show the banner while the app is open (Android
+    // does not, so _showWhileOpen does it there).
+    await _messaging.setForegroundNotificationPresentationOptions(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    await _local.initialize(
+      settings: const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        // Permission is asked by requestPermission() in registerDevice(), not here.
+        iOS: DarwinInitializationSettings(
+          requestAlertPermission: false,
+          requestBadgePermission: false,
+          requestSoundPermission: false,
+        ),
+      ),
+      // Tap on a notification we showed while the app was open.
+      onDidReceiveNotificationResponse: (response) => _open(response.payload),
+    );
+    await _local
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+
+    // App open: FCM does not show anything by itself, so show it ourselves.
+    FirebaseMessaging.onMessage.listen(_showWhileOpen);
+    // App in background: user tapped the system notification.
+    FirebaseMessaging.onMessageOpenedApp.listen((m) => _open(m.data['link']));
+
+    // App was closed: launched by tapping a notification.
+    final initial = await _messaging.getInitialMessage();
+    if (initial != null) {
+      _open(initial.data['link']);
+    } else {
+      final launch = await _local.getNotificationAppLaunchDetails();
+      if (launch?.didNotificationLaunchApp ?? false) {
+        _open(launch!.notificationResponse?.payload);
+      }
+    }
+  }
+
+  /// Ask permission (Android 13+ and iOS show the system prompt) and register this
+  /// device with FIRA. Safe to call on every app start while signed in.
+  Future<void> registerDevice() async {
+    final settings = await _messaging.requestPermission();
+    if (settings.authorizationStatus == AuthorizationStatus.denied) {
+      debugPrint('Push: permission denied');
+      return;
+    }
+
+    // Listen before registering so the first FID is not missed. It fires
+    // again whenever Firebase issues a new one.
+    await _registeredSub?.cancel();
+    _registeredSub = _messaging.onRegistered.listen(_sendFid);
+    await _messaging.register();
+  }
+
+  /// Call BEFORE your logout request, while the login token is still valid.
+  Future<void> unregisterDevice() async {
+    await _registeredSub?.cancel();
+    _registeredSub = null;
+
+    final prefs = await SharedPreferences.getInstance();
+    final fid = prefs.getString(_fidKey);
+    try {
+      final auth = await _authToken?.call();
+      if (auth != null && fid != null) {
+        await http.post(
+          Uri.parse('$kFiraApiBase/notifications/fcm/unregister'),
+          headers: _headers(auth),
+          body: jsonEncode({'fid': fid}),
+        );
+      }
+    } catch (e) {
+      debugPrint('Push: unregister failed: $e');
+    }
+
+    // Stop delivery to this install; the next sign-in registers afresh.
+    try {
+      await _messaging.unregister();
+    } catch (e) {
+      debugPrint('Push: Firebase unregister failed: $e');
+    }
+    await prefs.remove(_fidKey);
+  }
+
+  Future<void> _sendFid(String fid) async {
+    final auth = await _authToken?.call();
+    if (auth == null) return; // signed out
+    final prefs = await SharedPreferences.getInstance();
+    final previous = prefs.getString(_fidKey);
+
+    try {
+      final res = await http.post(
+        Uri.parse('$kFiraApiBase/notifications/fcm/register'),
+        headers: _headers(auth),
+        body: jsonEncode({
+          'fid': fid,
+          'platform': Platform.isIOS ? 'ios' : 'android',
+          'deviceId': await _installId(prefs),
+          if (previous != null && previous != fid) 'previousToken': previous,
+        }),
+      );
+      if (res.statusCode == 201) {
+        await prefs.setString(_fidKey, fid);
+      } else {
+        debugPrint('Push: register failed ${res.statusCode} ${res.body}');
+      }
+    } catch (e) {
+      debugPrint('Push: register failed: $e');
+    }
+  }
+
+  void _showWhileOpen(RemoteMessage message) {
+    // iOS already shows it (setForegroundNotificationPresentationOptions).
+    if (Platform.isIOS) return;
+    final n = message.notification;
+    if (n == null) return;
+    _local.show(
+      id: (message.messageId ?? DateTime.now().toIso8601String()).hashCode,
+      title: n.title,
+      body: n.body,
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          channel.id,
+          channel.name,
+          channelDescription: channel.description,
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+      ),
+      payload: message.data['link'],
+    );
+  }
+
+  void _open(String? link) {
+    if (link == null || link.isEmpty) return;
+    _onOpen?.call(link);
+  }
+
+  /// A random id kept for this install, so a new FID replaces the old row on
+  /// the server instead of adding a second one.
+  Future<String> _installId(SharedPreferences prefs) async {
+    var id = prefs.getString(_installIdKey);
+    if (id == null) {
+      final r = Random.secure();
+      id = List.generate(16, (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+      await prefs.setString(_installIdKey, id);
+    }
+    return id;
+  }
+
+  // Bearer only, no cookies: the server skips its browser CSRF check for this.
+  Map<String, String> _headers(String auth) => {
+        'Authorization': 'Bearer $auth',
+        'Content-Type': 'application/json',
+      };
+}

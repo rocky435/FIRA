@@ -42,7 +42,7 @@ export default function Hero() {
                         {/* Animated Tagline - Perfectly aligned with FIRA left edge */}
                         <div className="text-left">
                             <div className="text-lg sm:text-xl md:text-2xl font-medium mb-1 flex items-center gap-2">
-                                <span className="text-gray-300">Let's</span>
+                                <span className="text-gray-300">Let&apos;s</span>
                                 <span
                                     className={`accent-text font-semibold transition-all duration-300 ${isAnimating ? 'opacity-0 translate-y-2' : 'opacity-100 translate-y-0'
                                         }`}

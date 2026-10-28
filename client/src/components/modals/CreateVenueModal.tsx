@@ -51,6 +51,10 @@ const EMPTY_FORM = {
     locationLink: '',
     capacityMax: 100,
     pricePerDay: 0,
+    // Demand pricing, both optional: a Saturday/Sunday rate (0 = same as the day
+    // rate) and rates for particular dates such as festivals.
+    weekendPricePerDay: 0,
+    specialDates: [] as { date: string; pricePerDay: number }[],
     rules: '',
     ...CANCELLATION_POLICY,
 };
@@ -64,7 +68,12 @@ export interface VenueDraft {
     address?: { street?: string; city?: string; state?: string; pincode?: string };
     locationLink?: string;
     capacity?: { min?: number; max?: number };
-    pricing?: { pricePerDay?: number | null; basePrice?: number | null };
+    pricing?: {
+        pricePerDay?: number | null;
+        basePrice?: number | null;
+        weekendPricePerDay?: number | null;
+        specialDates?: { date: string; pricePerDay: number }[];
+    };
     rules?: string[];
     cancellationPolicy?: {
         freeCancellationHours?: number;
@@ -137,6 +146,8 @@ export default function CreateVenueModal({ isOpen, onClose, venue = null }: Crea
             capacityMax: venue.capacity?.max ?? 100,
             // Falls back to the legacy flat fee for venues saved before pricePerDay.
             pricePerDay: venue.pricing?.pricePerDay ?? venue.pricing?.basePrice ?? 0,
+            weekendPricePerDay: venue.pricing?.weekendPricePerDay ?? 0,
+            specialDates: (venue.pricing?.specialDates ?? []).map(d => ({ date: d.date, pricePerDay: d.pricePerDay })),
             rules: (venue.rules ?? []).join('\n'),
             // Policy is platform-fixed — ignore whatever the venue stored and
             // always use the current constant, so editing normalizes old drift.
@@ -225,6 +236,18 @@ export default function CreateVenueModal({ isOpen, onClose, venue = null }: Crea
         if (index === 2) {
             if (!form.capacityMax || form.capacityMax < 1) found.capacityMax = 'Enter how many guests fit';
             if (!form.pricePerDay || form.pricePerDay <= 0) found.pricePerDay = 'Set a day rate above 0';
+            const seen = new Set<string>();
+            for (const d of form.specialDates) {
+                if (!d.date || !(d.pricePerDay > 0)) {
+                    found.specialDates = 'Each special date needs a date and a price above 0';
+                    break;
+                }
+                if (seen.has(d.date)) {
+                    found.specialDates = `${d.date} is listed twice`;
+                    break;
+                }
+                seen.add(d.date);
+            }
         }
 
         // Step 4 (Cancellation Policy) is platform-fixed and read-only — nothing
@@ -350,6 +373,8 @@ export default function CreateVenueModal({ isOpen, onClose, venue = null }: Crea
                     // schema, admin lists, the venue portal list) keeps working
                     // without a migration. pricePerDay is authoritative.
                     basePrice: form.pricePerDay,
+                    weekendPricePerDay: form.weekendPricePerDay > 0 ? form.weekendPricePerDay : null,
+                    specialDates: form.specialDates,
                     currency: 'INR',
                 },
                 amenities: form.amenities,
@@ -547,6 +572,65 @@ export default function CreateVenueModal({ isOpen, onClose, venue = null }: Crea
                         error={errors.pricePerDay}
                         helperText="A booking is charged this much for each day it covers"
                     />
+                    {/* Demand pricing: charge more (or less) when demand is different. */}
+                    <Input
+                        label="Weekend Price Per Day (₹) - optional"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={form.weekendPricePerDay || ''}
+                        onChange={(e) => {
+                            const val = e.target.value.replace(/[^0-9]/g, '');
+                            set('weekendPricePerDay', val === '' ? 0 : parseInt(val));
+                        }}
+                        helperText="Charged for Saturdays and Sundays. Leave empty to use the day rate."
+                    />
+                    <div>
+                        <label className="block text-sm font-medium text-gray-300 mb-1">Special-date prices - optional</label>
+                        <p className="text-xs text-gray-400 mb-3">
+                            Festivals, wedding season or any busy day: set a different price for those dates. It replaces the day and weekend rate for that date.
+                        </p>
+                        <div className="space-y-2">
+                            {form.specialDates.map((d, i) => (
+                                <div key={i} className="flex flex-wrap items-center gap-2">
+                                    <input
+                                        type="date"
+                                        aria-label="Date"
+                                        value={d.date}
+                                        onChange={(e) => set('specialDates', form.specialDates.map((x, j) => (j === i ? { ...x, date: e.target.value } : x)))}
+                                        className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm"
+                                    />
+                                    <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        aria-label="Price for this date"
+                                        placeholder="Price (₹)"
+                                        value={d.pricePerDay || ''}
+                                        onChange={(e) => {
+                                            const val = e.target.value.replace(/[^0-9]/g, '');
+                                            set('specialDates', form.specialDates.map((x, j) => (j === i ? { ...x, pricePerDay: val === '' ? 0 : parseInt(val) } : x)));
+                                        }}
+                                        className="w-32 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => set('specialDates', form.specialDates.filter((_, j) => j !== i))}
+                                        className="text-sm text-red-400 hover:text-red-300 px-2"
+                                    >
+                                        Remove
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => set('specialDates', [...form.specialDates, { date: '', pricePerDay: form.pricePerDay || 0 }])}
+                            className="mt-2 text-sm text-violet-400 hover:text-violet-300"
+                        >
+                            + Add a special date
+                        </button>
+                        {errors.specialDates && <p role="alert" className="mt-2 text-sm text-red-400">{errors.specialDates}</p>}
+                    </div>
                 </>
             ),
         },

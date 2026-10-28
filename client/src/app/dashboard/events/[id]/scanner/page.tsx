@@ -10,6 +10,14 @@ import { Button } from '@/components/ui';
 import { eventsApi, ticketsApi } from '@/lib/api';
 import { API_BASE_URL } from '@/lib/siteConfig';
 
+// The scan and stats endpoints are organizer-only, so both calls carry the session.
+// Read from storage at call time: the first stats fetch runs on mount, before
+// AuthContext has loaded its token into state.
+function authHeaders(): Record<string, string> {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('fira_token') : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 interface ScanResult {
     success: boolean;
     message: string;
@@ -56,12 +64,14 @@ export default function ScannerPage() {
 
     const fetchEventAndStats = async () => {
         try {
-            const [eventData, statsData] = await Promise.all([
+            const [eventData, statsRes] = await Promise.all([
                 eventsApi.getById(eventId),
-                fetch(`${API_BASE_URL}/tickets/event/${eventId}/stats`).then(r => r.json())
+                fetch(`${API_BASE_URL}/tickets/event/${eventId}/stats`, { headers: authHeaders() })
             ]);
             setEvent(eventData);
-            setStats(statsData);
+            if (statsRes.ok) {
+                setStats(await statsRes.json());
+            }
         } catch (err) {
             console.error('Failed to fetch event:', err);
         } finally {
@@ -78,7 +88,7 @@ export default function ScannerPage() {
         try {
             const response = await fetch(`${API_BASE_URL}/tickets/scan`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
                 body: JSON.stringify({
                     qrData,
                     scannerId: user._id,

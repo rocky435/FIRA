@@ -148,7 +148,7 @@ export default function ForgotPasswordPage() {
                         </h1>
                         <p className="text-gray-300">
                             {step === 'email' && 'No worries! Enter your email and we\'ll send you a reset code.'}
-                            {step === 'otp' && `We sent a 4-digit code to ${formData.email}`}
+                            {step === 'otp' && `We sent a verification code to ${formData.email}`}
                             {step === 'newPassword' && 'Choose a strong password for your account.'}
                         </p>
                     </div>
@@ -204,7 +204,7 @@ export default function ForgotPasswordPage() {
                                         Enter verification code
                                     </label>
                                     <OTPInput
-                                        length={4}
+                                        length={6}
                                         value={formData.otp}
                                         onChange={(value) => setFormData({ ...formData, otp: value })}
                                         disabled={isLoading}
@@ -218,7 +218,7 @@ export default function ForgotPasswordPage() {
                                     size="lg"
                                     className="w-full"
                                     isLoading={isLoading}
-                                    disabled={formData.otp.length !== 4}
+                                    disabled={formData.otp.length < 4}
                                 >
                                     Verify Code
                                 </Button>

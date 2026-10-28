@@ -30,6 +30,7 @@ interface FormErrors {
     confirmAccountNumber?: string;
     ifscCode?: string;
     bankName?: string;
+    currentPassword?: string;
 }
 
 export default function BankDetailsForm({ existingDetails, hasPendingPayouts, onSaved }: BankDetailsFormProps) {
@@ -37,6 +38,8 @@ export default function BankDetailsForm({ existingDetails, hasPendingPayouts, on
     const [isEditing, setIsEditing] = useState(!existingDetails);
     const [isSaving, setIsSaving] = useState(false);
     const [errors, setErrors] = useState<FormErrors>({});
+    // Changing existing payout details needs the account password (server-enforced).
+    const [currentPassword, setCurrentPassword] = useState('');
     const [formData, setFormData] = useState({
         accountName: '',
         accountNumber: '',
@@ -110,6 +113,10 @@ export default function BankDetailsForm({ existingDetails, hasPendingPayouts, on
 
     const handleSave = async () => {
         if (!validate()) return;
+        if (existingDetails && !currentPassword) {
+            setErrors(prev => ({ ...prev, currentPassword: 'Enter your account password' }));
+            return;
+        }
 
         setIsSaving(true);
         try {
@@ -119,7 +126,11 @@ export default function BankDetailsForm({ existingDetails, hasPendingPayouts, on
                 ifscCode: formData.ifscCode.toUpperCase(),
                 bankName: formData.bankName.trim(),
             };
-            await usersApi.updateBankDetails(payload);
+            await usersApi.updateBankDetails({
+                ...payload,
+                ...(existingDetails ? { currentPassword } : {}),
+            });
+            setCurrentPassword('');
             showToast('Bank details saved successfully', 'success');
             setIsEditing(false);
             onSaved?.(payload);
@@ -241,6 +252,25 @@ export default function BankDetailsForm({ existingDetails, hasPendingPayouts, on
                         />
                         {errors.bankName && <p className="text-red-400 text-xs mt-1">{errors.bankName}</p>}
                     </div>
+
+                    {existingDetails && (
+                        <div>
+                            <label className="block text-sm font-medium text-gray-300 mb-1.5">Your account password</label>
+                            <Input
+                                name="currentPassword"
+                                type="password"
+                                autoComplete="current-password"
+                                value={currentPassword}
+                                onChange={(e) => {
+                                    setCurrentPassword(e.target.value);
+                                    if (errors.currentPassword) setErrors(prev => ({ ...prev, currentPassword: undefined }));
+                                }}
+                                placeholder="Needed to change where your earnings are paid"
+                                className="bg-black/40"
+                            />
+                            {errors.currentPassword && <p className="text-red-400 text-xs mt-1">{errors.currentPassword}</p>}
+                        </div>
+                    )}
 
                     {/* Actions */}
                     <div className="flex gap-3 pt-2">

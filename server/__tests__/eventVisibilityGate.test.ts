@@ -25,7 +25,10 @@ require('../models/Venue');
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({ instance: { launchTimeout: 60000 } });
+  // The shared setup (setup.ts) has already connected to its own server;
+  // this file uses a server of its own, so leave that one first.
+  await mongoose.disconnect();
   await mongoose.connect(mongoServer.getUri());
 }, 60000);
 

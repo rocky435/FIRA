@@ -15,6 +15,8 @@ export interface NewBankAccount {
     ifscCode: string;
     bankName: string;
     makeDefault?: boolean;
+    /** Required by the server once the account already has payout details. */
+    currentPassword?: string;
 }
 
 interface BankAccountFormProps {
@@ -23,6 +25,11 @@ interface BankAccountFormProps {
     /** Offer the "make default" checkbox. Hidden when this is the first account. */
     showDefaultToggle?: boolean;
     submitLabel?: string;
+    /**
+     * Ask for the account password. The server requires it to add an account when
+     * one already exists - changing where earnings go is takeover-sensitive.
+     */
+    requirePassword?: boolean;
 }
 
 /**
@@ -37,8 +44,10 @@ export default function BankAccountForm({
     onCancel,
     showDefaultToggle = true,
     submitLabel = 'Save account',
+    requirePassword = false,
 }: BankAccountFormProps) {
     const [form, setForm] = useState({
+        currentPassword: '',
         accountName: '',
         accountNumber: '',
         confirmAccountNumber: '',
@@ -80,6 +89,8 @@ export default function BankAccountForm({
         if (!form.bankName.trim()) found.bankName = 'Bank name is required';
         else if (form.bankName.trim().length > 100) found.bankName = 'Must be 100 characters or fewer';
 
+        if (requirePassword && !form.currentPassword) found.currentPassword = 'Enter your account password';
+
         return found;
     };
 
@@ -97,6 +108,7 @@ export default function BankAccountForm({
             ifscCode: form.ifscCode.toUpperCase(),
             bankName: form.bankName.trim(),
             makeDefault: form.makeDefault,
+            ...(requirePassword ? { currentPassword: form.currentPassword } : {}),
         });
         setIsSaving(false);
 
@@ -153,6 +165,18 @@ export default function BankAccountForm({
                 onChange={(e) => set('bankName', e.target.value)}
                 error={errors.bankName}
             />
+
+            {requirePassword && (
+                <Input
+                    label="Your account password"
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="Needed to change where your earnings are paid"
+                    value={form.currentPassword}
+                    onChange={(e) => set('currentPassword', e.target.value)}
+                    error={errors.currentPassword}
+                />
+            )}
 
             {showDefaultToggle && (
                 <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">

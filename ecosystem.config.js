@@ -14,13 +14,18 @@ module.exports = {
             // "Environment [production] is not defined in process file" and the
             // intended NODE_ENV/PORT are easy to lose. Both blocks are defined so
             // `pm2 start ecosystem.config.js` and `--env production` behave alike.
+            // TZ: booking deadlines, refund windows and the daily 09:00 reminder
+            // read "HH:MM" times in the server's local time. EC2 defaults to UTC,
+            // which put every one of them 5.5 hours off for Indian bookings.
             env: {
                 NODE_ENV: 'production',
-                PORT: 5000
+                PORT: 5000,
+                TZ: 'Asia/Kolkata'
             },
             env_production: {
                 NODE_ENV: 'production',
-                PORT: 5000
+                PORT: 5000,
+                TZ: 'Asia/Kolkata'
             },
             watch: false,
             max_memory_restart: '1G',

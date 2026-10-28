@@ -22,7 +22,7 @@ export default function ContactPage() {
                     </h1>
 
                     <p className="text-gray-300 leading-relaxed mb-6">
-                        Have a question or need help? Reach out to us via email and we'll get back to you as soon as possible.
+                        Have a question or need help? Reach out to us via email and we&apos;ll get back to you as soon as possible.
                     </p>
 
                     <div className="bg-white/5 p-6 rounded-xl border border-white/10">

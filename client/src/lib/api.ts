@@ -173,7 +173,7 @@ export const authApi = {
         }),
 
     changePassword: (data: { currentPassword: string; newPassword: string }) =>
-        request<{ success: boolean; message: string }>('/auth/change-password', {
+        request<{ success: boolean; message: string; token?: string }>('/auth/change-password', {
             method: 'POST',
             body: JSON.stringify(data),
         }),
@@ -227,6 +227,16 @@ export interface BankAccount {
     createdAt?: string;
 }
 
+type BlockerEvent = { _id: string; name: string; startDateTime: string; status: string };
+type BlockerBooking = { _id: string; bookingDate: string; startTime: string; status: string; venue: string | null };
+export interface AccountDeletionBlockers {
+    events: BlockerEvent[];
+    venueBookings: BlockerBooking[];
+    venueEvents: BlockerEvent[];
+    tickets: BlockerEvent[];
+    bookings: BlockerBooking[];
+}
+
 // Users API
 export const usersApi = {
     getProfile: (id: string) => request(`/users/${id}`),
@@ -266,6 +276,8 @@ export const usersApi = {
         accountNumber: string;
         ifscCode: string;
         bankName: string;
+        /** Required once payout details already exist. */
+        currentPassword?: string;
     }) =>
         request<{ bankDetails: { accountName: string; accountNumber: string; ifscCode: string; bankName: string } }>(
             '/users/me/bank-details',
@@ -281,22 +293,29 @@ export const usersApi = {
         ifscCode: string;
         bankName: string;
         makeDefault?: boolean;
+        /** Required when the account already has a payout account. */
+        currentPassword?: string;
     }) =>
         request<{ accounts: BankAccount[] }>('/users/me/bank-accounts', {
             method: 'POST',
             body: JSON.stringify(data),
         }),
-    setDefaultBankAccount: (accountId: string) =>
+    setDefaultBankAccount: (accountId: string, currentPassword: string) =>
         request<{ accounts: BankAccount[] }>(`/users/me/bank-accounts/${accountId}/default`, {
             method: 'PATCH',
+            body: JSON.stringify({ currentPassword }),
         }),
-    deleteBankAccount: (accountId: string) =>
+    deleteBankAccount: (accountId: string, currentPassword: string) =>
         request<{ accounts: BankAccount[] }>(`/users/me/bank-accounts/${accountId}`, {
             method: 'DELETE',
+            body: JSON.stringify({ currentPassword }),
         }),
     // Delete the authenticated user's own account + associated data.
     // Server endpoint (DELETE /api/users/me) already exists; this just wires it.
     deleteAccount: () => request('/users/me', { method: 'DELETE' }),
+    /** What must be finished before the account can be deleted. */
+    deletionCheck: () =>
+        request<{ canDelete: boolean; blockers: AccountDeletionBlockers }>('/users/me/deletion-check'),
 };
 
 const followedBrandsCache: Map<string, Set<string>> = new Map();
@@ -540,6 +559,9 @@ export const eventsApi = {
         }),
     cancel: (id: string, reason?: string) =>
         request<{
+            /** Set when tickets were sold: the request went to the FIRA team instead. */
+            deletionRequested?: boolean;
+            message?: string;
             event: any;
             refundResults: {
                 totalTickets: number;
@@ -550,6 +572,12 @@ export const eventsApi = {
         }>(`/events/${id}/cancel`, {
             method: 'POST',
             body: JSON.stringify({ reason }),
+        }),
+    /** Check a private event's access code on the server. Throws when invalid. */
+    verifyCode: (id: string, code: string) =>
+        request<{ valid: true }>(`/events/${id}/verify-code`, {
+            method: 'POST',
+            body: JSON.stringify({ code }),
         }),
     requestAccess: (id: string, data: { code: string; userId: string }) =>
         request(`/events/${id}/access`, {
@@ -674,15 +702,22 @@ export const bookingsApi = {
             method: 'PUT',
             body: JSON.stringify({ status, reason }),
         }),
+    // A paid booking's refund (per the venue's cancellation policy) is raised for
+    // the FIRA team to pay; refundStatus says whether one is pending.
     cancel: (id: string, userId: string, reason?: string) =>
         request<{
-            booking: any;
-            refund: any | null;
+            refundType: string;
+            refundPercentage: number;
+            amountPaid: number;
+            refundAmount: number;
+            refundStatus: 'pending_approval' | 'none';
         }>(`/bookings/${id}/cancel`, {
             method: 'POST',
             body: JSON.stringify({ userId, reason }),
         }),
-    initiatePayment: (id: string, userId: string) =>
+    // After the venue accepts: 'advance' pays 10% now (only more than 7 days
+    // before the booking), 'full' pays everything.
+    initiatePayment: (id: string, userId: string, plan: 'advance' | 'full' = 'advance') =>
         request<{
             gatewayOrderId: string;
             keyId: string;
@@ -692,7 +727,7 @@ export const bookingsApi = {
             booking: { _id: string; venueName: string; totalAmount: number };
         }>(`/bookings/${id}/initiate-payment`, {
             method: 'POST',
-            body: JSON.stringify({ userId }),
+            body: JSON.stringify({ userId, plan }),
         }),
     verifyPayment: (id: string, data: { gatewayOrderId: string; gatewayPaymentId: string; gatewaySignature: string }) =>
         request(`/bookings/${id}/verify-payment`, {
@@ -714,7 +749,7 @@ export const ticketsApi = {
     getUserTickets: (userId: string) => request(`/tickets/user/${userId}`),
     getEventTickets: (eventId: string) => request(`/tickets/event/${eventId}`),
     getById: (id: string) => request(`/tickets/${id}`),
-    purchase: (data: { eventId: string; quantity: number; ticketType?: string; userId: string; paymentId?: string; discountCode?: string }) =>
+    purchase: (data: { eventId: string; quantity: number; ticketType?: string; userId: string; paymentId?: string; discountCode?: string; accessCode?: string }) =>
         request<{
             success?: boolean;
             ticket?: any;
@@ -783,7 +818,7 @@ export const paymentsApi = {
         return request(`/payments/payouts/all${query}`);
     },
     /** Preview a code against the order's total payable. Does not redeem it. */
-    applyDiscount: (data: { code: string; eventId: string; amount: number }) =>
+    applyDiscount: (data: { code: string; eventId: string; subtotal: number }) =>
         request<{ discountAmount: number; discountType: 'percentage' | 'flat'; discountValue: number; code: string }>(
             '/payments/apply-discount',
             { method: 'POST', body: JSON.stringify(data) }

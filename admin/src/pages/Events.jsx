@@ -141,11 +141,12 @@ export default function Events() {
     };
 
     // Soft delete on the server: the event leaves every listing but its tickets
-    // and revenue stay queryable. It does NOT refund ticket holders - use the
-    // cancel flow for that, which is why the confirm says so explicitly.
+    // and revenue stay queryable. If tickets were sold, the server cancels them and
+    // raises their refunds in Refunds - this is also how an organizer's removal
+    // request is approved.
     const handleDelete = async (event, e) => {
         e.stopPropagation();
-        if (!window.confirm(`Delete "${event.name}"?\n\nIt will be removed from all listings. Ticket holders are NOT refunded automatically - cancel the event instead if refunds are needed.`)) return;
+        if (!window.confirm(`Delete "${event.name}"?\n\nIt will be removed from all listings. If tickets were sold, they are cancelled and their refunds are added to Refunds for you to pay.`)) return;
         try {
             await adminApi.deleteEvent(event._id);
             fetchEvents();
@@ -340,17 +341,17 @@ export default function Events() {
                                 { label: 'Approve', onClick: async () => {
                                     if (!window.confirm(`Approve ${bulk.count} events?`)) return;
                                     setBulkBusy(true);
-                                    try { for (const id of bulk.selectedIds) await handleAdminApprove(id, 'approved'); bulk.clear(); } catch {} finally { setBulkBusy(false); }
+                                    try { for (const id of bulk.selectedIds) await handleAdminApprove(id, 'approved'); bulk.clear(); } catch (err) { alert(err.message || 'Some events could not be approved'); fetchEvents(); } finally { setBulkBusy(false); }
                                 }},
                                 { label: 'Block', variant: 'danger', onClick: async () => {
                                     if (!window.confirm(`Block ${bulk.count} events?`)) return;
                                     setBulkBusy(true);
-                                    try { for (const id of bulk.selectedIds) await adminApi.updateEventStatus(id, 'blocked'); bulk.clear(); fetchEvents(); } catch {} finally { setBulkBusy(false); }
+                                    try { for (const id of bulk.selectedIds) await adminApi.updateEventStatus(id, 'blocked'); bulk.clear(); fetchEvents(); } catch (err) { alert(err.message || 'Some events could not be blocked'); fetchEvents(); } finally { setBulkBusy(false); }
                                 }},
                                 { label: 'Delete', variant: 'danger', onClick: async () => {
                                     if (!window.confirm(`Delete ${bulk.count} events? This cannot be undone.`)) return;
                                     setBulkBusy(true);
-                                    try { for (const id of bulk.selectedIds) await adminApi.deleteEvent(id); bulk.clear(); fetchEvents(); } catch {} finally { setBulkBusy(false); }
+                                    try { for (const id of bulk.selectedIds) await adminApi.deleteEvent(id); bulk.clear(); fetchEvents(); } catch (err) { alert(err.message || 'Some events could not be deleted'); fetchEvents(); } finally { setBulkBusy(false); }
                                 }},
                             ]}
                             onClear={bulk.clear}
@@ -461,6 +462,11 @@ export default function Events() {
                                                                 </svg>
                                                             </div>
                                                             <span className="font-medium text-white group-hover:text-blue-400 transition-colors">{event.name}</span>
+                                                            {event.deletionRequest?.requestedAt && (
+                                                                <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-red-500/15 text-red-300 border border-red-500/30" title={event.deletionRequest.reason || 'The organizer asked for this event to be removed'}>
+                                                                    Removal requested
+                                                                </span>
+                                                            )}
                                                         </div>
                                                     </td>
                                                     <td className="px-6 py-4">

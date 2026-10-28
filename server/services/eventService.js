@@ -15,12 +15,112 @@ const { escapeRegex } = require('../utils/escapeRegex');
  */
 const PUBLICLY_VISIBLE_STATUSES = ['approved', 'upcoming', 'ongoing'];
 
+/**
+ * The venue days an event occupies, each with the slot it takes that day: from
+ * its start time on the first day to its end time on the last, whole days in
+ * between. Days are the server's local calendar days (TZ=Asia/Kolkata in
+ * production), so an event at 2am IST sits on that IST day, not the UTC one.
+ * `legacyTimes` holds the slot in both local and UTC clock time, to recognise
+ * slots written while the server still ran on UTC.
+ */
+function eventVenueDays(event) {
+    const { localDayKey } = require('../utils/venueAvailability');
+    const start = new Date(event.startDateTime);
+    const end = new Date(event.endDateTime);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end < start) return [];
+    const hhmm = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    const local = (d) => hhmm(d.getHours(), d.getMinutes());
+    const utc = (d) => hhmm(d.getUTCHours(), d.getUTCMinutes());
+    const firstKey = localDayKey(start);
+    const lastKey = localDayKey(end);
+    const days = [];
+    const last = Date.parse(`${lastKey}T00:00:00Z`);
+    for (let t = Date.parse(`${firstKey}T00:00:00Z`); t <= last && days.length < 366; t += 24 * 3600 * 1000) {
+        const key = new Date(t).toISOString().split('T')[0];
+        const slot = (fmt) => ({
+            startTime: key === firstKey ? fmt(start) : '00:00',
+            endTime: key === lastKey ? fmt(end) : '23:59',
+        });
+        days.push({ key, ...slot(local), legacyTimes: [slot(local), slot(utc)] });
+    }
+    return days;
+}
+
+/**
+ * Fields an organizer may set through POST/PUT /events. Approval state, the
+ * platform fee, sales counters and featured/active/deleted flags are decided by
+ * the server and the approval flow. Create and update both used to take the raw
+ * body, so a request could arrive already approved, at 0% platform fee, or with
+ * its organizer swapped to redirect payouts.
+ */
+const ORGANIZER_EDITABLE_FIELDS = [
+    'venue', 'name', 'description', 'coverPhoto', 'images', 'startDateTime', 'endDateTime',
+    'eventType', 'ticketType', 'ticketPrice', 'maxAttendees', 'privateCode', 'category',
+    'tags', 'friendsAndFamilyStay', 'allowAlcohol', 'customVenue', 'termsAndConditions',
+    'payoutAccount', 'ticketTiers',
+];
+
+function pickOrganizerFields(data) {
+    const picked = {};
+    for (const key of ORGANIZER_EDITABLE_FIELDS) {
+        if (data && data[key] !== undefined) picked[key] = data[key];
+    }
+    return picked;
+}
+
+const tierKey = (name) => String(name || '').trim().toLowerCase();
+
+/**
+ * Merge an edited tier list onto the stored one without losing sales.
+ *
+ * The edit form sends tiers without soldCount, so a plain $set reset every
+ * tier's sold count to 0 and let it sell out a second time. Sold counts are
+ * carried over by tier name. A tier that has sold tickets cannot be removed or
+ * renamed (its name is what tier-scoped door scanners match on), nor shrunk
+ * below what it has already sold.
+ */
+function mergeTicketTiers(existingTiers, incomingTiers) {
+    const existing = new Map((existingTiers || []).map(t => [tierKey(t.name), t]));
+    const incomingKeys = new Set(incomingTiers.map(t => tierKey(t.name)));
+
+    for (const [key, tier] of existing) {
+        if ((tier.soldCount || 0) > 0 && !incomingKeys.has(key)) {
+            throw new Error(`Tier "${tier.name}" has sold tickets and cannot be removed or renamed`);
+        }
+    }
+
+    return incomingTiers.map(t => {
+        const prior = existing.get(tierKey(t.name));
+        const soldCount = prior ? (prior.soldCount || 0) : 0;
+        if (Number(t.maxQuantity) < soldCount) {
+            throw new Error(`Tier "${t.name}" has already sold ${soldCount} tickets; its quantity cannot be lower than that`);
+        }
+        const { soldCount: _ignored, ...rest } = t;
+        return prior && prior._id ? { ...rest, _id: prior._id, soldCount } : { ...rest, soldCount };
+    });
+}
+
+const isCustomVenue = (customVenue) =>
+    !!customVenue && (customVenue.isCustom === true || customVenue.isCustom === 'true');
+
 const eventService = {
+    ORGANIZER_EDITABLE_FIELDS,
+
     // Get all events
-    async getAllEvents(query = {}) {
+    // viewerId: the signed-in caller, if any. Private events are listed only to
+    // their organizer, on their own dashboard listing (?organizer=<self>); every
+    // other listing is public events only, and never carries an access code.
+    async getAllEvents(query = {}, { viewerId = null } = {}) {
         const { page = 1, limit = 10, eventType, status, category, organizer, sort, search, city, showCompleted, todayOnly, weekend, ticketType, dateFilter } = query;
         const filter = { isDeleted: { $ne: true } }; // Always exclude deleted events
-        if (eventType) filter.eventType = eventType;
+        const ownListing = !!organizer && !!viewerId && String(organizer) === String(viewerId);
+        if (ownListing) {
+            if (eventType) filter.eventType = eventType;
+        } else {
+            // A private event is reachable only through its link. Listings used to
+            // include them (with the access code) unless the caller asked for public.
+            filter.eventType = 'public';
+        }
         if (category && category !== 'All') filter.category = category;
 
         // Conditions that each need their own $or are collected here and combined
@@ -163,6 +263,7 @@ const eventService = {
         }
 
         const events = await Event.find(filter)
+            .select(ownListing ? undefined : '-privateCode')
             .populate('organizer', 'name email avatar verificationBadge')
             .populate('venue', 'name address images')
             .limit(parseInt(limit))
@@ -258,7 +359,7 @@ const eventService = {
     // approved; the organizer viewing their own private event always sees it.
     // Fail closed: an anonymous / non-owner viewer of an unapproved private event
     // gets "Event not found" rather than a leaked draft.
-    async getEventById(id, viewerId = null) {
+    async getEventById(id, viewerId = null, { viewerIsAdmin = false } = {}) {
         const event = await Event.findById(id)
             .populate('organizer', 'name email avatar verificationBadge')
             .populate('venue', 'name description address images capacity')
@@ -267,13 +368,15 @@ const eventService = {
             throw new Error('Event not found');
         }
 
-        if (event.eventType === 'private' && event.adminApproval?.status !== 'approved') {
-            const organizerId = (event.organizer?._id || event.organizer)?.toString();
-            const isOwner = viewerId && organizerId && organizerId === viewerId.toString();
-            if (!isOwner) {
-                throw new Error('Event not found');
-            }
+        const organizerId = (event.organizer?._id || event.organizer)?.toString();
+        const isOwner = !!viewerId && !!organizerId && organizerId === viewerId.toString();
+        if (event.eventType === 'private' && event.adminApproval?.status !== 'approved' && !isOwner && !viewerIsAdmin) {
+            throw new Error('Event not found');
         }
+
+        // The access code is the organizer's to hand out. It used to be sent to
+        // every visitor, and the page then "checked" the code against itself.
+        if (!isOwner && !viewerIsAdmin) delete event.privateCode;
 
         await eventService.attachOrganizerBrands(event);
 
@@ -281,7 +384,13 @@ const eventService = {
     },
 
     // Create event
-    async createEvent(data) {
+    async createEvent(input) {
+        // Only organizer-settable fields survive; approval state is decided below.
+        const data = { ...pickOrganizerFields(input), organizer: input.organizer };
+        if (Array.isArray(data.ticketTiers)) {
+            data.ticketTiers = data.ticketTiers.map(({ soldCount, ...t }) => ({ ...t, soldCount: 0 }));
+        }
+
         // Check for time slot conflicts at the venue
         let { venue, startDateTime, endDateTime } = data;
         
@@ -331,19 +440,22 @@ const eventService = {
             // day the owner had given away offline. Reject if any day the event
             // spans carries a busy block.
             const Venue = require('../models/Venue');
-            const { isDayBlockedByOwner, overlappingBookingFilter, dayKey } = require('../utils/venueAvailability');
-            const venueDoc = await Venue.findById(venue).select('blockedDates');
-            for (let d = new Date(eventStart); d <= eventEnd; d.setDate(d.getDate() + 1)) {
-                if (isDayBlockedByOwner(venueDoc?.blockedDates, d)) {
-                    throw new Error('This venue is unavailable on one or more of the selected dates');
-                }
+            const { isDayBlockedByOwner, overlappingBookingFilter, isVenueBookable } = require('../utils/venueAvailability');
+            const venueDoc = await Venue.findById(venue).select('blockedDates status isActive isDeleted');
+            // Only an approved, active, undeleted venue can host an event.
+            if (!isVenueBookable(venueDoc)) {
+                throw new Error('This venue is not available');
+            }
+            const eventDays = eventVenueDays({ startDateTime: eventStart, endDateTime: eventEnd });
+            if (eventDays.some(({ key }) => isDayBlockedByOwner(venueDoc?.blockedDates, key))) {
+                throw new Error('This venue is unavailable on one or more of the selected dates');
             }
 
             // Personal (day-rate) bookings hold whole days; an event must not land
             // on a day a guest has already booked.
             const Booking = require('../models/Booking');
-            const bookingClash = await Booking.findOne(
-                overlappingBookingFilter(venue, dayKey(eventStart), dayKey(eventEnd))
+            const bookingClash = eventDays.length > 0 && await Booking.findOne(
+                overlappingBookingFilter(venue, eventDays[0].key, eventDays[eventDays.length - 1].key)
             ).select('_id').lean();
             if (bookingClash) {
                 throw new Error('This venue is unavailable on one or more of the selected dates');
@@ -456,10 +568,47 @@ const eventService = {
     },
 
     // Update event
-    async updateEvent(id, updateData) {
+    async updateEvent(id, input) {
         const event = await Event.findById(id);
         if (!event) {
             throw new Error('Event not found');
+        }
+
+        let updateData = pickOrganizerFields(input);
+
+        if (Array.isArray(updateData.ticketTiers)) {
+            updateData.ticketTiers = mergeTicketTiers(event.ticketTiers, updateData.ticketTiers);
+        }
+
+        // Moving the event to a different venue needs that venue's approval: an
+        // approval from venue A must not carry over to venue B. Treated like a date
+        // change once tickets are sold, since buyers paid for the original venue.
+        if ('venue' in updateData || 'customVenue' in updateData) {
+            const nextCustom = 'customVenue' in updateData ? isCustomVenue(updateData.customVenue) : isCustomVenue(event.customVenue);
+            const nextVenue = nextCustom ? null : ('venue' in updateData ? updateData.venue || null : event.venue);
+            const venueChanged = String(nextVenue || '') !== String(event.venue || '');
+
+            if (venueChanged) {
+                if (event.currentAttendees > 0) {
+                    throw new Error('Cannot change the venue after tickets have been sold. Please contact support.');
+                }
+                if (nextVenue) {
+                    const Venue = require('../models/Venue');
+                    const { isVenueBookable } = require('../utils/venueAvailability');
+                    const target = require('mongoose').isValidObjectId(nextVenue)
+                        ? await Venue.findById(nextVenue).select('status isActive isDeleted').lean()
+                        : null;
+                    if (!isVenueBookable(target)) {
+                        throw new Error('This venue is not available');
+                    }
+                }
+                updateData.venueApproval = nextCustom
+                    ? { status: 'approved', respondedAt: new Date(), respondedBy: 'system' }
+                    : { status: 'pending' };
+                if (!nextCustom && ['approved', 'upcoming', 'ongoing'].includes(event.status)) {
+                    updateData.status = 'pending';
+                }
+            }
         }
 
         // Check if date/time is being changed and tickets are already sold
@@ -491,8 +640,35 @@ const eventService = {
         const updatedEvent = await Event.findByIdAndUpdate(
             id,
             { $set: updateData },
-            { new: true }
+            { new: true, runValidators: true }
         );
+
+        // Photos and a cover taken off the event are deleted from storage.
+        if (updatedEvent && ('images' in updateData || 'coverPhoto' in updateData)) {
+            require('./uploadService').deleteRemovedImages(
+                [...(event.images || []), event.coverPhoto],
+                [...(updatedEvent.images || []), updatedEvent.coverPhoto]
+            );
+        }
+
+        // An approved event holds its venue's days. If it moved venue or dates,
+        // free the old days, and hold the new ones if it is still approved.
+        const heldDays = PUBLICLY_VISIBLE_STATUSES.includes(event.status) && event.venue;
+        const moved = updatedEvent && (
+            String(updatedEvent.venue || '') !== String(event.venue || '')
+            || +new Date(updatedEvent.startDateTime) !== +new Date(event.startDateTime)
+            || +new Date(updatedEvent.endDateTime) !== +new Date(event.endDateTime));
+        if (heldDays && moved) {
+            await this.releaseVenueForEvent(event);
+            if (PUBLICLY_VISIBLE_STATUSES.includes(updatedEvent.status) && updatedEvent.venue) {
+                await this.updateVenueAvailability(updatedEvent);
+                const booking = await this.createBookingForEvent(updatedEvent);
+                if (booking && String(booking._id) !== String(updatedEvent.booking)) {
+                    updatedEvent.booking = booking._id;
+                    await updatedEvent.save();
+                }
+            }
+        }
         return updatedEvent;
     },
 
@@ -512,6 +688,7 @@ const eventService = {
         if (!event) {
             throw new Error('Event not found');
         }
+        await this.releaseVenueForEvent(event);
         return { message: 'Event deleted successfully', event };
     },
 
@@ -538,6 +715,7 @@ const eventService = {
         event.isActive = false;
         event.currentAttendees = 0;
         await event.save();
+        await this.releaseVenueForEvent(event);
 
         // Process refunds for all ticket holders
         let refundResults = null;
@@ -552,6 +730,23 @@ const eventService = {
             event,
             refundResults
         };
+    },
+
+    /**
+     * Whether `code` opens ticket sales for this event. A public event needs no
+     * code. Compared in constant time; case-insensitive (codes are generated in
+     * upper case). Throws 'Event not found' for a missing event.
+     */
+    async checkPrivateCode(eventId, code) {
+        const event = require('mongoose').isValidObjectId(eventId)
+            ? await Event.findById(eventId).select('eventType privateCode').lean()
+            : null;
+        if (!event) throw new Error('Event not found');
+        if (event.eventType !== 'private') return true;
+        if (!event.privateCode || typeof code !== 'string') return false;
+        const a = Buffer.from(event.privateCode.toUpperCase());
+        const b = Buffer.from(code.trim().toUpperCase());
+        return a.length === b.length && crypto.timingSafeEqual(a, b);
     },
 
     // Request private event access
@@ -578,8 +773,10 @@ const eventService = {
     },
 
     // Get events by organizer (User ID)
+    // Public surface (a brand page): public events only.
     async getEventsByOrganizer(userId, limit = 10) {
-        const events = await Event.find({ organizer: userId, status: { $ne: 'cancelled' } })
+        const events = await Event.find({ organizer: userId, status: { $ne: 'cancelled' }, eventType: 'public' })
+            .select('-privateCode')
             .populate('venue', 'name address images')
             // startDateTime, not `date`: the schema has no `date` path, so this sort
             // was a no-op and the list came back in Mongo's natural order.
@@ -590,7 +787,31 @@ const eventService = {
     },
 
     // Handle access request
-    async handleAccessRequest(requestId, status) {
+    // Only the event's organizer (or an admin) may decide, and only for a request
+    // that belongs to that event - this was open to anyone, so a requester could
+    // approve their own way into a private event.
+    /**
+     * @param {string} requestId
+     * @param {string} status
+     * @param {{ eventId?: any, actorId?: any, isAdmin?: boolean }} [options]
+     */
+    async handleAccessRequest(requestId, status, { eventId, actorId, isAdmin = false } = {}) {
+        if (!['approved', 'rejected'].includes(status)) {
+            throw new Error('Status must be approved or rejected');
+        }
+        const existing = await PrivateEventAccess.findById(requestId).select('event');
+        if (!existing || (eventId && String(existing.event) !== String(eventId))) {
+            throw new Error('Access request not found');
+        }
+        if (!isAdmin) {
+            const event = await Event.findById(existing.event).select('organizer');
+            if (!event || String(event.organizer) !== String(actorId)) {
+                const err = new Error('Only the event organizer can respond to access requests');
+                err.status = 403;
+                throw err;
+            }
+        }
+
         const request = await PrivateEventAccess.findByIdAndUpdate(
             requestId,
             {
@@ -612,14 +833,21 @@ const eventService = {
         const Venue = require('../models/Venue');
         const Notification = require('../models/Notification');
 
+        if (!['approved', 'rejected'].includes(status)) {
+            throw new Error('Status must be approved or rejected');
+        }
+
         const event = await Event.findById(eventId).populate('venue');
         if (!event) {
             throw new Error('Event not found');
         }
 
-        // Verify venue ownership
-        if (event.venue.owner.toString() !== venueOwnerId) {
-            throw new Error('You do not own this venue');
+        // Verify venue ownership. venueOwnerId is the authenticated caller - the
+        // route no longer takes it from the request body.
+        if (!event.venue || !event.venue.owner || event.venue.owner.toString() !== String(venueOwnerId)) {
+            const err = new Error('You do not own this venue');
+            err.status = 403;
+            throw err;
         }
 
         event.venueApproval = {
@@ -632,6 +860,7 @@ const eventService = {
         // If venue rejected, update event status
         if (status === 'rejected') {
             event.status = 'rejected';
+            await this.releaseVenueForEvent(event);
         }
         // If both approved, set to approved
         else if (status === 'approved' && event.adminApproval?.status === 'approved') {
@@ -667,6 +896,10 @@ const eventService = {
     async adminApproveEvent(eventId, adminId, { status, rejectionReason }) {
         const Notification = require('../models/Notification');
 
+        if (!['approved', 'rejected'].includes(status)) {
+            throw new Error('Status must be approved or rejected');
+        }
+
         const event = await Event.findById(eventId);
         if (!event) {
             throw new Error('Event not found');
@@ -682,6 +915,7 @@ const eventService = {
         // If admin rejected, update event status
         if (status === 'rejected') {
             event.status = 'rejected';
+            await this.releaseVenueForEvent(event);
         }
         // If admin approved, set to approved (backward compat: if venueApproval not set, consider it approved)
         else if (status === 'approved') {
@@ -833,9 +1067,12 @@ const eventService = {
         };
     },
 
-    // Helper: Update venue availability when event is approved
+    // Helper: mark every day the event spans as booked on its venue, when the
+    // event is approved. The blockedDates slot carries the event id so
+    // releaseVenueForEvent can take exactly this event's slots off again.
     async updateVenueAvailability(event) {
         const Venue = require('../models/Venue');
+        const { dayKey } = require('../utils/venueAvailability');
 
         if (!event.venue) return;
 
@@ -847,115 +1084,84 @@ const eventService = {
         if (!Array.isArray(venue.daySlots)) venue.daySlots = [];
         if (!Array.isArray(venue.blockedDates)) venue.blockedDates = [];
 
-        // Get all dates between event start and end using combined datetime fields
-        const startDateTime = new Date(event.startDateTime);
-        const endDateTime = new Date(event.endDateTime);
+        const days = eventVenueDays(event);
+        console.log(`[updateVenueAvailability] Event: ${event.name}, Dates to book:`, days.map(d => d.key));
 
-        // Extract date part for iteration
-        const startDate = new Date(startDateTime);
-        startDate.setHours(0, 0, 0, 0);
-
-        const endDate = new Date(endDateTime);
-        endDate.setHours(23, 59, 59, 999);
-
-        const datesToBook = [];
-        const currentDate = new Date(startDate);
-
-        // Iterate through all days from start to end (inclusive)
-        while (currentDate <= endDate) {
-            datesToBook.push(new Date(currentDate));
-            currentDate.setDate(currentDate.getDate() + 1);
-        }
-
-        console.log(`[updateVenueAvailability] Event: ${event.name}, Dates to book:`, datesToBook.map(d => d.toISOString().split('T')[0]));
-
-        // Helper to format time from Date object
-        const formatTime = (dt) => {
-            const hours = dt.getHours().toString().padStart(2, '0');
-            const mins = dt.getMinutes().toString().padStart(2, '0');
-            return `${hours}:${mins}`;
-        };
-
-        // Update or add daySlots for each event date
-        const totalDays = datesToBook.length;
-        for (let i = 0; i < totalDays; i++) {
-            const date = datesToBook[i];
-            const dateStr = date.toISOString().split('T')[0];
-            const isFirstDay = i === 0;
-            const isLastDay = i === totalDays - 1;
-            const isSingleDay = totalDays === 1;
-
-            // Determine the correct time slot for this day
-            let slotStartTime, slotEndTime;
-
-            if (isSingleDay) {
-                // Single day event: use actual start and end times from datetime
-                slotStartTime = formatTime(startDateTime);
-                slotEndTime = formatTime(endDateTime);
-            } else if (isFirstDay) {
-                // First day: from event start time to end of day
-                slotStartTime = formatTime(startDateTime);
-                slotEndTime = '23:59';
-            } else if (isLastDay) {
-                // Last day: from start of day to event end time
-                slotStartTime = '00:00';
-                slotEndTime = formatTime(endDateTime);
+        for (const { key, startTime, endTime } of days) {
+            // daySlots dates are stored at UTC midnight, so the toISOString day
+            // every reader takes from them is this day.
+            const existingSlot = venue.daySlots.find(slot => dayKey(slot.date) === key);
+            if (existingSlot) {
+                existingSlot.isAvailable = false;
+                existingSlot.isBooked = true;
+                existingSlot.bookedBy = event.organizer;
             } else {
-                // Middle days: full 24 hours
-                slotStartTime = '00:00';
-                slotEndTime = '23:59';
-            }
-
-            // Find existing slot for this date
-            const existingSlotIndex = venue.daySlots.findIndex(slot => {
-                const slotDate = new Date(slot.date).toISOString().split('T')[0];
-                return slotDate === dateStr;
-            });
-
-            if (existingSlotIndex >= 0) {
-                // Update existing slot
-                venue.daySlots[existingSlotIndex].isAvailable = false;
-                venue.daySlots[existingSlotIndex].isBooked = true;
-                venue.daySlots[existingSlotIndex].bookedBy = event.organizer;
-            } else {
-                // Add new slot
                 venue.daySlots.push({
-                    date: date,
+                    date: new Date(`${key}T00:00:00Z`),
                     isAvailable: false,
                     isBooked: true,
                     bookedBy: event.organizer
                 });
             }
 
-            // Also add to blockedDates for backward compatibility
-            const existingBlockedIndex = venue.blockedDates.findIndex(blocked => blocked.date === dateStr);
-            const bookedSlot = {
-                startTime: slotStartTime,
-                endTime: slotEndTime,
-                type: 'booked'
-            };
-
-            if (existingBlockedIndex === -1) {
-                // Add new blockedDate entry
-                venue.blockedDates.push({
-                    date: dateStr,
-                    slots: [bookedSlot]
-                });
-            } else {
-                // Update existing entry - add booked slot if not already there
-                const existingSlots = venue.blockedDates[existingBlockedIndex].slots;
-                const hasBookedSlot = existingSlots.some(s =>
-                    s.startTime === slotStartTime && s.endTime === slotEndTime && s.type === 'booked'
-                );
-                if (!hasBookedSlot) {
-                    venue.blockedDates[existingBlockedIndex].slots.push(bookedSlot);
-                }
+            let entry = venue.blockedDates.find(blocked => blocked.date === key);
+            if (!entry) {
+                venue.blockedDates.push({ date: key, slots: [] });
+                entry = venue.blockedDates[venue.blockedDates.length - 1];
             }
-
-            console.log(`[updateVenueAvailability] Added blockedDate: ${dateStr} with slot ${slotStartTime}-${slotEndTime}`);
+            if (!entry.slots.some(s => s.event && String(s.event) === String(event._id))) {
+                entry.slots.push({ startTime, endTime, type: 'booked', event: event._id });
+            }
         }
 
-        await venue.save();
+        await venue.save({ validateModifiedOnly: true });
+    },
+
+    /**
+     * Undo updateVenueAvailability, and cancel the venue booking made for the
+     * event, once the event no longer takes place there (cancelled, deleted,
+     * rejected, moved). Nothing did this, so a cancelled event kept its days
+     * marked booked for good and nobody could book them. Best-effort: the
+     * caller's change to the event already stands.
+     */
+    async releaseVenueForEvent(event) {
+        try {
+            const Venue = require('../models/Venue');
+            const Booking = require('../models/Booking');
+            const { dayKey } = require('../utils/venueAvailability');
+            const venueId = event.venue?._id || event.venue;
+            if (!venueId) return;
+
+            await Booking.updateMany(
+                { event: event._id, status: { $in: ['pending', 'accepted'] } },
+                { $set: { status: 'cancelled', cancellationReason: 'event_cancelled' } }
+            );
+
+            const venue = await Venue.findById(venueId);
+            if (!venue) return;
+            const days = eventVenueDays(event);
+            const keys = new Set(days.map(d => d.key));
+            const organizer = String(event.organizer?._id || event.organizer);
+            const eventId = String(event._id);
+
+            venue.daySlots = (venue.daySlots || []).filter(slot =>
+                !(slot.isBooked && !slot.bookingId && keys.has(dayKey(slot.date)) && String(slot.bookedBy) === organizer));
+
+            for (const entry of venue.blockedDates || []) {
+                if (!keys.has(entry.date) || !Array.isArray(entry.slots)) continue;
+                const legacyTimes = days.filter(d => d.key === entry.date).flatMap(d => d.legacyTimes);
+                entry.slots = entry.slots.filter(slot => {
+                    if (slot.event) return String(slot.event) !== eventId;
+                    if (slot.type !== 'booked' || slot.booking) return true;
+                    // Written before slots carried the event id: matched by time.
+                    return !legacyTimes.some(t => t.startTime === slot.startTime && t.endTime === slot.endTime);
+                });
+            }
+            venue.blockedDates = (venue.blockedDates || []).filter(d => !keys.has(d.date) || (d.slots && d.slots.length > 0));
+            await venue.save({ validateModifiedOnly: true });
+        } catch (err) {
+            console.error(`Failed to release venue days for event ${event._id}:`, err.message);
+        }
     },
 
     // Generate a 12-character alphanumeric code using crypto
@@ -1193,13 +1399,24 @@ const eventService = {
             throw new Error(`Ticket has already been used (${when})`);
         }
 
-        ticket.isUsed = true;
-        ticket.usedAt = new Date();
-        ticket.checkedInBy = accessCode;
-        ticket.status = 'used';
-        await ticket.save();
+        // The condition is part of the update so that two gates scanning the same
+        // QR at the same moment cannot both admit it - read-check-save let both
+        // through.
+        const used = await Ticket.findOneAndUpdate(
+            { _id: ticket._id, isUsed: { $ne: true }, status: { $nin: ['used', 'cancelled'] } },
+            { $set: { isUsed: true, usedAt: new Date(), checkedInBy: accessCode, status: 'used' } },
+            { new: true }
+        ).populate('user', 'name email');
+        if (!used) {
+            const latest = await Ticket.findById(ticket._id).select('usedAt status').lean();
+            if (latest && latest.status === 'cancelled') {
+                throw new Error('This ticket has been cancelled');
+            }
+            const when = latest && latest.usedAt ? new Date(latest.usedAt).toLocaleString('en-IN') : 'earlier';
+            throw new Error(`Ticket has already been used (${when})`);
+        }
 
-        return ticket;
+        return used;
     },
 
     // Deactivate a scanning code (organizer only)
@@ -1228,7 +1445,7 @@ const eventService = {
         const venue = await Venue.findById(venueId);
 
         // Check if a booking already exists for this event
-        const existingBooking = await Booking.findOne({ event: event._id });
+        const existingBooking = await Booking.findOne({ event: event._id, status: { $in: ['pending', 'accepted'] } });
         if (existingBooking) {
             console.log(`[createBookingForEvent] Booking already exists for event ${event._id}`);
             return existingBooking;

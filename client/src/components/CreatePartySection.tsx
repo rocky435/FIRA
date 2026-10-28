@@ -48,7 +48,7 @@ export default function CreatePartySection() {
                                 Want to create a <span className="accent-text">party</span>?
                             </h2>
                             <p className="text-gray-300 max-w-xl mx-auto">
-                                It's simple. Follow these three easy steps.
+                                It&apos;s simple. Follow these three easy steps.
                             </p>
                         </div>
                     </SlideUp>

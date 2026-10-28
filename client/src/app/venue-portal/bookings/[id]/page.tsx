@@ -24,6 +24,8 @@ interface Booking {
     purpose?: string;
     expectedGuests?: number;
     createdAt: string;
+    // The owner answers by this; after it the request expires.
+    ownerResponse?: { respondBy?: string | null };
 }
 
 const statusStyle = (status: string) => {
@@ -89,8 +91,8 @@ export default function VenueBookingDetailPage() {
             await bookingsApi.updateStatus(booking._id, status, reason);
             showToast(`Booking ${status} successfully`, 'success');
             fetchBooking();
-        } catch {
-            showToast('Failed to update booking status', 'error');
+        } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Failed to update booking status', 'error');
         } finally {
             setBusy(false);
         }
@@ -175,6 +177,16 @@ export default function VenueBookingDetailPage() {
                                 </dl>
                             </div>
 
+                            {booking.status === 'pending' && (
+                                <p className="text-sm text-gray-300">
+                                    {booking.paymentStatus === 'paid'
+                                        ? 'The guest has paid. If you accept, they pay any remaining amount in the app before the booking. If you reject, what they paid is refunded to them.'
+                                        : 'Accept or reject this request. Once you accept, the dates are held for the guest and they have 48 hours to pay the 10% advance or the full amount to confirm it; if they do not, the booking is cancelled and the dates are freed.'}
+                                    {booking.ownerResponse?.respondBy
+                                        ? ` Please answer by ${new Date(booking.ownerResponse.respondBy).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} - after that the request expires.`
+                                        : ''}
+                                </p>
+                            )}
                             {booking.status === 'pending' && (
                                 <div className="flex flex-wrap gap-3">
                                     <Button onClick={() => updateStatus('accepted')} disabled={busy}>

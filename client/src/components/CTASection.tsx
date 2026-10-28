@@ -17,7 +17,7 @@ export default function CTASection() {
                 <div className="max-w-3xl mx-auto text-center">
                     <SlideUp>
                         <h2 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold mb-6 text-white">
-                            Let's start the <span className="accent-text">party</span>
+                            Let&apos;s start the <span className="accent-text">party</span>
                         </h2>
                     </SlideUp>
 

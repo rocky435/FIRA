@@ -45,6 +45,28 @@ router.get('/users/:id', async (req, res) => {
     }
 });
 
+// GET /api/admin/users/:id/gov-id - The user's government ID, for verifying a
+// venue owner: type, number, and a link to the document that works for 10
+// minutes. The document itself is private in storage.
+router.get('/users/:id/gov-id', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        const mongoose = require('mongoose');
+        if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'User not found' });
+        const user = await User.findById(req.params.id).select('name govIdType govIdNumber govIdDocument govIdVerified');
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        const { privateDocumentLink } = require('../services/uploadService');
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            govIdType: user.govIdType,
+            govIdNumber: user.govIdNumber,
+            govIdVerified: user.govIdVerified,
+            documentUrl: user.govIdDocument ? privateDocumentLink(user.govIdDocument) : null,
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 router.put('/users/:id/block', async (req, res) => {
     try {
         const user = await adminService.blockUser(req.params.id, req.user._id);
@@ -70,7 +92,8 @@ router.delete('/users/:id', roleGuard(['super_admin', 'admin']), async (req, res
         const result = await adminService.deleteUser(req.params.id, req.user._id);
         res.json(result);
     } catch (error) {
-        res.status(error.status || (error.message === 'User not found' ? 404 : 400)).json({ error: error.message });
+        res.status(error.status || (error.message === 'User not found' ? 404 : 400))
+            .json({ error: error.message, ...(error.blockers ? { blockers: error.blockers } : {}) });
     }
 });
 
@@ -125,7 +148,8 @@ router.delete('/venues/:id', roleGuard(['super_admin', 'admin']), async (req, re
         await invalidateCache('venues');
         res.json(result);
     } catch (error) {
-        res.status(error.message === 'Venue not found' ? 404 : 400).json({ error: error.message });
+        res.status(error.status || (error.message === 'Venue not found' ? 404 : 400))
+            .json({ error: error.message, ...(error.events ? { events: error.events } : {}) });
     }
 });
 
@@ -245,57 +269,10 @@ router.get('/audit-trail', roleGuard(['super_admin', 'admin']), async (req, res)
     }
 });
 
-// Clear the entire trail. Registered before the :id route so the literal path
-// wins over being read as an id of "all".
-router.delete('/audit-trail/all', roleGuard(['super_admin', 'admin']), async (req, res) => {
-    try {
-        const result = await adminService.clearAuditTrail();
-        res.json(result);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-router.delete('/audit-trail/:id', roleGuard(['super_admin', 'admin']), async (req, res) => {
-    try {
-        const result = await adminService.deleteAuditLog(req.params.id);
-        res.json(result);
-    } catch (error) {
-        const status = error.message === 'Audit entry not found' ? 404 : 500;
-        res.status(status).json({ error: error.message });
-    }
-});
+// The audit trail and money records (payments, payouts, settlements) are
+// permanent: there is deliberately no route that deletes or wipes them.
 
 // ================== ADMIN ROLE ASSIGNMENT ==================
-
-// ================== DATA WIPE (development/testing) ==================
-// Wipe all Payment, Payout, and Settlement records. This zeros the Platform
-// Revenue, Payouts & Earnings page, and every per-listing settlement. Super-admin
-// only, irreversible, and intentionally NOT audited: the audit trail itself is a
-// separate wipe target (DELETE /audit-trail/all) and wiping money records is a
-// testing action that has no business in the production audit log.
-router.delete('/wipe-payment-data', roleGuard(['super_admin']), async (req, res) => {
-    try {
-        const Payment = require('../models/Payment');
-        const Payout = require('../models/Payout');
-        const Settlement = require('../models/Settlement');
-        const [p, po, s] = await Promise.all([
-            Payment.deleteMany({}),
-            Payout.deleteMany({}),
-            Settlement.deleteMany({}),
-        ]);
-        res.json({
-            success: true,
-            deleted: {
-                payments: p.deletedCount,
-                payouts: po.deletedCount,
-                settlements: s.deletedCount,
-            },
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
 
 router.patch('/users/:id/role', roleGuard(['super_admin']), async (req, res) => {
     try {

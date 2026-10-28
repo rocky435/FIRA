@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Select } from './Select';
 import { openPickerOnClick } from '@/lib/dateInput';
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock';
+import { useMobileViewport } from '@/hooks/useMobileViewport';
 
 export interface FilterOption {
     value: string;
@@ -63,6 +65,12 @@ export default function FilterPanel({ groups, onReset, onApply, className = '' }
     // Portals need a DOM target, which does not exist during SSR.
     const [isMounted, setIsMounted] = useState(false);
     useEffect(() => setIsMounted(true), []);
+
+    // On phones the panel is a full-screen dialog; stop the page behind it from
+    // scrolling while it is open (as the shared <Modal> does). On desktop it is an
+    // inline dropdown and the page should keep scrolling.
+    const { isMobile } = useMobileViewport();
+    useBodyScrollLock(isOpen && isMobile);
 
     // "Show results" both commits the host's draft (single API call, 8.1) and
     // closes the panel. onApply is optional so callers without draft state keep

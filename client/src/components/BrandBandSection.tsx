@@ -63,7 +63,7 @@ export default function BrandBandSection() {
                                     </h2>
 
                                     <p className="text-gray-300 mb-8 leading-relaxed">
-                                        Don't worry, we care for you. Organize your events, parties, and celebrate the moments with ease.
+                                        Don&apos;t worry, we care for you. Organize your events, parties, and celebrate the moments with ease.
                                         Get your dedicated space and connect with your fans like never before.
                                     </p>
                                     {/* 5.6: "Learn more" CTA removed. */}

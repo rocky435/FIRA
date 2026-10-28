@@ -3,13 +3,19 @@ const Payment = require('../models/Payment');
 const Ticket = require('../models/Ticket');
 const Event = require('../models/Event');
 const Booking = require('../models/Booking');
-const Razorpay = require('razorpay');
 const notificationService = require('./notificationService');
-const { roundMoney, toPaise } = require('../utils/money');
+const { roundMoney } = require('../utils/money');
+
+/**
+ * When an event starts. `startDateTime` is the schema field; `date` is kept as a
+ * fallback for any legacy document that still carries it.
+ */
+const eventStart = (event) => (event && (event.startDateTime || event.date)) || null;
 
 /**
  * Refund Service
- * Handles all refund-related operations including Razorpay integration
+ * Refund requests (raised on cancellations) and the admin decisions on them.
+ * Refunds are paid manually; nothing here calls the payment gateway.
  */
 const refundService = {
     /**
@@ -50,10 +56,16 @@ const refundService = {
     },
 
     /**
-     * Process a refund via Razorpay
+     * Raise a refund request for admin approval.
+     *
+     * Every refund waits for an admin: this records a 'pending' Refund and moves
+     * no money. The money moves only in processRefundRequest, when an admin
+     * approves. (This used to refund through Razorpay immediately - and, with no
+     * gateway configured, marked the refund 'completed' without paying anything.)
+     *
      * @param {string} paymentId - Payment document ID
      * @param {object} options - { amount, reason, reasonDetails, refundType, userId }
-     * @returns {object} - Refund record
+     * @returns {object} - Refund record (status 'pending')
      */
     async processRefund(paymentId, { amount, reason, reasonDetails, refundType = 'full', userId }) {
         const payment = await Payment.findById(paymentId);
@@ -65,79 +77,30 @@ const refundService = {
             throw new Error('Can only refund successful payments');
         }
 
-        // Check if already refunded
-        const existingRefund = await Refund.findOne({ 
-            payment: paymentId, 
-            status: { $in: ['pending', 'processing', 'completed'] } 
+        // One open or completed refund per payment.
+        const existingRefund = await Refund.findOne({
+            payment: paymentId,
+            status: { $in: ['pending', 'approved', 'processing', 'completed'] }
         });
         if (existingRefund) {
             throw new Error('Refund already exists for this payment');
         }
 
         // Validate refund amount
-        const refundAmount = amount || payment.amount;
-        if (refundAmount > payment.amount) {
-            throw new Error('Refund amount cannot exceed payment amount');
+        const refundAmount = amount == null ? payment.amount : roundMoney(Number(amount));
+        if (!Number.isFinite(refundAmount) || refundAmount <= 0 || refundAmount > payment.amount) {
+            throw new Error('Refund amount must be more than zero and no more than the payment amount');
         }
 
-        // Create refund record
-        const refund = await Refund.create({
+        return Refund.create({
             payment: paymentId,
             user: userId || payment.user,
             reason,
             reasonDetails,
             amount: refundAmount,
             refundType: refundAmount === payment.amount ? 'full' : 'partial',
-            status: 'processing'
+            status: 'pending'
         });
-
-        // Process via Razorpay if credentials exist
-        if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && payment.gatewayTransactionId) {
-            try {
-                const razorpay = new Razorpay({
-                    key_id: process.env.RAZORPAY_KEY_ID,
-                    key_secret: process.env.RAZORPAY_KEY_SECRET,
-                });
-
-                const razorpayRefund = await razorpay.payments.refund(payment.gatewayTransactionId, {
-                    amount: toPaise(refundAmount), // integer paise - Razorpay rejects fractions
-                    notes: {
-                        reason,
-                        refundId: refund._id.toString()
-                    }
-                });
-
-                // Update refund with gateway response
-                refund.gatewayRefundId = razorpayRefund.id;
-                refund.gatewayResponse = razorpayRefund;
-                refund.status = 'completed';
-                refund.processedAt = new Date();
-                await refund.save();
-
-                // Update payment status
-                payment.status = 'refunded';
-                await payment.save();
-
-                console.log(`✅ Refund processed via Razorpay: ${razorpayRefund.id}`);
-            } catch (error) {
-                console.error('❌ Razorpay refund failed:', error.message);
-                refund.status = 'failed';
-                refund.gatewayResponse = { error: error.message };
-                await refund.save();
-                throw new Error(`Failed to process refund: ${error.message}`);
-            }
-        } else {
-            // Mark as completed for testing/demo without Razorpay
-            console.log('⚠️ Razorpay not configured - marking refund as completed for demo');
-            refund.status = 'completed';
-            refund.processedAt = new Date();
-            await refund.save();
-
-            payment.status = 'refunded';
-            await payment.save();
-        }
-
-        return refund;
     },
 
     /**
@@ -198,8 +161,8 @@ const refundService = {
         notificationService.createNotification({
                     userId: ticket.user._id || ticket.user,
                     type: 'refund',
-                    title: 'Event Cancelled - Refund Processed',
-                    message: `The event "${event.name}" has been cancelled. Your refund of ₹${refund.amount} has been initiated.`,
+                    title: 'Event Cancelled - Refund Requested',
+                    message: `The event "${event.name}" has been cancelled. A refund of ₹${refund.amount} has been requested and will be sent once approved.`,
                     data: { eventId, refundId: refund._id, amount: refund.amount },
                     priority: 'high'
                 });
@@ -248,25 +211,41 @@ const refundService = {
             throw new Error('Cannot cancel used ticket');
         }
 
-        // Calculate refund eligibility
-        const refundEligibility = this.calculateRefundAmount(ticket.price, ticket.event.date);
+        // Calculate refund eligibility. The Event schema has no `date` path -
+        // reading it made every cancellation look "under 24 hours" and refund
+        // nothing, whatever the policy said.
+        const refundEligibility = this.calculateRefundAmount(ticket.price, eventStart(ticket.event));
+
+        // Claim the cancellation atomically before any money moves, so two quick
+        // cancel requests can't both pass the 'active' check and refund twice.
+        const claimed = await Ticket.findOneAndUpdate(
+            { _id: ticket._id, status: 'active', isUsed: { $ne: true } },
+            { $set: { status: 'cancelled' } }
+        );
+        if (!claimed) {
+            throw new Error('Ticket is not active');
+        }
 
         let refund = null;
 
         // Process refund if eligible and ticket was paid
         if (refundEligibility.amount > 0 && ticket.payment && ticket.price > 0) {
-            refund = await this.processRefund(ticket.payment._id || ticket.payment, {
-                amount: refundEligibility.amount,
-                reason: 'user_request',
-                reasonDetails: reason,
-                refundType: refundEligibility.refundType,
-                userId
-            });
+            try {
+                refund = await this.processRefund(ticket.payment._id || ticket.payment, {
+                    amount: refundEligibility.amount,
+                    reason: 'user_request',
+                    reasonDetails: reason,
+                    refundType: refundEligibility.refundType,
+                    userId
+                });
+            } catch (error) {
+                // Nothing was refunded - give the ticket back so the holder can retry.
+                await Ticket.updateOne({ _id: ticket._id, status: 'cancelled' }, { $set: { status: 'active' } });
+                throw error;
+            }
         }
 
-        // Update ticket status
         ticket.status = 'cancelled';
-        await ticket.save();
 
         // Decrease event attendee count
         await Event.findByIdAndUpdate(ticket.event._id, {
@@ -284,7 +263,7 @@ const refundService = {
             type: 'ticket_cancelled',
             title: 'Ticket Cancelled',
             message: refund 
-                ? `Your ticket for "${ticket.event.name}" has been cancelled. Refund of ₹${refund.amount} (${refundEligibility.policy}) has been initiated.`
+                ? `Your ticket for "${ticket.event.name}" has been cancelled. A refund of ₹${refund.amount} (${refundEligibility.policy}) has been requested and will be sent once approved.`
                 : `Your ticket for "${ticket.event.name}" has been cancelled. ${refundEligibility.policy}`,
             data: { ticketId, eventId: ticket.event._id, refundId: refund?._id },
             priority: 'medium'
@@ -298,89 +277,45 @@ const refundService = {
     },
 
     /**
-     * Initiate refund for booking cancellation
-     * @param {string} bookingId - Booking ID
-     * @param {string} userId - User requesting cancellation
-     * @param {string} reason - Cancellation reason
-     * @returns {object} - { booking, refund }
+     * Raise refund requests for what a guest actually paid on a booking: the
+     * deposit (or full payment), plus the balance if it was paid. The base is the
+     * booking amounts only - the platform fee and GST are never refunded.
+     * `percentage` comes from whoever decided the refund (100 for an owner
+     * rejection or a removed venue; the venue's policy for a guest cancellation).
+     * Requests only - an admin pays them from "Refunds to be done".
+     *
+     * @returns {Promise<{ amountPaid: number, refunds: any[] }>}
      */
-    async initiateBookingRefund(bookingId, userId, reason = 'User requested cancellation') {
-        const booking = await Booking.findById(bookingId).populate('payment venue');
-
-        if (!booking) {
-            throw new Error('Booking not found');
+    async raiseBookingRefunds(booking, percentage, { reasonDetails, userId } = {}) {
+        const s = booking.paymentSchedule || {};
+        const charges = [];
+        if (booking.paymentStatus === 'paid' && booking.payment) {
+            charges.push({
+                payment: booking.payment,
+                base: s.type === 'installment' ? roundMoney(s.depositAmount || 0) : roundMoney(s.depositAmount || booking.totalAmount),
+            });
+            if (s.type === 'installment' && s.balanceStatus === 'paid' && s.balancePayment) {
+                charges.push({ payment: s.balancePayment, base: roundMoney(s.balanceAmount || 0) });
+            }
         }
 
-        if (booking.user.toString() !== userId.toString()) {
-            throw new Error('Unauthorized: This booking belongs to another user');
-        }
-
-        if (booking.status === 'cancelled') {
-            throw new Error('Booking is already cancelled');
-        }
-
-        if (booking.status === 'completed') {
-            throw new Error('Cannot cancel completed booking');
-        }
-
-        let refund = null;
-
-        // Process refund if payment was made
-        if (booking.payment && booking.paymentStatus === 'paid') {
-            // Calculate refund based on booking date
-            const refundEligibility = this.calculateRefundAmount(
-                booking.payment.amount || (booking.totalAmount * 0.10), // Advance was 10%
-                booking.bookingDate
-            );
-
-            if (refundEligibility.amount > 0) {
-                refund = await this.processRefund(booking.payment._id || booking.payment, {
-                    amount: refundEligibility.amount,
+        const refunds = [];
+        for (const { payment, base } of charges) {
+            const amount = roundMoney(base * percentage / 100);
+            if (!(amount > 0)) continue;
+            try {
+                refunds.push(await this.processRefund(payment._id || payment, {
+                    amount,
                     reason: 'booking_cancelled',
-                    reasonDetails: reason,
-                    refundType: refundEligibility.refundType,
-                    userId
-                });
-            }
-
-            // Update booking payment status
-            booking.paymentStatus = 'refunded';
-        }
-
-        // Update booking status
-        booking.status = 'cancelled';
-        booking.rejectionReason = reason;
-        await booking.save();
-
-        // Release every day this booking held on the venue calendar.
-        if (booking.venue) {
-            const Venue = require('../models/Venue');
-            const { releaseBookingDays } = require('../utils/venueAvailability');
-            const venue = await Venue.findById(booking.venue._id || booking.venue);
-            if (venue) {
-                releaseBookingDays(venue, booking);
-                await venue.save();
+                    reasonDetails,
+                    userId: userId || booking.user,
+                }));
+            } catch (err) {
+                // The booking decision stands either way; an admin sees the gap.
+                console.error(`Could not raise refund for booking ${booking._id}, payment ${payment}: ${err.message}`);
             }
         }
-
-        // Send notification
-        // Fire-and-forget: the ticket/refund is already committed at this
-        // point, so a notification failure must not surface as a failed
-        // cancellation. (A missing enum value here previously did exactly
-        // that - the ticket cancelled, then the request errored, and the
-        // retry reported "Ticket is not active".)
-        notificationService.createNotification({
-            userId,
-            type: 'booking_cancelled',
-            title: 'Booking Cancelled',
-            message: refund 
-                ? `Your venue booking has been cancelled. Refund of ₹${refund.amount} has been initiated.`
-                : `Your venue booking has been cancelled.`,
-            data: { bookingId, refundId: refund?._id },
-            priority: 'medium'
-        }).catch(err => console.error('Notification failed (non-fatal):', err.message));
-
-        return { booking, refund };
+        return { amountPaid: roundMoney(charges.reduce((sum, c) => sum + c.base, 0)), refunds };
     },
 
     /**
@@ -448,73 +383,71 @@ const refundService = {
      * @param {string} notes - Admin notes
      * @returns {object} - Updated refund
      */
-    async processRefundRequest(refundId, adminId, action, notes = '') {
-        const refund = await Refund.findById(refundId).populate('payment');
-        
+    // action 'approve' = the admin has paid it manually; `reference` is the
+    // Razorpay refund id or bank UTR it was paid under.
+    async processRefundRequest(refundId, adminId, action, notes = '', reference = null) {
+        if (action !== 'approve' && action !== 'reject') {
+            throw new Error("Action must be 'approve' or 'reject'");
+        }
+        if (action === 'reject' && !String(notes || '').trim()) {
+            throw new Error('A reason is required to reject a refund');
+        }
+
+        // Claim the request atomically, so two admins (or a double click) can't
+        // both act on it. ('failed' is kept for requests from before refunds
+        // were paid manually.)
+        const refund = await Refund.findOneAndUpdate(
+            { _id: refundId, status: { $in: ['pending', 'failed'] } },
+            { $set: { status: 'processing', reviewedBy: adminId, reviewedAt: new Date(), adminNotes: notes } },
+            { new: true }
+        ).populate('payment');
         if (!refund) {
-            throw new Error('Refund not found');
+            const exists = await Refund.exists({ _id: refundId });
+            throw new Error(exists ? 'Refund is not awaiting a decision' : 'Refund not found');
         }
 
-        if (refund.status !== 'pending') {
-            throw new Error('Refund is not pending');
-        }
-
-        refund.reviewedBy = adminId;
-        refund.reviewedAt = new Date();
-        refund.adminNotes = notes;
-
-        if (action === 'approve') {
-            // Process the refund via Razorpay
-            if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && refund.payment.gatewayTransactionId) {
-                try {
-                    const razorpay = new Razorpay({
-                        key_id: process.env.RAZORPAY_KEY_ID,
-                        key_secret: process.env.RAZORPAY_KEY_SECRET,
-                    });
-
-                    const razorpayRefund = await razorpay.payments.refund(refund.payment.gatewayTransactionId, {
-                        amount: toPaise(refund.amount)
-                    });
-
-                    refund.gatewayRefundId = razorpayRefund.id;
-                    refund.gatewayResponse = razorpayRefund;
-                    refund.status = 'completed';
-                    refund.processedAt = new Date();
-
-                    // Update payment status
-                    refund.payment.status = 'refunded';
-                    await refund.payment.save();
-                } catch (error) {
-                    refund.status = 'failed';
-                    refund.gatewayResponse = { error: error.message };
-                }
-            } else {
-                refund.status = 'completed';
-                refund.processedAt = new Date();
-            }
-        } else if (action === 'reject') {
+        if (action === 'reject') {
             refund.status = 'rejected';
             refund.rejectionReason = notes;
+            await refund.save();
+        } else {
+            // Refunds are paid manually (from the Razorpay dashboard or by bank
+            // transfer); approving records that it was paid, with the reference
+            // the admin paid it under. Nothing is sent from here.
+            refund.status = 'completed';
+            refund.processedAt = new Date();
+            refund.gatewayRefundId = reference ? String(reference).trim() : null;
+            refund.failureReason = null;
+            await refund.save();
+
+            if (refund.payment) {
+                refund.payment.status = 'refunded';
+                await refund.payment.save();
+            }
         }
 
-        await refund.save();
+        const adminService = require('./adminService');
+        await adminService.recordAdminAction({
+            adminUser: adminId,
+            action: action === 'approve' ? 'approve' : 'reject',
+            entityType: 'refund',
+            entityId: refund._id,
+            metadata: { amount: refund.amount, payment: String(refund.payment?._id || refund.payment), result: refund.status, reference, notes },
+        });
 
-        // Notify user
-        // Fire-and-forget: the ticket/refund is already committed at this
-        // point, so a notification failure must not surface as a failed
-        // cancellation. (A missing enum value here previously did exactly
-        // that - the ticket cancelled, then the request errored, and the
-        // retry reported "Ticket is not active".)
-        notificationService.createNotification({
-            userId: refund.user,
-            type: 'refund_update',
-            title: action === 'approve' ? 'Refund Approved' : 'Refund Rejected',
-            message: action === 'approve' 
-                ? `Your refund of ₹${refund.amount} has been approved and processed.`
-                : `Your refund request has been rejected. Reason: ${notes}`,
-            data: { refundId },
-            priority: 'high'
-        }).catch(err => console.error('Notification failed (non-fatal):', err.message));
+        // Tell the customer the outcome.
+        if (refund.status === 'completed' || refund.status === 'rejected') {
+            notificationService.createNotification({
+                userId: refund.user,
+                type: 'refund_update',
+                title: refund.status === 'completed' ? 'Refund Approved' : 'Refund Rejected',
+                message: refund.status === 'completed'
+                    ? `Your refund of ₹${refund.amount} has been sent.${reference ? ` Reference: ${reference}.` : ''}`
+                    : `Your refund request has been rejected. Reason: ${notes}`,
+                data: { refundId },
+                priority: 'high'
+            }).catch(err => console.error('Notification failed (non-fatal):', err.message));
+        }
 
         return refund;
     },
@@ -558,7 +491,7 @@ const refundService = {
             };
         }
 
-        const refundCalc = this.calculateRefundAmount(ticket.price, ticket.event.date);
+        const refundCalc = this.calculateRefundAmount(ticket.price, eventStart(ticket.event));
 
         return {
             eligible: refundCalc.amount > 0,
@@ -567,7 +500,7 @@ const refundService = {
             originalAmount: ticket.price,
             refundPercentage: refundCalc.refundPercentage,
             policy: refundCalc.policy,
-            eventDate: ticket.event.date
+            eventDate: eventStart(ticket.event)
         };
     }
 };

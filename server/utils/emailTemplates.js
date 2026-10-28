@@ -9,7 +9,7 @@ const emailTemplates = {
   /**
    * OTP Verification Email Template
    * @param {string} name - User's name
-   * @param {string} otp - 4-digit OTP code
+   * @param {string} otp - 6-digit OTP code
    * @returns {string} - HTML email template
    */
   otpVerification(name, otp) {

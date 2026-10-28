@@ -8,6 +8,9 @@ const settlementService = require('../services/settlementService');
 const validate = require('../middleware/validate');
 const { venueOwnerAuth, requireAuth } = require('../middleware/venueOwnerAuth');
 const { publicCache, noStoreCache, invalidateCache } = require('../middleware/httpCache');
+const { optionalAuth } = require('../middleware/auth');
+const { hasRole } = require('../utils/roleUtils');
+const { isVenueBookable } = require('../utils/venueAvailability');
 
 // Maps/location link validation (Req 20.2). Only guards `locationLink`; every other
 // venue field passes through untouched via .passthrough(). The field is optional and
@@ -113,9 +116,16 @@ router.get('/:id/settlement', requireAuth(), /** @param {AuthenticatedRequest} r
 });
 
 // GET /api/venues/:id - Get venue by ID (public)
-router.get('/:id', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+router.get('/:id', optionalAuth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const venue = await venueService.getVenueById(req.params.id);
+        // A venue that is not live (pending, rejected, suspended, deleted) is shown
+        // only to its owner and admins - it used to be public, and bookable.
+        const ownerId = String(venue.owner?._id || venue.owner);
+        const canSeeHidden = !!req.user && (String(req.user._id) === ownerId || hasRole(req.user, 'admin'));
+        if (!isVenueBookable(venue) && !canSeeHidden) {
+            return res.status(404).json({ error: 'Venue not found' });
+        }
         // Best-effort: the calendar degrades to blockedDates alone if this fails,
         // and createBooking re-checks every day server-side regardless.
         const unavailableDates = await venueService.getUnavailableDates(venue._id).catch(() => []);
@@ -124,6 +134,27 @@ router.get('/:id', /** @param {AuthenticatedRequest} req @param {Response} res *
         res.status(404).json({ error: error.message });
     }
 });
+
+/**
+ * A venue with upcoming bookings or events cannot be removed by its owner: the
+ * request is recorded for an admin (who cancels the bookings and raises the
+ * refunds when removing it). Responds 202 and returns true when the request was
+ * sent; false when the owner may go ahead.
+ */
+async function sentToAdminForRemoval(req, res) {
+    const removal = require('../services/listingRemovalService');
+    const { bookings, events } = await removal.venueObligations(req.params.id);
+    if (!bookings.length && !events.length) return false;
+    const Venue = require('../models/Venue');
+    await removal.requestRemoval(Venue, req.params.id, req.user._id, req.body && req.body.reason);
+    res.status(202).json({
+        deletionRequested: true,
+        message: 'This venue has upcoming bookings or events, so it cannot be removed directly. Your request has been sent to the FIRA team for approval.',
+        bookings,
+        events,
+    });
+    return true;
+}
 
 // POST /api/venues - Create new venue (venue owner only)
 router.post('/', venueOwnerAuth, validate(locationLinkBody), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
@@ -177,6 +208,7 @@ router.delete('/:id', venueOwnerAuth, /** @param {AuthenticatedRequest} req @par
         if (existingVenue.owner._id.toString() !== req.user._id.toString()) {
             return res.status(403).json({ error: 'You do not own this venue' });
         }
+        if (await sentToAdminForRemoval(req, res)) return;
         await venueService.deleteVenue(req.params.id);
         await invalidateCache('venues');
         res.json({ message: 'Venue deleted successfully' });
@@ -214,6 +246,7 @@ router.post('/:id/cancel', venueOwnerAuth, /** @param {AuthenticatedRequest} req
         if (existingVenue.owner._id.toString() !== req.user._id.toString()) {
             return res.status(403).json({ error: 'You do not own this venue' });
         }
+        if (await sentToAdminForRemoval(req, res)) return;
         const result = await venueService.deleteVenue(req.params.id);
         res.json(result);
     } catch (error) {

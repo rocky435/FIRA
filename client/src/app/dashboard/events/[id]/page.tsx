@@ -192,6 +192,13 @@ export default function DashboardEventDetailPage() {
         setCancelling(true);
         try {
             const result = await eventsApi.cancel(event._id, cancelReason || 'Cancelled by organizer');
+            // With tickets sold, cancelling goes to the FIRA team for approval.
+            if (result.deletionRequested) {
+                showToast(result.message || 'Cancellation request sent to the FIRA team', 'info');
+                setShowCancelModal(false);
+                setCancelReason('');
+                return;
+            }
             const refundInfo = result.refundResults;
             if (refundInfo && refundInfo.refundsInitiated > 0) {
                 showToast(`Event cancelled. ${refundInfo.refundsInitiated} refund(s) initiated totaling ₹${refundInfo.totalRefundAmount}`, 'success');

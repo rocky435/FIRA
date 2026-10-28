@@ -383,7 +383,11 @@ export default function EventsPage() {
     //     );
     // };
 
-    const Section = ({ title, data, sort }: { title: string; data: Event[]; sort?: string }) => {
+    // A render helper, not a component: declared inside the page so it can read
+    // the page's state, and called as a function so React does not see a brand-new
+    // component type on every render (which remounted each section - resetting
+    // its scroll position and replaying its animation - on every state change).
+    const renderSection = ({ title, data, sort }: { title: string; data: Event[]; sort?: string }) => {
         if (!data || data.length === 0) return null;
 
         return (
@@ -516,15 +520,15 @@ export default function EventsPage() {
                                 has something on. Section returns null for an
                                 empty list, so a city with no events simply drops
                                 the whole block - no empty state, no dead space. */}
-                            <Section
-                                title={selectedCity ? `Near You in ${selectedCity}` : 'Near You'}
-                                data={sections.nearYou}
-                            />
+                            {renderSection({
+                                title: selectedCity ? `Near You in ${selectedCity}` : 'Near You',
+                                data: sections.nearYou,
+                            })}
 
-                            <Section title="Today" data={sections.today} sort="today" />
-                            <Section title="Popular Events" data={sections.popular} sort="popular" />
-                            <Section title="Upcoming Events" data={sections.upcoming} sort="upcoming" />
-                            <Section title="This Weekend" data={sections.weekend} sort="weekend" />
+                            {renderSection({ title: "Today", data: sections.today, sort: "today" })}
+                            {renderSection({ title: "Popular Events", data: sections.popular, sort: "popular" })}
+                            {renderSection({ title: "Upcoming Events", data: sections.upcoming, sort: "upcoming" })}
+                            {renderSection({ title: "This Weekend", data: sections.weekend, sort: "weekend" })}
 
                             {/* Past Events — completed events with reduced opacity and badge */}
                             {sections.completed.length > 0 && (

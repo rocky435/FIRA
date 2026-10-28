@@ -524,6 +524,7 @@ const earningsService = {
      * @returns {Promise<object[]>}
      */
     async getPayoutList({ statuses } = {}) {
+        /** @type {any} */
         const match = {};
         if (statuses != null) {
             const list = Array.isArray(statuses) ? statuses : [statuses];
@@ -543,10 +544,10 @@ const earningsService = {
 
         const refundedRefKeys = new Set();
         if (completedRefs.length) {
-            const refundedPayments = await Payment.find({
+            const refundedPayments = await Payment.find(/** @type {any} */ ({
                 status: REFUNDED,
                 $or: completedRefs.map((r) => ({ referenceModel: r.referenceModel, referenceId: r.referenceId })),
-            }).select('referenceModel referenceId').lean();
+            })).select('referenceModel referenceId').lean();
             for (const pmt of refundedPayments) {
                 refundedRefKeys.add(`${pmt.referenceModel}:${String(pmt.referenceId)}`);
             }
@@ -1042,6 +1043,7 @@ const earningsService = {
 
         // Includes legacy whole-venue payouts raised from the admin settlement
         // panel before that step was removed, so they still show in the record.
+        /** @type {any} */
         const payoutMatch = kind === 'venue'
             ? { $or: [{ referenceModel, referenceId: { $in: referenceIds } }, { referenceModel: 'Venue', referenceId: new mongoose.Types.ObjectId(String(listingId)) }] }
             : { referenceModel, referenceId: { $in: referenceIds } };

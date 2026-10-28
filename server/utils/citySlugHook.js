@@ -28,7 +28,7 @@ function attachCitySlug(schema, prefix = '') {
         // Guard rather than writing an empty slug: setting a nested path on a
         // document that has no sub-document at all would conjure one into
         // existence (an event with no custom venue growing a `customVenue`).
-        if (city) this.set(slugPath, citySlug(city));
+        if (city) this.set(slugPath, citySlug(String(city)));
     });
 
     // Covers findByIdAndUpdate / findOneAndUpdate / updateOne / updateMany, which

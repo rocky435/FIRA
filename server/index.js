@@ -7,6 +7,14 @@ const corsMiddleware = require('./middleware/cors');
 const { loggingMiddleware, logger } = require('./lib/logger');
 const sentry = require('./lib/sentry');
 
+// Bank and ID numbers are encrypted with ENCRYPTION_KEY when it is set; without
+// it they are stored as plaintext. Optional for now, so only warn.
+if (process.env.NODE_ENV === 'production' && !require('./utils/fieldEncryption').hasEncryptionKey()) {
+    console.warn('⚠️  ENCRYPTION_KEY is not set - bank and ID numbers are stored unencrypted. To enable, generate one with:');
+    console.warn('   node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+    console.warn('   then run: node scripts/encryptSensitiveFields.js');
+}
+
 const app = express();
 
 // Sentry request handler — must be first middleware for request context + tracing.
@@ -25,7 +33,9 @@ app.use(securityHeaders);
 
 // Middleware
 app.use(corsMiddleware);
-app.use(express.json({ limit: '1mb' }));
+// rawBody keeps the exact bytes received: the Razorpay webhook signature is
+// computed over them, and re-serialising the parsed JSON would not match.
+app.use(express.json({ limit: '1mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Input sanitization — reject any key starting with '$' (NoSQL injection prevention)

@@ -35,14 +35,14 @@ describe('paymentService.calculateBilling', () => {
     expect(result.totalAmount).toBe(5.84);
   });
 
-  it('caps the discount at the total payable', () => {
+  it('caps the discount at the ticket price - the fee and GST are always paid', () => {
     const result = paymentService.calculateBilling(100, 1, 5, 500);
 
     expect(result.subtotal).toBe(100);
     expect(result.platformFee).toBe(5);
     expect(result.gstAmount).toBe(0.9);
-    expect(result.discountAmount).toBe(105.9);
-    expect(result.totalAmount).toBe(0);
+    expect(result.discountAmount).toBe(100);
+    expect(result.totalAmount).toBe(5.9);
   });
 
   it('handles zero ticket price', () => {

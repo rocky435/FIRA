@@ -56,6 +56,45 @@ function BankDetails({ bank }) {
     );
 }
 
+/**
+ * The owner's government ID, fetched only when asked for. The document is
+ * private in storage; the link the server returns works for 10 minutes.
+ */
+function GovId({ userId }) {
+    const [state, setState] = useState({ status: 'idle', data: null, error: null });
+    const load = async () => {
+        setState({ status: 'loading', data: null, error: null });
+        try {
+            setState({ status: 'done', data: await adminApi.getGovId(userId), error: null });
+        } catch (err) {
+            setState({ status: 'error', data: null, error: err.message || 'Failed to load' });
+        }
+    };
+    if (state.status === 'idle' || state.status === 'loading') {
+        return (
+            <button
+                type="button"
+                onClick={load}
+                disabled={state.status === 'loading'}
+                className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10"
+            >
+                {state.status === 'loading' ? 'Loading...' : 'Show government ID'}
+            </button>
+        );
+    }
+    if (state.status === 'error') return <p className="text-xs text-red-400">{state.error}</p>;
+    const { govIdType, govIdNumber, documentUrl } = state.data || {};
+    return (
+        <div className="bg-white/[0.03] rounded-xl p-3 border border-white/[0.06] text-sm">
+            <p className="text-gray-500 text-[11px]">Government ID</p>
+            <p className="text-gray-200">{govIdType ? `${govIdType.replace('_', ' ')}: ${govIdNumber || '—'}` : 'Not provided'}</p>
+            {documentUrl
+                ? <a href={documentUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-violet-400 hover:text-violet-300">Open document (link works for 10 minutes)</a>
+                : <p className="text-xs text-gray-500">No document uploaded</p>}
+        </div>
+    );
+}
+
 export default function VenueOwners() {
     const [owners, setOwners] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -157,6 +196,7 @@ export default function VenueOwners() {
                                         {isOpen && (
                                             <div className="px-6 pb-5 bg-white/[0.01] space-y-4">
                                                 <BankDetails bank={owner.bankDetails} />
+                                                <div className="mt-3"><GovId userId={owner._id} /></div>
 
                                                 <div>
                                                     <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">

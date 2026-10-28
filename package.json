@@ -11,7 +11,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "test:e2e": "npx playwright test",
+    "test:e2e": "node e2e/api-journeys.js server",
+    "test:e2e:browser": "npx playwright test",
     "lint": "npm run lint --workspaces --if-present",
     "dev:server": "npm run dev --workspace=server",
     "dev:client": "npm run dev --workspace=client",
@@ -19,9 +20,17 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0",
-    "next": "16.0.10",
+    "next": "16.4.1",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "serve": {
+      "compression": "1.8.2"
+    },
+    "minimatch@3": {
+      "brace-expansion": "1.1.21"
+    }
   }
 }

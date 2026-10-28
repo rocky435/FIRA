@@ -4,6 +4,8 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock';
+import { useMobileViewport } from '@/hooks/useMobileViewport';
 
 const navItems = [
     {
@@ -68,6 +70,9 @@ export default function VenuePortalNavbar() {
     const router = useRouter();
     const { user, logout } = useAuth();
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+    // The phone menu covers the page: stop it scrolling behind the menu.
+    const { isMobile } = useMobileViewport();
+    useBodyScrollLock(isMobile && isMobileMenuOpen);
 
     const handleLogout = () => {
         logout();

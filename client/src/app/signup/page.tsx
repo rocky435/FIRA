@@ -110,8 +110,10 @@ function SignUpContent() {
         e.preventDefault();
         setError('');
 
-        if (otp.length !== 4) {
-            fail('Please enter the 4-digit verification code');
+        // Codes are 6 digits; 4 is still accepted so a code issued before the
+        // switch keeps working.
+        if (otp.length < 4) {
+            fail('Please enter the verification code from your email');
             return;
         }
 
@@ -339,7 +341,7 @@ function SignUpContent() {
                             <div className="text-center mb-8">
                                 <h1 className="text-3xl font-bold text-white mb-2">Verify your email</h1>
                                 <p className="text-gray-300">
-                                    We've sent a 4-digit code to<br />
+                                    We&apos;ve sent a verification code to<br />
                                     <span className="text-white font-medium">{formData.email}</span>
                                 </p>
                             </div>
@@ -357,7 +359,7 @@ function SignUpContent() {
                                             Enter verification code
                                         </label>
                                         <OTPInput
-                                            length={4}
+                                            length={6}
                                             value={otp}
                                             onChange={setOtp}
                                             disabled={isLoading}
@@ -387,7 +389,7 @@ function SignUpContent() {
                                         size="lg"
                                         className="w-full"
                                         isLoading={isLoading}
-                                        disabled={otp.length !== 4 || otpExpiry === 0}
+                                        disabled={otp.length < 4 || otpExpiry === 0}
                                     >
                                         Verify Email
                                     </Button>

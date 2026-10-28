@@ -13,7 +13,7 @@ const Venue = require('../models/Venue');
 const emailService = require('../services/emailService');
 const notificationService = require('../services/notificationService');
 const { REMINDER_WINDOW_HOURS, BALANCE_DUE_HOURS_BEFORE } = require('../utils/paymentSchedule');
-const { releaseBookingDays } = require('../utils/venueAvailability');
+const { releaseBookingDays, dayKey, localDayKey } = require('../utils/venueAvailability');
 
 /**
  * Event statuses that mean "live and not yet started/finished". `approved` is what
@@ -123,6 +123,19 @@ async function sendEventReminders() {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/** Grace after a payment deadline before cancelling, for a checkout already under way. */
+const PAYMENT_GRACE_MS = 30 * 60 * 1000;
+
+/**
+ * Whole calendar days from today (server-local, IST in production) to the day of
+ * the booking: 2 on the 8th for a booking on the 10th.
+ */
+function daysUntilBookingDay(bookingDate, now) {
+    return Math.round((Date.parse(`${dayKey(bookingDate)}T00:00:00Z`) - Date.parse(`${localDayKey(now)}T00:00:00Z`)) / MS_PER_DAY);
+}
+
+const formatWhen = (date) => new Date(date).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
 /**
  * Send daily balance-payment reminders for installment bookings whose 90% balance
  * is still pending and whose deadline has not yet passed (Req 7).
@@ -144,6 +157,10 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 async function sendBalanceReminders() {
     try {
         const now = new Date();
+        // Two days before the booking the unpaid balance gets the final notice
+        // instead of the usual reminder.
+        await sendBalanceFinalNotices(now);
+
         // en-CA yields YYYY-MM-DD in server local time — stable string key for once-per-day dedupe.
         const today = now.toLocaleDateString('en-CA');
         const remindFrom = new Date(
@@ -154,15 +171,21 @@ async function sendBalanceReminders() {
             'paymentSchedule.type': 'installment',
             'paymentSchedule.balanceStatus': 'pending',
             paymentStatus: 'paid', // the deposit was actually paid - no balance chasing for an abandoned checkout
+            status: 'accepted', // the venue accepted it - the balance is only due on an accepted booking
             // Req 7.3: skip past-deadline (left for enforcement); and not before the
             // event is 7 days out.
             'paymentSchedule.balanceDueAt': { $gt: now, $lte: remindFrom },
-            'paymentSchedule.lastReminderOn': { $ne: today }    // Req 7.1: at most once per calendar day
+            'paymentSchedule.lastReminderOn': { $ne: today },   // Req 7.1: at most once per calendar day
+            $or: [
+                { 'paymentSchedule.finalNoticeSentAt': null },
+                { 'paymentSchedule.finalNoticeSentAt': { $lt: new Date(now.getTime() - 12 * 3600 * 1000) } },
+            ],
         })
             .populate('user', 'name email')
             .populate('venue', 'name');
 
         if (bookings.length === 0) {
+            await sendDayBeforeReminders(now);
             return;
         }
 
@@ -181,7 +204,8 @@ async function sendBalanceReminders() {
                 data: {
                     referenceId: booking._id,
                     referenceModel: 'Booking',
-                    actionUrl: `/venues/${booking.venue._id}`
+                    // The booking page carries the "Pay remaining amount" button.
+                    actionUrl: `/dashboard/bookings/${booking._id}`
                 },
                 priority: 'high',
                 channel: 'all'
@@ -207,9 +231,229 @@ async function sendBalanceReminders() {
             );
         }
 
+        await sendDayBeforeReminders(now);
+
         console.log('✅ Balance reminders job completed');
     } catch (error) {
         console.error('❌ Balance reminders job failed:', error.message);
+    }
+}
+
+/**
+ * One-time final notice on the morning two days before the booking (the 8th for
+ * a booking on the 10th), when the balance is still unpaid: pay now or cancel.
+ * Claimed atomically on finalNoticeSentAt, so each booking gets exactly one. A
+ * booking that is paid by then gets nothing here, and the day-before reminder
+ * instead.
+ */
+async function sendBalanceFinalNotices(now = new Date()) {
+    const candidates = await Booking.find({
+        'paymentSchedule.type': 'installment',
+        'paymentSchedule.balanceStatus': 'pending',
+        'paymentSchedule.finalNoticeSentAt': null,
+        'paymentSchedule.balanceDueAt': { $gt: now },
+        paymentStatus: 'paid',
+        status: 'accepted',
+        bookingDate: { $lte: new Date(now.getTime() + 3 * MS_PER_DAY) },
+    }).select('bookingDate').lean();
+
+    for (const c of candidates) {
+        if (daysUntilBookingDay(c.bookingDate, now) > 2) continue;
+        const booking = await Booking.findOneAndUpdate(
+            { _id: c._id, 'paymentSchedule.finalNoticeSentAt': null, 'paymentSchedule.balanceStatus': 'pending', status: 'accepted' },
+            { $set: { 'paymentSchedule.finalNoticeSentAt': now } },
+            { new: true }
+        ).populate('user', 'name email').populate('venue', 'name');
+        if (!booking) continue;
+
+        const { balanceAmount, balanceDueAt } = booking.paymentSchedule;
+        const due = formatWhen(balanceDueAt);
+        try {
+            await notificationService.createNotification({
+                userId: booking.user._id,
+                type: 'balance_due_reminder',
+                title: 'Final notice: pay or cancel',
+                message: `Pay the remaining ₹${balanceAmount} for ${booking.venue?.name || 'your booking'} by ${due}, or cancel to get back what the venue's policy allows. Otherwise the booking is cancelled and the deposit is not refunded.`,
+                data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/dashboard/bookings/${booking._id}` },
+                priority: 'high',
+                channel: 'all'
+            });
+            await emailService.sendBalanceFinalNoticeEmail(booking.user.email, booking.user.name, {
+                venueName: booking.venue?.name || 'your venue',
+                balanceAmount,
+                balanceDueAt,
+                bookingId: booking._id,
+            });
+        } catch (e) {
+            console.error(`  ❌ Failed to send final notice for booking ${booking._id}:`, e.message);
+        }
+    }
+}
+
+/**
+ * "Your booking is tomorrow", on the morning of the day before, to every
+ * accepted booking that is fully paid (paid in full, or advance and balance).
+ * Claimed atomically on dayBeforeReminderSentAt, so it goes out once.
+ */
+async function sendDayBeforeReminders(now = new Date()) {
+    const candidates = await Booking.find({
+        status: 'accepted',
+        paymentStatus: 'paid',
+        'paymentSchedule.dayBeforeReminderSentAt': null,
+        $or: [{ 'paymentSchedule.type': 'full' }, { 'paymentSchedule.balanceStatus': 'paid' }],
+        bookingDate: { $gte: new Date(now.getTime() - MS_PER_DAY), $lte: new Date(now.getTime() + 2 * MS_PER_DAY) },
+    }).select('bookingDate').lean();
+
+    for (const c of candidates) {
+        if (daysUntilBookingDay(c.bookingDate, now) !== 1) continue;
+        const booking = await Booking.findOneAndUpdate(
+            { _id: c._id, 'paymentSchedule.dayBeforeReminderSentAt': null, status: 'accepted' },
+            { $set: { 'paymentSchedule.dayBeforeReminderSentAt': now } },
+            { new: true }
+        ).populate('user', 'name email').populate('venue', 'name address');
+        if (!booking) continue;
+
+        const venueName = booking.venue?.name || 'your venue';
+        const message = `Your booking at ${venueName} is tomorrow, ${booking.startTime} - ${booking.endTime}. It is fully paid - see you there!`;
+        try {
+            await notificationService.createNotification({
+                userId: booking.user._id,
+                type: 'event_reminder',
+                title: 'Your booking is tomorrow',
+                message,
+                data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/dashboard/bookings/${booking._id}` },
+                priority: 'high',
+                channel: 'all'
+            });
+            await emailService.sendBookingUpdateEmail(booking.user.email, booking.user.name, {
+                subject: `Reminder: your booking at ${venueName} is tomorrow`,
+                heading: 'See you tomorrow',
+                lines: [message],
+                bookingId: booking._id,
+            });
+        } catch (e) {
+            console.error(`  ❌ Failed to send day-before reminder for booking ${booking._id}:`, e.message);
+        }
+    }
+}
+
+/**
+ * Requests the venue owner never answered. The owner has until
+ * ownerResponse.respondBy (48 hours, or 24 hours before the booking if sooner);
+ * after that the request is cancelled, the dates released and both sides told.
+ * Requests made before respondBy existed fall back to 24 hours before the
+ * booking. Anything the guest had paid on one (from before payment moved after
+ * acceptance) is raised in full as a refund to be done - it was the venue that
+ * did not respond, so nothing is forfeited.
+ */
+async function expireUnansweredRequests(now = new Date()) {
+    const { eventStartAt } = require('../utils/paymentSchedule');
+    const refundService = require('../services/refundService');
+    const horizon = new Date(now.getTime() + 3 * MS_PER_DAY);
+    const candidates = await Booking.find({
+        status: 'pending',
+        $or: [
+            { 'ownerResponse.respondBy': { $lte: now } },
+            { 'ownerResponse.respondBy': null, bookingDate: { $lte: horizon } },
+        ],
+    }).select('bookingDate startTime ownerResponse').lean();
+
+    for (const c of candidates) {
+        const cutoff = c.ownerResponse?.respondBy
+            ? new Date(c.ownerResponse.respondBy).getTime()
+            : eventStartAt(c.bookingDate, c.startTime).getTime() - BALANCE_DUE_HOURS_BEFORE * 3600 * 1000;
+        if (cutoff > now.getTime()) continue;
+
+        const booking = await Booking.findOneAndUpdate(
+            { _id: c._id, status: 'pending' },
+            { $set: { status: 'cancelled', cancellationReason: 'venue_did_not_respond', 'paymentSchedule.balanceStatus': 'not_applicable' } },
+            { new: true }
+        ).populate('venue', 'name owner');
+        if (!booking) continue;
+
+        try {
+            const { refunds } = await refundService.raiseBookingRefunds(booking, 100, {
+                reasonDetails: `Venue did not respond to booking ${booking._id} in time`,
+            });
+            const venue = await Venue.findById(booking.venue?._id || booking.venue);
+            if (venue) {
+                releaseBookingDays(venue, booking);
+                await venue.save({ validateModifiedOnly: true });
+            }
+            const refunded = refunds.reduce((sum, r) => sum + r.amount, 0);
+            await notificationService.createNotification({
+                userId: booking.user,
+                type: 'booking_cancelled',
+                title: 'Booking request expired',
+                message: `${booking.venue?.name || 'The venue'} did not answer your booking request in time, so it has expired.`
+                    + (refunded > 0 ? ` Your payment of ₹${refunded} will be refunded.` : ' Nothing was charged.'),
+                data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/dashboard/bookings/${booking._id}` },
+                priority: 'high',
+                channel: 'all'
+            });
+            if (booking.venue?.owner) {
+                await notificationService.createNotification({
+                    userId: booking.venue.owner,
+                    type: 'booking_cancelled',
+                    title: 'Booking request expired',
+                    message: `A booking request for ${booking.venue.name} was not answered in time and has expired.`,
+                    data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/venue-portal/bookings/${booking._id}` },
+                    priority: 'medium',
+                    channel: 'all'
+                });
+            }
+        } catch (e) {
+            console.error(`  ❌ Failed to finish expiring booking ${booking._id}:`, e.message);
+        }
+    }
+}
+
+/**
+ * Accepted bookings the guest did not pay for by paymentDueAt (plus a short
+ * grace for a checkout under way): cancelled, dates released, both sides told.
+ * Nothing was paid, so there is nothing to refund. A payment that still lands
+ * afterwards is raised for a refund by bookingService.
+ */
+async function expireUnpaidAcceptedBookings(now = new Date()) {
+    const cutoff = new Date(now.getTime() - PAYMENT_GRACE_MS);
+    while (true) {
+        const booking = await Booking.findOneAndUpdate(
+            { status: 'accepted', paymentStatus: { $ne: 'paid' }, paymentDueAt: { $ne: null, $lte: cutoff } },
+            { $set: { status: 'cancelled', cancellationReason: 'payment_not_received', 'paymentSchedule.balanceStatus': 'not_applicable' } },
+            { new: true }
+        ).populate('venue', 'name owner');
+        if (!booking) break;
+
+        try {
+            const venue = await Venue.findById(booking.venue?._id || booking.venue);
+            if (venue) {
+                releaseBookingDays(venue, booking);
+                await venue.save({ validateModifiedOnly: true });
+            }
+            const venueName = booking.venue?.name || 'the venue';
+            await notificationService.createNotification({
+                userId: booking.user,
+                type: 'booking_cancelled',
+                title: 'Booking cancelled - not paid',
+                message: `Your booking at ${venueName} was not paid for by ${formatWhen(booking.paymentDueAt)}, so it is cancelled and the date is released.`,
+                data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/dashboard/bookings/${booking._id}` },
+                priority: 'high',
+                channel: 'all'
+            });
+            if (booking.venue?.owner) {
+                await notificationService.createNotification({
+                    userId: booking.venue.owner,
+                    type: 'booking_cancelled',
+                    title: 'Booking cancelled - not paid',
+                    message: `The guest did not pay for their booking at ${venueName} in time. It is cancelled and the date is free again.`,
+                    data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/venue-portal/bookings/${booking._id}` },
+                    priority: 'medium',
+                    channel: 'all'
+                });
+            }
+        } catch (e) {
+            console.error(`  ❌ Failed to finish cancelling unpaid booking ${booking._id}:`, e.message);
+        }
     }
 }
 
@@ -236,7 +480,11 @@ async function enforceBalanceDeadlines() {
                 {
                     'paymentSchedule.type': 'installment',
                     'paymentSchedule.balanceStatus': 'pending',
-                    'paymentSchedule.balanceDueAt': { $lte: now }
+                    'paymentSchedule.balanceDueAt': { $lte: now },
+                    // Only an accepted booking forfeits its deposit. A request the
+                    // venue never answered is expired with a full refund instead
+                    // (expireUnansweredRequests).
+                    status: 'accepted'
                 },
                 {
                     $set: {
@@ -258,7 +506,7 @@ async function enforceBalanceDeadlines() {
                 const venue = await Venue.findById(venueId);
                 if (venue) {
                     releaseBookingDays(venue, claimed);
-                    await venue.save();
+                    await venue.save({ validateModifiedOnly: true });
                 }
             } catch (e) {
                 console.error(`  ❌ Failed to release venue date for booking ${claimed._id}:`, e.message);
@@ -293,6 +541,9 @@ async function enforceBalanceDeadlines() {
             }
         }
 
+        await expireUnansweredRequests(now);
+        await expireUnpaidAcceptedBookings(now);
+
         console.log('✅ Balance deadline enforcement job completed');
     } catch (error) {
         console.error('❌ Balance deadline enforcement job failed:', error.message);
@@ -303,6 +554,17 @@ async function enforceBalanceDeadlines() {
  * Initialize all scheduled jobs
  */
 function initScheduledJobs() {
+    // PM2 cluster mode runs one copy of this process per instance (2 in
+    // ecosystem.config.js), and every copy used to schedule every job - so each
+    // reminder email went out twice and deadline enforcement ran concurrently
+    // against the same bookings. PM2 numbers its instances via NODE_APP_INSTANCE;
+    // only the first runs the jobs. Outside PM2 it is unset and the jobs run.
+    const instance = process.env.NODE_APP_INSTANCE;
+    if (instance !== undefined && instance !== '0') {
+        console.log(`⏰ Scheduled jobs skipped on instance ${instance} (instance 0 runs them)`);
+        return;
+    }
+
     console.log('⏰ Initializing scheduled jobs...');
 
     // Run event reminders every 10 minutes
@@ -333,8 +595,8 @@ function initScheduledJobs() {
     console.log('✅ Scheduled jobs initialized:');
     console.log('   - Event reminders: Every 10 minutes');
     console.log('   - Event lifecycle (ongoing/completed): Every 10 minutes + on boot');
-    console.log('   - Balance reminders: Daily at 09:00');
-    console.log('   - Balance deadline enforcement: Hourly at :05');
+    console.log('   - Balance reminders, final notices, day-before reminders: Daily at 09:00');
+    console.log('   - Balance deadlines, expired requests, unpaid bookings: Hourly at :05');
 }
 
 module.exports = {
@@ -342,6 +604,10 @@ module.exports = {
     sendEventReminders, // Export for manual testing
     sendBalanceReminders, // Export for manual testing
     enforceBalanceDeadlines, // Export for manual testing
+    sendBalanceFinalNotices,
+    sendDayBeforeReminders,
+    expireUnansweredRequests,
+    expireUnpaidAcceptedBookings,
     syncEventLifecycle,
     // Exported so the filters can be checked without a database.
     LIVE_EVENT_STATUSES,

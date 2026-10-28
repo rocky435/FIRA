@@ -44,13 +44,23 @@ import FilterPanel, { type FilterGroup } from '@/components/ui/FilterPanel';
 // exploration test's setup conventions.
 // ---------------------------------------------------------------------------
 
+// InquiryForm navigates to the chat after sending (router.push), so it needs an
+// app router; the tests only care about the form itself.
+vi.mock('next/navigation', () => ({
+    useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn() }),
+    usePathname: () => '/',
+    useSearchParams: () => new URLSearchParams(),
+}));
+
+// Enquiries need a signed-in user; signed out, the form is only a sign-in prompt.
 vi.mock('@/contexts/AuthContext', () => ({
-    useAuth: () => ({ isAuthenticated: false, user: null }),
+    useAuth: () => ({ isAuthenticated: true, user: { _id: 'u1', name: 'Alice' } }),
 }));
 
 const submitInquiry = vi.fn().mockResolvedValue({});
 vi.mock('@/lib/api', () => ({
     inquiriesApi: { submit: (...a: unknown[]) => submitInquiry(...a) },
+    messagesApi: { startInquiryConversation: vi.fn().mockResolvedValue({ conversation: { _id: 'c1' } }) },
     brandsApi: { createPost: vi.fn().mockResolvedValue({}) },
     uploadApi: { multiple: vi.fn().mockResolvedValue({ images: [] }) },
 }));
@@ -77,7 +87,7 @@ function typeSequentially(el: HTMLInputElement | HTMLTextAreaElement, text: stri
 // so typing must retain focus AND the controlled value must reflect state.
 // ===========================================================================
 describe('CC-1 preservation — focus-stable input keeps focus + reflects state (3.1, 3.2)', () => {
-    it('typing into the Ask Enquiry name field keeps focus and records every character', () => {
+    it('typing into the Ask Enquiry question field keeps focus and records every character', () => {
         render(
             <ToastProvider>
                 <InquiryForm
@@ -89,13 +99,13 @@ describe('CC-1 preservation — focus-stable input keeps focus + reflects state 
             </ToastProvider>
         );
 
-        const name = screen.getByLabelText('Your Name') as HTMLInputElement;
-        typeSequentially(name, 'Alice Wonderland');
+        const question = screen.getByLabelText(/Your question/) as HTMLTextAreaElement;
+        typeSequentially(question, 'Alice Wonderland');
 
         // Preservation: focus retained through the whole session (3.1) …
-        expect(document.activeElement).toBe(name);
+        expect(document.activeElement).toBe(question);
         // … and the controlled value reflects the typed state (3.2).
-        expect(name.value).toBe('Alice Wonderland');
+        expect(question.value).toBe('Alice Wonderland');
     });
 });
 

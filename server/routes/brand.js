@@ -4,6 +4,8 @@ const brandService = require('../services/brandService');
 const postService = require('../services/postService');
 const eventService = require('../services/eventService');
 const auth = require('../middleware/auth');
+const { optionalAuth } = auth;
+const { hasRole } = require('../utils/roleUtils');
 
 // GET /api/brands - Get all brands with filters
 router.get('/', async (req, res) => {
@@ -52,9 +54,15 @@ router.get('/my-profile', auth, async (req, res) => {
 });
 
 // GET /api/brands/:id - Get brand by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', optionalAuth, async (req, res) => {
     try {
         const brand = await brandService.getBrandById(req.params.id);
+        // Pending, rejected and blocked brand pages are for their owner and admins.
+        const ownerId = String(brand.user?._id || brand.user);
+        const canSeeHidden = !!req.user && (String(req.user._id) === ownerId || hasRole(req.user, 'admin'));
+        if (brand.status !== 'approved' && !canSeeHidden) {
+            return res.status(404).json({ error: 'Brand not found' });
+        }
         res.json(brand);
     } catch (error) {
         res.status(404).json({ error: error.message });

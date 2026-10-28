@@ -116,7 +116,7 @@ export default function ReadyToGoPage() {
                                     Ready to <span className="text-emerald-400">Go</span>
                                 </h1>
                                 <p className="text-gray-300 text-lg">
-                                    Events starting within the next 24 hours — grab your tickets before it's too late!
+                                    Events starting within the next 24 hours — grab your tickets before it&apos;s too late!
                                 </p>
                             </div>
                         </FadeIn>

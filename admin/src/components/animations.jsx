@@ -1,4 +1,5 @@
-import { motion } from 'framer-motion';
+// Capitalised so the linter sees <Motion.div> as a use (it ignores JSX member names).
+import { motion as Motion } from 'framer-motion';
 
 const directionOffset = {
     up: { y: 40 },
@@ -34,7 +35,7 @@ export function FadeIn({
     };
 
     return (
-        <motion.div
+        <Motion.div
             initial="hidden"
             whileInView="visible"
             viewport={{ once, amount: 0.2 }}
@@ -42,7 +43,7 @@ export function FadeIn({
             className={className}
         >
             {children}
-        </motion.div>
+        </Motion.div>
     );
 }
 
@@ -70,7 +71,7 @@ export function SlideUp({
     };
 
     return (
-        <motion.div
+        <Motion.div
             initial="hidden"
             whileInView="visible"
             viewport={{ once, amount: 0.15 }}
@@ -78,6 +79,6 @@ export function SlideUp({
             className={className}
         >
             {children}
-        </motion.div>
+        </Motion.div>
     );
 }

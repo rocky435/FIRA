@@ -14,11 +14,9 @@
  * `type`, so one connection serves all features and an unknown type is simply
  * ignored by older clients.
  *
- * ponytail: in-process Map. Ceiling: this only fans out to sockets held by THIS
- * process, so with more than one server instance a user connected to instance A
- * misses events published on instance B. Redis is already configured
- * (server/config/redis.js) - the upgrade is to publish to a Redis channel here
- * and have each instance relay from its subscriber into its local map.
+ * Each instance keeps the sockets it holds in an in-process Map; send() goes
+ * through a Redis channel so an event raised on one instance reaches a user
+ * connected to another (see "Cross-instance fan-out" below).
  */
 
 // userId (string) -> Set<Response>
@@ -54,6 +52,7 @@ function register(userId, res) {
 
     if (!clients.has(key)) clients.set(key, new Set());
     clients.get(key).add(res);
+    ensureSubscribed();
 
     return function unregister() {
         clearInterval(heartbeat);
@@ -64,12 +63,57 @@ function register(userId, res) {
     };
 }
 
+/*
+ * Cross-instance fan-out. Under PM2 cluster mode a user's stream is held by one
+ * instance, while the event that should reach them can happen on another - so
+ * about half of all live updates were silently dropped. With Redis up, send()
+ * publishes to a channel every instance subscribes to, and each instance writes
+ * to the sockets it holds. Without Redis (dev, or Redis down) it delivers
+ * in-process, exactly as before.
+ */
+const CHANNEL = 'fira:sse';
+let subscriber = null;
+
+/** Subscribe this instance to the channel, once, when it first holds a stream. */
+function ensureSubscribed() {
+    if (subscriber) return;
+    const { getRedisClient } = require('../config/redis');
+    const client = getRedisClient();
+    if (!client) return;
+
+    // A subscribed connection can't run other commands, so it gets its own.
+    // Offline queue on: subscribe may be issued before the connection is up, and
+    // ioredis re-subscribes by itself after a reconnect.
+    subscriber = client.duplicate({ enableOfflineQueue: true });
+    subscriber.on('error', () => { /* the main client already logs Redis outages */ });
+    subscriber.on('message', (_channel, raw) => {
+        try {
+            const { userId, payload } = JSON.parse(raw);
+            deliverLocal(userId, payload);
+        } catch (err) {
+            console.error('SSE relay failed:', err.message);
+        }
+    });
+    subscriber.subscribe(CHANNEL).catch(err => console.error('SSE subscribe failed:', err.message));
+}
+
 /**
- * Push a payload to every open connection for one user. No-op when the user has
- * no connection, which is the normal case - delivery here is a live-view
- * optimisation, never the system of record. Persist first, then send.
+ * Push a payload to every open connection for one user, on whichever instance
+ * holds it. Delivery here is a live-view optimisation, never the system of
+ * record: persist first, then send. Fire-and-forget.
  */
 function send(userId, payload) {
+    const { isRedisAvailable, getRedisClient } = require('../config/redis');
+    if (isRedisAvailable()) {
+        const message = JSON.stringify({ userId: String(userId), payload });
+        getRedisClient().publish(CHANNEL, message).catch(() => deliverLocal(userId, payload));
+        return;
+    }
+    deliverLocal(userId, payload);
+}
+
+/** Write a payload to the connections for one user held by this instance. */
+function deliverLocal(userId, payload) {
     const set = clients.get(String(userId));
     if (!set || set.size === 0) return false;
 
@@ -90,4 +134,4 @@ function sendToMany(userIds, payload) {
     for (const id of userIds) send(id, payload);
 }
 
-module.exports = { register, send, sendToMany };
+module.exports = { register, send, sendToMany, deliverLocal };

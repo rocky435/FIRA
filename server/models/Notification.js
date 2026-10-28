@@ -9,6 +9,13 @@ const notificationSchema = new mongoose.Schema({
     type: {
         type: String,
         enum: [
+            // Used by the balance reminder / deadline jobs and the event
+            // cancellation refunds, but missing here - so the reminder job failed
+            // on its first booking (no balance reminder was ever sent) and those
+            // notices never reached anyone.
+            'balance_due_reminder',
+            'booking_forfeited',
+            'refund',
             'booking_request',
             'booking_accepted',
             'booking_rejected',

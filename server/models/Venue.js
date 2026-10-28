@@ -50,6 +50,14 @@ const venueSchema = new mongoose.Schema({
         basePrice: { type: Number, required: true },
         /** Deprecated and no longer written. Old docs may still carry a value. */
         pricePerHour: { type: Number, default: null },
+        // Demand pricing (see utils/venuePricing.js): a Saturday/Sunday rate, and
+        // rates for particular dates. Both optional; the day rate covers the rest.
+        weekendPricePerDay: { type: Number, default: null },
+        specialDates: [{
+            _id: false,
+            date: { type: String, required: true }, // 'YYYY-MM-DD'
+            pricePerDay: { type: Number, required: true, min: 0 }
+        }],
         currency: { type: String, default: 'INR' }
     },
     // Platform fee % applied to the booking-advance billing (Flow 1/3). Persisted
@@ -124,7 +132,9 @@ const venueSchema = new mongoose.Schema({
             type: { type: String, enum: ['busy', 'booked'], default: 'busy' },
             // The personal booking that took this slot, so releasing it on
             // cancel/forfeit removes exactly its slots across every day it spans.
-            booking: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: null }
+            booking: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: null },
+            // Likewise the event that took it, released when the event is cancelled.
+            event: { type: mongoose.Schema.Types.ObjectId, ref: 'Event', default: null }
         }]
     }],
     daySlots: [{
@@ -142,6 +152,17 @@ const venueSchema = new mongoose.Schema({
     rating: {
         average: { type: Number, default: 0 },
         count: { type: Number, default: 0 }
+    },
+    /**
+     * Set when the owner asks to remove a listing that customers have already
+     * paid for (sold tickets / upcoming bookings). The owner cannot remove it
+     * themselves; an admin reviews the request and removes it from the admin
+     * panel, which cancels what was sold and raises the refunds.
+     */
+    deletionRequest: {
+        requestedAt: { type: Date, default: null },
+        requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        reason: { type: String, default: null }
     },
     isActive: {
         type: Boolean,

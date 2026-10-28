@@ -279,7 +279,11 @@ export default function CreatorsPage() {
         }
     }, [page, isFiltered, searchQuery, selectedType, selectedSort]);
 
-    const Section = ({ title, data, type, sort }: { title: string, data: any[], type?: string, sort?: string }) => {
+    // A render helper, not a component: declared inside the page so it can read
+    // the page's state, and called as a function so React does not see a brand-new
+    // component type on every render (which remounted each section - resetting
+    // its scroll position and replaying its animation - on every state change).
+    const renderSection = ({ title, data, type, sort }: { title: string, data: any[], type?: string, sort?: string }) => {
         if (!data || data.length === 0) return null;
 
         return (
@@ -403,9 +407,9 @@ export default function CreatorsPage() {
 
                     {!isLoading && !isFiltered && (
                         <>
-                            <Section title="Popular Bands" data={sections.bands} type="Band" />
-                            <Section title="Featured Brands" data={sections.brands} type="Brand" />
-                            <Section title="Top Organizers" data={sections.organizers} type="Organizer" />
+                            {renderSection({ title: "Popular Bands", data: sections.bands, type: "Band" })}
+                            {renderSection({ title: "Featured Brands", data: sections.brands, type: "Brand" })}
+                            {renderSection({ title: "Top Organizers", data: sections.organizers, type: "Organizer" })}
 
                             {/* CTA Section - Only show for non-creators */}
                             {!isCreator && (
@@ -431,8 +435,8 @@ export default function CreatorsPage() {
                                 </FadeIn>
                             )}
 
-                            <Section title="Trending Now" data={sections.trending} sort="trending" />
-                            <Section title="Top Rated" data={sections.top} sort="top" />
+                            {renderSection({ title: "Trending Now", data: sections.trending, sort: "trending" })}
+                            {renderSection({ title: "Top Rated", data: sections.top, sort: "top" })}
 
                             {/* Near You Section - Commented out for now
                             <FadeIn>
@@ -526,7 +530,7 @@ export default function CreatorsPage() {
 
                             {!hasMore && gridData.length > 0 && (
                                 <div className="text-center py-8 text-gray-300">
-                                    <p>You've seen all results</p>
+                                    <p>You&apos;ve seen all results</p>
                                 </div>
                             )}
                         </>

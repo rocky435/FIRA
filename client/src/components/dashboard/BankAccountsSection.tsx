@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Button, Modal } from '@/components/ui';
+import { Button, Input, Modal } from '@/components/ui';
 import { useToast } from '@/components/ui/Toast';
 import { useBankAccounts, maskAccountNumber } from '@/hooks/useBankAccounts';
 import BankAccountForm from './BankAccountForm';
@@ -18,6 +18,18 @@ export default function BankAccountsSection() {
     const { accounts, isLoading, isMutating, add, setDefault, remove } = useBankAccounts();
     const [isAddOpen, setIsAddOpen] = useState(false);
     const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+    const [pendingDefault, setPendingDefault] = useState<string | null>(null);
+    // Switching the default or deleting changes where earnings are paid, so both
+    // ask for the account password; the server enforces it.
+    const [password, setPassword] = useState('');
+    const [passwordError, setPasswordError] = useState('');
+
+    const closeConfirm = () => {
+        setPendingDelete(null);
+        setPendingDefault(null);
+        setPassword('');
+        setPasswordError('');
+    };
 
     const handleAdd = async (details: Parameters<typeof add>[0]) => {
         const result = await add(details);
@@ -31,10 +43,32 @@ export default function BankAccountsSection() {
 
     const confirmDelete = async () => {
         if (!pendingDelete) return;
-        await remove(pendingDelete);
-        setPendingDelete(null);
+        if (!password) { setPasswordError('Enter your account password'); return; }
+        const result = await remove(pendingDelete, password);
+        if (!result.ok) { setPasswordError(result.error); return; }
+        closeConfirm();
         showToast('Payout account removed', 'success');
     };
+
+    const confirmDefault = async () => {
+        if (!pendingDefault) return;
+        if (!password) { setPasswordError('Enter your account password'); return; }
+        const result = await setDefault(pendingDefault, password);
+        if (!result.ok) { setPasswordError(result.error); return; }
+        closeConfirm();
+        showToast('Default payout account changed', 'success');
+    };
+
+    const passwordField = (
+        <Input
+            label="Your account password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => { setPassword(e.target.value); setPasswordError(''); }}
+            error={passwordError}
+        />
+    );
 
     return (
         <div className="bg-black/70 backdrop-blur-sm border border-white/10 rounded-2xl p-6 mb-6">
@@ -97,7 +131,7 @@ export default function BankAccountsSection() {
                                     {!account.isDefault && (
                                         <button
                                             type="button"
-                                            onClick={() => setDefault(account._id)}
+                                            onClick={() => setPendingDefault(account._id)}
                                             disabled={isMutating}
                                             className="text-xs text-violet-400 hover:text-violet-300 disabled:text-gray-500"
                                         >
@@ -125,17 +159,33 @@ export default function BankAccountsSection() {
 
             {/* Deleting is permanent, so it asks. Past payouts keep their own copy of
                 the details they were sent to, so history is not affected. */}
-            <Modal isOpen={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title="Delete this account?" size="sm">
-                <p className="text-sm text-gray-300">
+            <Modal isOpen={Boolean(pendingDelete)} onClose={closeConfirm} title="Delete this account?" size="sm">
+                <p className="text-sm text-gray-300 mb-4">
                     This removes the account from your saved payout options. Payouts already sent are
                     unaffected. If it was your default, the next account becomes the default.
                 </p>
+                {passwordField}
                 <div className="flex gap-3 pt-5">
-                    <Button variant="secondary" className="flex-1" onClick={() => setPendingDelete(null)}>
+                    <Button variant="secondary" className="flex-1" onClick={closeConfirm}>
                         Keep it
                     </Button>
                     <Button className="flex-1 bg-red-600 hover:bg-red-500" onClick={confirmDelete} disabled={isMutating}>
                         Delete
+                    </Button>
+                </div>
+            </Modal>
+
+            <Modal isOpen={Boolean(pendingDefault)} onClose={closeConfirm} title="Change default payout account?" size="sm">
+                <p className="text-sm text-gray-300 mb-4">
+                    Future payouts will go to this account. We will email you about the change.
+                </p>
+                {passwordField}
+                <div className="flex gap-3 pt-5">
+                    <Button variant="secondary" className="flex-1" onClick={closeConfirm}>
+                        Cancel
+                    </Button>
+                    <Button className="flex-1" onClick={confirmDefault} disabled={isMutating}>
+                        Make default
                     </Button>
                 </div>
             </Modal>
@@ -160,6 +210,8 @@ function AddAccountBody({
             // The first account is the default by definition, so the toggle would be
             // a checkbox you cannot meaningfully uncheck.
             showDefaultToggle={!isFirst}
+            // Adding a second account changes where earnings can go: password needed.
+            requirePassword={!isFirst}
         />
     );
 }

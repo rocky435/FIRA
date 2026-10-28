@@ -198,9 +198,8 @@ const brandService = {
     // Pure: a copy of an update payload with the protected fields removed. Kept
     // separate so it is unit-testable without a DB round-trip.
     stripProtectedFields(data = {}) {
-        const safe = { ...data };
-        for (const field of brandService.PROTECTED_BRAND_FIELDS) delete safe[field];
-        return safe;
+        // Dotted paths included: {"stats.followers": 1000000} used to slip past.
+        return require('../utils/stripProtected').stripProtected(data, brandService.PROTECTED_BRAND_FIELDS);
     },
 
     // Create or Update Brand Profile

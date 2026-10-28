@@ -14,6 +14,9 @@ interface VenueLikePricing {
     pricing?: {
         pricePerDay?: number | null;
         basePrice?: number | null;
+        // Demand pricing: a Saturday/Sunday rate and rates for particular dates.
+        weekendPricePerDay?: number | null;
+        specialDates?: { date: string; pricePerDay: number }[] | null;
         currency?: string;
     } | null;
 }
@@ -43,13 +46,48 @@ export function billableDays(startDate: string, endDate?: string | null): number
     return Math.max(1, diffDays + 1);
 }
 
-/** What the guest owes before the platform's advance percentage is applied. */
+/**
+ * The rate for one day ('YYYY-MM-DD'): a special-date price, else the weekend
+ * rate on a Saturday or Sunday, else the day rate. Mirrors server
+ * utils/venuePricing.js priceForDay.
+ */
+export function venuePriceForDay(venue: VenueLikePricing | null | undefined, dayKey: string): number {
+    const pricing = venue?.pricing;
+    const special = pricing?.specialDates?.find(d => d.date === dayKey);
+    if (special && special.pricePerDay > 0) return special.pricePerDay;
+    const weekday = new Date(`${dayKey}T00:00:00Z`).getUTCDay();
+    if ((weekday === 0 || weekday === 6) && (pricing?.weekendPricePerDay ?? 0) > 0) return pricing!.weekendPricePerDay!;
+    return venueDayRate(venue);
+}
+
+/** Whether the venue charges differently on some days (weekend or special dates). */
+export function hasDemandPricing(venue: VenueLikePricing | null | undefined): boolean {
+    const pricing = venue?.pricing;
+    return (pricing?.weekendPricePerDay ?? 0) > 0 || (pricing?.specialDates?.length ?? 0) > 0;
+}
+
+/** Every 'YYYY-MM-DD' a booking covers, start to end inclusive (as the server counts them). */
+export function bookingDayKeys(startDate: string, endDate?: string | null): string[] {
+    if (!startDate) return [];
+    const first = Date.parse(`${startDate.slice(0, 10)}T00:00:00Z`);
+    const last = endDate ? Date.parse(`${endDate.slice(0, 10)}T00:00:00Z`) : first;
+    if (Number.isNaN(first) || Number.isNaN(last)) return [];
+    const keys: string[] = [];
+    for (let t = first; t <= last && keys.length < 31; t += 86_400_000) {
+        keys.push(new Date(t).toISOString().slice(0, 10));
+    }
+    return keys;
+}
+
+/** What the guest owes before the platform's advance percentage is applied: each day at its own rate. */
 export function venueBookingTotal(
     venue: VenueLikePricing | null | undefined,
     startDate: string,
     endDate?: string | null
 ): number {
-    return roundMoney(venueDayRate(venue) * billableDays(startDate, endDate));
+    const keys = bookingDayKeys(startDate, endDate);
+    if (keys.length === 0) return roundMoney(venueDayRate(venue) * billableDays(startDate, endDate));
+    return roundMoney(keys.reduce((sum, key) => sum + venuePriceForDay(venue, key), 0));
 }
 
 /**

@@ -156,6 +156,13 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // Bumped on password change/reset. Tokens carry the version they were issued
+  // at (`tv`); the auth middleware refuses any older one, which signs out every
+  // existing session. Tokens issued before this field existed read as 0.
+  tokenVersion: {
+    type: Number,
+    default: 0
+  },
   // Government ID fields (for venue owners)
   govIdType: {
     type: String,
@@ -196,5 +203,13 @@ userSchema.index({ followingBrands: 1 });
 
 // Derives citySlug from city on every write path (signup, profile edit, admin).
 require('../utils/citySlugHook').attachCitySlug(userSchema);
+
+// Bank account and government ID numbers are encrypted in the database and
+// decrypted on read (utils/fieldEncryption.js).
+require('../utils/fieldEncryption').encryptFields(userSchema, [
+  'bankAccounts.accountNumber',
+  'bankDetails.accountNumber',
+  'govIdNumber',
+]);
 
 module.exports = mongoose.model('User', userSchema);

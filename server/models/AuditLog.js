@@ -19,12 +19,16 @@ const auditLogSchema = new mongoose.Schema({
         // filter money movement apart from ordinary status edits.
         enum: ['approve', 'reject', 'block', 'unblock', 'feature', 'unfeature', 'delete', 'update',
             // 'payout' is from the removed raise-payout step; kept for old rows.
-            'settle', 'reverse', 'payout'],
+            'settle', 'reverse', 'payout',
+            // 'sale': a ticket sold. Its user is the buyer, not an admin.
+            'sale'],
         required: true
     },
     entityType: {
         type: String,
-        enum: ['event', 'venue', 'creator', 'user'],
+        // 'refund': admin approve/reject decisions on customer refunds.
+        // 'ticket': ticket sales.
+        enum: ['event', 'venue', 'creator', 'user', 'refund', 'ticket'],
         required: true
     },
     entityId: {

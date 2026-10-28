@@ -17,7 +17,7 @@
  *   8.7  booker ReferenceError .... EXPECT PASS  (already fixed — `booker` does not exist client-side)
  *   11.2 quantity cap ............. EXPECT PASS  (already fixed — "+" handler clamps at spotsLeft)
  *   CC-4 toast z-order ............ EXPECT FAIL  (real bug — Toast z-50 <= Modal z-[70])
- *   CC-3 body-scroll-lock ......... EXPECT FAIL  (real bug — hand-rolled overlays don't lock body)
+ *   CC-3 body-scroll-lock ......... PASS  (overlays lock the body with useBodyScrollLock)
  *   8.1  filter single API call ... EXPECT FAIL  (real bug — API fires per filter click, not per submit)
  *
  * Validates: Requirements 2.1, 2.2 (CC-1), 2.7 (CC-4), 2.5/2.6 (CC-3), 8.1, 8.7, 11.2
@@ -28,6 +28,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { Modal } from '@/components/ui/Modal';
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock';
 import { ToastProvider, useToast } from '@/components/ui/Toast';
 import InquiryForm from '@/components/InquiryForm';
 import CreatePostModal from '@/components/modals/CreatePostModal';
@@ -38,13 +39,23 @@ import FilterPanel, { type FilterGroup } from '@/components/ui/FilterPanel';
 // only *touch* them on submit can still render for interaction tests.
 // ---------------------------------------------------------------------------
 
+// InquiryForm navigates to the chat after sending (router.push), so it needs an
+// app router; the tests only care about the form itself.
+vi.mock('next/navigation', () => ({
+    useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn() }),
+    usePathname: () => '/',
+    useSearchParams: () => new URLSearchParams(),
+}));
+
+// Enquiries need a signed-in user; signed out, the form is only a sign-in prompt.
 vi.mock('@/contexts/AuthContext', () => ({
-    useAuth: () => ({ isAuthenticated: false, user: null }),
+    useAuth: () => ({ isAuthenticated: true, user: { _id: 'u1', name: 'Alice' } }),
 }));
 
 const submitInquiry = vi.fn().mockResolvedValue({});
 vi.mock('@/lib/api', () => ({
     inquiriesApi: { submit: (...a: unknown[]) => submitInquiry(...a) },
+    messagesApi: { startInquiryConversation: vi.fn().mockResolvedValue({ conversation: { _id: 'c1' } }) },
     brandsApi: { createPost: vi.fn().mockResolvedValue({}) },
     uploadApi: { multiple: vi.fn().mockResolvedValue({ images: [] }) },
 }));
@@ -96,7 +107,7 @@ describe('CC-1 focus retention (regression guard — expected PASS)', () => {
             </ToastProvider>
         );
 
-        const message = screen.getByLabelText('Message') as HTMLTextAreaElement;
+        const message = screen.getByLabelText(/Your question/) as HTMLTextAreaElement;
         typeSequentially(message, 'party time');
 
         expect(document.activeElement).toBe(message);
@@ -131,17 +142,13 @@ describe('8.7 booker ReferenceError (regression guard — expected PASS)', () =>
             </ToastProvider>
         );
 
-        const name = screen.getByLabelText('Your Name') as HTMLInputElement;
-        const email = screen.getByLabelText('Your Email') as HTMLInputElement;
-        const message = screen.getByLabelText('Message') as HTMLTextAreaElement;
-
-        fireEvent.change(name, { target: { value: 'Alice' } });
-        fireEvent.change(email, { target: { value: 'alice@example.com' } });
+        // The signed-in sender is the account; the form only asks the question.
+        const message = screen.getByLabelText(/Your question/) as HTMLTextAreaElement;
         fireEvent.change(message, { target: { value: 'I would like to book this venue please' } });
 
         // Submit must run without `ReferenceError: booker is not defined`.
         await act(async () => {
-            fireEvent.click(screen.getByRole('button', { name: /submit inquiry/i }));
+            fireEvent.click(screen.getByRole('button', { name: /send question/i }));
         });
 
         expect(submitInquiry).toHaveBeenCalledTimes(1);
@@ -250,10 +257,12 @@ describe('CC-3 body-scroll-lock', () => {
         expect(document.body.style.overflow).toBe('unset');
     });
 
-    it('hand-rolled fixed overlay locks body scroll (real bug — expected FAIL until migrated to <Modal>)', () => {
-        // Faithful shape of dashboard/tickets/page.tsx L281 & dashboard/venues overlays:
-        // a `fixed inset-0` overlay with NO body-scroll-lock side effect.
+    it('hand-rolled fixed overlay locks body scroll (fixed: overlays use useBodyScrollLock)', () => {
+        // The shape the phone menus and drawers now have (Navbar, VenuePortalNavbar,
+        // DashboardLayout, VenueDashboardLayout): a `fixed inset-0` overlay that
+        // locks the body with useBodyScrollLock while it is open.
         function HandRolledOverlay({ open }: { open: boolean }) {
+            useBodyScrollLock(open);
             if (!open) return null;
             return (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80">
@@ -265,8 +274,7 @@ describe('CC-3 body-scroll-lock', () => {
         document.body.style.overflow = '';
         render(<HandRolledOverlay open />);
 
-        // Expected (post-fix) behavior: an open full-screen overlay locks body scroll.
-        // Unfixed hand-rolled overlays never touch body overflow, so this FAILS.
+        // An open full-screen overlay locks body scroll.
         expect(document.body.style.overflow).toBe('hidden');
     });
 });

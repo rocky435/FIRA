@@ -196,7 +196,7 @@ router.post('/:id/cancel', auth, /** @param {AuthenticatedRequest} req @param {R
 router.post('/:id/initiate-payment', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         // Enforce using authenticated user
-        const result = await bookingService.initiateBookingPayment(req.params.id, req.user._id);
+        const result = await bookingService.initiateBookingPayment(req.params.id, req.user._id, { plan: req.body?.plan });
         res.json(result);
     } catch (error) {
         res.status(400).json({ error: error.message });

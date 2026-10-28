@@ -26,6 +26,8 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 5000,
+        // Booking times ("HH:MM") are Indian local time; EC2 defaults to UTC.
+        TZ: 'Asia/Kolkata',
       },
       // Graceful shutdown: PM2 sends SIGINT, shutdown.js drains connections
       kill_timeout: 30000,

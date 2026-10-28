@@ -5,7 +5,7 @@ import { beforeAll, afterAll, afterEach } from 'vitest';
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({ instance: { launchTimeout: 60000 } });
   const uri = mongoServer.getUri();
   await mongoose.connect(uri);
 });

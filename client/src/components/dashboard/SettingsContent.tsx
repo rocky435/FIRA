@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button, Input, Modal, PasswordStrengthIndicator } from '@/components/ui';
 import { FadeIn, SlideUp } from '@/components/animations';
 import { useToast } from '@/components/ui/Toast';
-import { usersApi, authApi } from '@/lib/api';
+import { usersApi, authApi, type AccountDeletionBlockers } from '@/lib/api';
 import BankAccountsSection from '@/components/dashboard/BankAccountsSection';
 import PushNotificationToggle from '@/components/PushNotificationToggle';
 
@@ -28,7 +28,7 @@ import PushNotificationToggle from '@/components/PushNotificationToggle';
  */
 export default function SettingsContent() {
     const router = useRouter();
-    const { user } = useAuth();
+    const { user, setSession } = useAuth();
     const { showToast } = useToast();
     const [isUpdating, setIsUpdating] = useState(false);
     const [formData, setFormData] = useState({
@@ -55,7 +55,10 @@ export default function SettingsContent() {
         }
         setPwSaving(true);
         try {
-            await authApi.changePassword({ currentPassword: pwForm.current, newPassword: pwForm.next });
+            const res = await authApi.changePassword({ currentPassword: pwForm.current, newPassword: pwForm.next });
+            // Changing the password signs out every other session; the server
+            // returns a fresh token so this one stays signed in.
+            if (res.token && user) setSession(user, res.token);
             showToast('Password changed successfully', 'success');
             setPwForm({ current: '', next: '', confirm: '' });
             setPwOpen(false);
@@ -70,6 +73,25 @@ export default function SettingsContent() {
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [deleteConfirm, setDeleteConfirm] = useState('');
     const [isDeleting, setIsDeleting] = useState(false);
+    // Deletion is blocked while anything is upcoming or ongoing; the list of what
+    // is left is fetched when the dialog opens and shown instead of the confirm.
+    const [deletionBlockers, setDeletionBlockers] = useState<AccountDeletionBlockers | null>(null);
+    const [isCheckingDeletion, setIsCheckingDeletion] = useState(false);
+
+    const openDeleteModal = async () => {
+        setDeleteConfirm('');
+        setDeletionBlockers(null);
+        setShowDeleteModal(true);
+        setIsCheckingDeletion(true);
+        try {
+            const { canDelete, blockers } = await usersApi.deletionCheck();
+            setDeletionBlockers(canDelete ? null : blockers);
+        } catch {
+            // The server checks again on delete; a failed pre-check just skips the list.
+        } finally {
+            setIsCheckingDeletion(false);
+        }
+    };
 
     const handleDeleteAccount = async () => {
         setIsDeleting(true);
@@ -359,7 +381,7 @@ export default function SettingsContent() {
                     </p>
                     <Button
                         variant="ghost"
-                        onClick={() => { setDeleteConfirm(''); setShowDeleteModal(true); }}
+                        onClick={openDeleteModal}
                         className="border border-red-500/50 text-red-400 hover:bg-red-500/20"
                     >
                         Delete Account
@@ -374,6 +396,20 @@ export default function SettingsContent() {
                 title="Delete Account"
                 size="md"
             >
+                {isCheckingDeletion ? (
+                    <p className="text-gray-300 text-sm">Checking your account...</p>
+                ) : deletionBlockers ? (
+                    <div className="space-y-4">
+                        <p className="text-gray-300 text-sm">
+                            Your account can&apos;t be deleted yet - these are still upcoming or ongoing.
+                            Once they are finished or cancelled, you can delete your account.
+                        </p>
+                        <DeletionBlockerList blockers={deletionBlockers} />
+                        <Button variant="secondary" onClick={() => setShowDeleteModal(false)} className="w-full justify-center">
+                            OK
+                        </Button>
+                    </div>
+                ) : (
                 <div className="space-y-4">
                     <p className="text-gray-300 text-sm">
                         This permanently deletes your account and its associated data. This action
@@ -406,7 +442,37 @@ export default function SettingsContent() {
                         </Button>
                     </div>
                 </div>
+                )}
             </Modal>
+        </div>
+    );
+}
+
+const formatWhen = (value: string) =>
+    new Date(value).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+
+/** The upcoming/ongoing items that block account deletion, grouped by kind. */
+function DeletionBlockerList({ blockers }: { blockers: AccountDeletionBlockers }) {
+    const groups: { title: string; items: string[] }[] = [
+        { title: 'Your events', items: blockers.events.map(e => `${e.name} · ${formatWhen(e.startDateTime)}`) },
+        { title: 'Bookings at your venues', items: blockers.venueBookings.map(b => `${b.venue || 'Venue'} · ${formatWhen(b.bookingDate)} (${b.status})`) },
+        { title: 'Events at your venues', items: blockers.venueEvents.map(e => `${e.name} · ${formatWhen(e.startDateTime)}`) },
+        { title: 'Your tickets', items: blockers.tickets.map(e => `${e.name} · ${formatWhen(e.startDateTime)}`) },
+        { title: 'Your venue bookings', items: blockers.bookings.map(b => `${b.venue || 'Venue'} · ${formatWhen(b.bookingDate)} (${b.status})`) },
+    ].filter(g => g.items.length > 0);
+
+    return (
+        <div className="space-y-3 max-h-64 overflow-y-auto">
+            {groups.map(group => (
+                <div key={group.title}>
+                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">{group.title}</p>
+                    <ul className="space-y-1">
+                        {group.items.map((item, i) => (
+                            <li key={i} className="text-sm text-white bg-white/[0.04] border border-white/10 rounded-lg px-3 py-2">{item}</li>
+                        ))}
+                    </ul>
+                </div>
+            ))}
         </div>
     );
 }

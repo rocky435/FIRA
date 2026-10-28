@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import Navbar from '@/components/Navbar';
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock';
 import DashboardSwitcher from '@/components/dashboard/DashboardSwitcher';
 import SidebarFooter from '@/components/dashboard/SidebarFooter';
 import { SIDEBAR_LABEL, SIDEBAR_SLOT, sidebarRowClass } from '@/components/dashboard/sidebarChrome';
@@ -45,6 +46,8 @@ export default function VenueDashboardLayout({ children }: VenueDashboardLayoutP
     // What the sidebar should LOOK like. Deliberately not used for the main
     // content margin - on hover the sidebar overlays the page instead.
     const isOpen = isExpanded || (!isMobile && isHovered);
+    // On a phone the open sidebar is a full-screen drawer: lock the page behind it.
+    useBodyScrollLock(isMobile && isExpanded);
 
     // Track screen size
     useEffect(() => {

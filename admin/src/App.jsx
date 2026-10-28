@@ -32,6 +32,7 @@ const Users = lazyWithRetry(() => import('./pages/Users'));
 const UserDetail = lazyWithRetry(() => import('./pages/UserDetail'));
 const AuditTrail = lazyWithRetry(() => import('./pages/AuditTrail'));
 const DiscountCodes = lazyWithRetry(() => import('./pages/DiscountCodes'));
+const Refunds = lazyWithRetry(() => import('./pages/Refunds'));
 const Login = lazyWithRetry(() => import('./pages/Login'));
 
 // Loading fallback — renders within 100ms of navigation (Suspense triggers immediately)
@@ -154,6 +155,7 @@ function App() {
             <Route path="/users/:id" element={<ErrorBoundary fallbackMessage="Failed to load User details."><UserDetail /></ErrorBoundary>} />
             <Route path="/audit-trail" element={<ErrorBoundary fallbackMessage="Failed to load Audit Trail."><AuditTrail /></ErrorBoundary>} />
             <Route path="/discount-codes" element={<ErrorBoundary fallbackMessage="Failed to load Discount Codes."><DiscountCodes /></ErrorBoundary>} />
+            <Route path="/refunds" element={<ErrorBoundary fallbackMessage="Failed to load Refunds."><Refunds /></ErrorBoundary>} />
             <Route path="*" element={<Navigate to="/" />} />
           </Routes>
         </Suspense>

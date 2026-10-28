@@ -28,6 +28,33 @@ SMTP_FROM_EMAIL=your-email@gmail.com
 
 # Client URL (for email links)
 CLIENT_URL=http://localhost:3000
+
+# Encrypts bank account and government ID numbers in the database.
+# Optional: left empty, they are stored unencrypted (the server logs a warning).
+# 64 hex characters. Generate once with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# Back it up with your other secrets: if it is lost, those numbers cannot be read.
+# Never change it once data has been encrypted with it.
+ENCRYPTION_KEY=
+
+# Server timezone - booking times ("18:00") are India time
+TZ=Asia/Kolkata
+
+# Razorpay webhook (Dashboard > Webhooks > /api/payments/webhook, event payment.captured)
+RAZORPAY_WEBHOOK_SECRET=
+
+# Native app push (FCM) - optional; app push is off until one is set. See FCM_SETUP.md.
+# The Firebase service account JSON (raw or base64), or a path to the file.
+FIREBASE_SERVICE_ACCOUNT_JSON=
+# FIREBASE_SERVICE_ACCOUNT_PATH=/path/to/firebase-service-account.json
+```
+
+After deploying, run this once to make old ID documents private. Run it again
+after setting ENCRYPTION_KEY for the first time to encrypt what is already stored:
+
+```bash
+node scripts/encryptSensitiveFields.js --dry-run   # shows what would change
+node scripts/encryptSensitiveFields.js
 ```
 
 ## SMTP Configuration Guide

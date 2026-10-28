@@ -14,6 +14,7 @@ vi.mock('../../models/Booking', () => ({ __esModule: true, default: { deleteMany
 vi.mock('../../models/Ticket', () => ({ __esModule: true, default: { deleteMany: vi.fn() } }));
 vi.mock('../../models/Notification', () => ({ __esModule: true, default: { deleteMany: vi.fn() } }));
 vi.mock('../../models/PushSubscription', () => ({ __esModule: true, default: { deleteMany: vi.fn() } }));
+vi.mock('../../models/DeviceToken', () => ({ __esModule: true, default: { deleteMany: vi.fn() } }));
 vi.mock('../../models/Inquiry', () => ({ __esModule: true, default: { deleteMany: vi.fn() } }));
 
 const User = require('../../models/User');
@@ -25,10 +26,11 @@ const Booking = require('../../models/Booking');
 const Ticket = require('../../models/Ticket');
 const Notification = require('../../models/Notification');
 const PushSubscription = require('../../models/PushSubscription');
+const DeviceToken = require('../../models/DeviceToken');
 const Inquiry = require('../../models/Inquiry');
 const userService = require('../../services/userService');
 
-const ownedModels = [Event, Venue, BrandProfile, Post, Booking, Ticket, Notification, PushSubscription, Inquiry];
+const ownedModels = [Event, Venue, BrandProfile, Post, Booking, Ticket, Notification, PushSubscription, DeviceToken, Inquiry];
 
 describe('deleteAccount - self-deletion cascade (17.4 / 18.4)', () => {
   beforeEach(() => {

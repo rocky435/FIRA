@@ -113,7 +113,7 @@ export default function Venues() {
     // bookings and payout history stay intact for reconciliation.
     const handleDelete = async (venue, e) => {
         e.stopPropagation();
-        if (!window.confirm(`Delete "${venue.name}"?\n\nIt will be removed from all listings. Existing bookings and payout records are kept.`)) return;
+        if (!window.confirm(`Delete "${venue.name}"?\n\nIt will be removed from all listings. Upcoming bookings are cancelled and what guests paid is added to Refunds. A venue with upcoming events cannot be removed until those events are dealt with.`)) return;
         try {
             await adminApi.deleteVenue(venue._id);
             fetchVenues();
@@ -276,6 +276,11 @@ export default function Venues() {
                                                         </svg>
                                                     </div>
                                                     <span className="font-medium text-white group-hover:text-violet-400 transition-colors">{venue.name}</span>
+                                                    {venue.deletionRequest?.requestedAt && (
+                                                        <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-red-500/15 text-red-300 border border-red-500/30" title={venue.deletionRequest.reason || 'The owner asked for this venue to be removed'}>
+                                                            Removal requested
+                                                        </span>
+                                                    )}
                                                 </div>
                                             </td>
                                             <td className="px-6 py-4">

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import logo from '../assets/logo.png';
 import ErrorBoundary from './ErrorBoundary';
 import { getAdminRoleFromToken } from '../lib/adminRole';
@@ -13,6 +13,7 @@ const navItems = [
     { href: '/users', icon: 'users', label: 'Users' },
     { href: '/audit-trail', icon: 'clipboard', label: 'Audit Trail' },
     { href: '/discount-codes', icon: 'tag', label: 'Discount Codes' },
+    { href: '/refunds', icon: 'refund', label: 'Refunds to be done' },
 ];
 
 /**
@@ -27,7 +28,9 @@ function getVisibleNavItems(adminRole) {
         // Hide Users page (contains block/unblock) and Audit Trail — role
         // management pages don't exist as nav items yet; they'll be filtered here
         // when added.
-        const hidden = new Set(['/users', '/audit-trail']);
+        // Refunds too: approving one sends money, which the server limits to
+        // admin and super_admin.
+        const hidden = new Set(['/users', '/audit-trail', '/refunds']);
         return navItems.filter((item) => !hidden.has(item.href));
     }
     // 'admin' — currently sees everything in nav; admin role assignment is
@@ -40,7 +43,6 @@ function getVisibleNavItems(adminRole) {
 // did nothing.
 export default function AdminDashboardLayout({ children, onLogout }) {
     const location = useLocation();
-    const navigate = useNavigate();
     const [user, setUser] = useState(null);
     const [isExpanded, setIsExpanded] = useState(() => {
         // Desktop-only preference - on mobile this opens a full drawer.
@@ -49,9 +51,6 @@ export default function AdminDashboardLayout({ children, onLogout }) {
         return saved === 'true';
     });
     const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
-    const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-    const [isClosing, setIsClosing] = useState(false);
-    const [isAnimating, setIsAnimating] = useState(false);
 
     // Hover-to-peek, kept separate from the pinned `isExpanded` state so that
     // hovering never overwrites the saved preference or shifts the page.
@@ -90,25 +89,6 @@ export default function AdminDashboardLayout({ children, onLogout }) {
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
     }, []);
-
-    // Trigger opening animation
-    useEffect(() => {
-        if (isMobileSidebarOpen && !isClosing) {
-            const timer = setTimeout(() => setIsAnimating(true), 10);
-            return () => clearTimeout(timer);
-        } else {
-            setIsAnimating(false);
-        }
-    }, [isMobileSidebarOpen, isClosing]);
-
-    const closeMobileSidebar = () => {
-        setIsClosing(true);
-        setIsAnimating(false);
-        setTimeout(() => {
-            setIsMobileSidebarOpen(false);
-            setIsClosing(false);
-        }, 300);
-    };
 
     // Persist sidebar state
     useEffect(() => {
@@ -166,6 +146,11 @@ export default function AdminDashboardLayout({ children, onLogout }) {
             'tag': (
                 <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                </svg>
+            ),
+            'refund': (
+                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
                 </svg>
             ),
         };

@@ -1,14 +1,15 @@
 'use strict';
 
 /**
- * Self-check for httpCache middleware.
- * Run: node server/middleware/httpCache.test.js
+ * httpCache middleware: ETags, 304s, and the no-store header. Was a plain
+ * node script, which the test runner reported as a failed file ("no test suite").
  */
 
 const assert = require('assert');
 const { computeETag, publicCache, noStoreCache } = require('./httpCache');
 
-// --- computeETag ---
+describe('httpCache', () => {
+it('computeETag is stable, content-sensitive and weak', () => {
 const etag1 = computeETag('{"events":[]}');
 const etag2 = computeETag('{"events":[]}');
 assert.strictEqual(etag1, etag2, 'Identical content must produce identical ETag');
@@ -17,9 +18,9 @@ const etag3 = computeETag('{"events":[{"id":1}]}');
 assert.notStrictEqual(etag1, etag3, 'Different content must produce different ETag');
 
 assert(etag1.startsWith('W/"'), 'ETag should be a weak validator');
+});
 
-// --- publicCache middleware (304 flow) ---
-{
+it('publicCache middleware (304 flow)', () => {
     const body = { events: [{ id: 'abc' }] };
     const bodyStr = JSON.stringify(body);
     const expectedETag = computeETag(bodyStr);
@@ -44,10 +45,9 @@ assert(etag1.startsWith('W/"'), 'ETag should be a weak validator');
 
     assert.strictEqual(sentStatus, 304, 'Should return 304 when ETag matches');
     assert.strictEqual(ended, true, 'Should end response without body');
-}
+});
 
-// --- publicCache middleware (200 flow with ETag + Cache-Control) ---
-{
+it('publicCache middleware (200 flow with ETag + Cache-Control)', () => {
     const body = { venues: [{ id: 'v1' }] };
     let calledWith = null;
     let headers = {};
@@ -68,10 +68,9 @@ assert(etag1.startsWith('W/"'), 'ETag should be a weak validator');
     assert.strictEqual(headers['Cache-Control'], 'public, max-age=60', 'Should set public cache-control');
     assert(headers['ETag'], 'Should set ETag header');
     assert.deepStrictEqual(calledWith, body, 'Should pass body through to original json');
-}
+});
 
-// --- noStoreCache middleware ---
-{
+it('noStoreCache middleware', () => {
     let headers = {};
     const req = {};
     const res = { setHeader(k, v) { headers[k] = v; } };
@@ -81,6 +80,6 @@ assert(etag1.startsWith('W/"'), 'ETag should be a weak validator');
 
     assert.strictEqual(headers['Cache-Control'], 'no-store', 'Should set no-store');
     assert.strictEqual(nextCalled, true, 'Should call next');
-}
+});
 
-console.log('✅ httpCache self-check: all assertions passed');
+});

@@ -28,6 +28,9 @@ async function makeVenue() {
         name: 'Test Venue',
         pricing: { basePrice: 1000, currency: 'INR' },
         capacity: { min: 10, max: 100 },
+        // Only an approved, active venue takes bookings.
+        status: 'approved',
+        isActive: true,
     });
     return _id;
 }

@@ -576,7 +576,7 @@ const settlementService = {
         // 8 — the insert.
         let created;
         try {
-            created = await Settlement.create(pending);
+            created = /** @type {any} */ (await Settlement.create(/** @type {any} */ (pending)));
         } catch (cause) {
             if (isDuplicateKey(cause)) return await readRecorded(kind, listingId, pending.idempotencyKey);
             const err = fail(500, 'Settlement was not recorded');
@@ -751,7 +751,7 @@ const settlementService = {
         // 9 — the insert.
         let created;
         try {
-            created = await Settlement.create(pending);
+            created = /** @type {any} */ (await Settlement.create(/** @type {any} */ (pending)));
         } catch (cause) {
             if (isDuplicateKey(cause)) {
                 throw failDecision({
@@ -857,7 +857,7 @@ async function resolveListing(kind, listingId, notFound) {
  */
 async function readListingLedger(kind, listingId) {
     const [rows, figures] = await Promise.all([
-        Settlement.find({ listingKind: kind, listing: listingId })
+        Settlement.find(/** @type {any} */ ({ listingKind: kind, listing: listingId }))
             .sort({ settledAt: -1 })
             .populate('recordedBy', 'name')
             .lean(),
@@ -890,7 +890,7 @@ async function readListingLedger(kind, listingId) {
  */
 async function readFigures(kind, listingId) {
     try {
-        return await earningsService.getListingFigures({ kind, listingId });
+        return await earningsService.getListingFigures({ kind: /** @type {'event' | 'venue'} */ (kind), listingId });
     } catch (cause) {
         const err = fail(502, `Earnings figures unavailable for listing ${String(listingId)}`);
         /** @type {any} */ (err).cause = cause;
@@ -964,7 +964,7 @@ async function resolveRecipient(ownerId) {
  */
 async function writeSettlementAudit({ adminUser, action, kind, listingId, metadata }) {
     try {
-        await AuditLog.create({ adminUser, action, entityType: kind, entityId: listingId, metadata });
+        await AuditLog.create(/** @type {any} */ ({ adminUser, action, entityType: kind, entityId: listingId, metadata }));
     } catch (cause) {
         const err = fail(500, 'Settlement not recorded: audit write failed');
         /** @type {any} */ (err).cause = cause;

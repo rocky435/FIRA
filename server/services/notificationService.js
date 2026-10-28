@@ -1,6 +1,7 @@
 const Notification = require('../models/Notification');
 const Ticket = require('../models/Ticket');
 const pushService = require('./pushService');
+const fcmService = require('./fcmService');
 const sse = require('../lib/sse');
 
 /**
@@ -13,18 +14,24 @@ const PUSH_CHANNELS = new Set(['push', 'all']);
  * Fire-and-forget push. Notifications must never fail the action that caused
  * them, so this logs and swallows rather than rejecting.
  */
-function dispatchPush(userIds, { title, message, data }) {
+function dispatchPush(userIds, { type, title, message, data }) {
     const ids = Array.isArray(userIds) ? userIds : [userIds];
     if (ids.length === 0) return;
 
+    const payload = {
+        title,
+        body: message,
+        url: data?.actionUrl || '/notifications',
+        data: { type, referenceId: data?.referenceId, ...(data?.extra || {}) }
+    };
+
+    // Browsers (Web Push) and native app installs (FCM), independently.
     pushService
-        .sendToUsers(ids, {
-            title,
-            body: message,
-            url: data?.actionUrl || '/notifications',
-            data: { referenceId: data?.referenceId, ...(data?.extra || {}) }
-        })
+        .sendToUsers(ids, payload)
         .catch(err => console.error('Push dispatch failed:', err.message));
+    fcmService
+        .sendToUsers(ids, payload)
+        .catch(err => console.error('FCM dispatch failed:', err.message));
 }
 
 const notificationService = {
@@ -44,8 +51,10 @@ const notificationService = {
     },
 
     // Get notification by ID
-    async getNotificationById(id) {
-        const notification = await Notification.findById(id);
+    // Scoped to `userId`: notifications were readable, markable and deletable by
+    // anyone who knew (or guessed) an id. Someone else's reads as not found.
+    async getNotificationById(id, userId) {
+        const notification = await Notification.findOne({ _id: id, user: userId });
         if (!notification) {
             throw new Error('Notification not found');
         }
@@ -65,7 +74,7 @@ const notificationService = {
         });
 
         if (PUSH_CHANNELS.has(channel)) {
-            dispatchPush(userId, { title, message, data });
+            dispatchPush(userId, { type, title, message, data });
         }
 
         // Live-deliver to any open tab. The SSE stream existed but nothing ever
@@ -85,9 +94,9 @@ const notificationService = {
     },
 
     // Mark as read
-    async markAsRead(id) {
-        const notification = await Notification.findByIdAndUpdate(
-            id,
+    async markAsRead(id, userId) {
+        const notification = await Notification.findOneAndUpdate(
+            { _id: id, user: userId },
             { $set: { isRead: true, readAt: new Date() } },
             { new: true }
         );
@@ -107,8 +116,8 @@ const notificationService = {
     },
 
     // Delete notification
-    async deleteNotification(id) {
-        const notification = await Notification.findByIdAndDelete(id);
+    async deleteNotification(id, userId) {
+        const notification = await Notification.findOneAndDelete({ _id: id, user: userId });
         if (!notification) {
             throw new Error('Notification not found');
         }
@@ -129,7 +138,7 @@ const notificationService = {
         await Notification.insertMany(notifications);
 
         if (PUSH_CHANNELS.has(channel)) {
-            dispatchPush(userIds, { title, message, data });
+            dispatchPush(userIds, { type, title, message, data });
         }
 
         return { message: `Sent ${userIds.length} notifications` };
@@ -191,7 +200,7 @@ const notificationService = {
                 await Notification.insertMany(notifications);
 
                 // 16.3 - Dispatch push notifications
-                dispatchPush(batch, { title, message, data });
+                dispatchPush(batch, { type: 'event_update', title, message, data });
 
                 totalNotified += batch.length;
             } catch (err) {
@@ -248,6 +257,7 @@ const notificationService = {
 
         // Push to every follower's devices in one batch
         dispatchPush(followers.map(f => f._id), {
+            type,
             title: notificationData.title,
             message: notificationData.message,
             data: {

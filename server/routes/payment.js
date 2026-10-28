@@ -5,6 +5,11 @@ const paymentService = require('../services/paymentService');
 const discountService = require('../services/discountService');
 
 const { requireAuth } = require('../middleware/auth');
+const roleGuard = require('../middleware/roleGuard');
+const { hasRole } = require('../utils/roleUtils');
+const mongoose = require('mongoose');
+const Payment = require('../models/Payment');
+const Refund = require('../models/Refund');
 
 /**
  * @typedef {import('../middleware/types').AuthenticatedRequest} AuthenticatedRequest
@@ -24,7 +29,7 @@ router.get('/', requireAuth('admin'), /** @param {AuthenticatedRequest} req @par
 // GET /api/payments/user/:userId - Get user's payments
 router.get('/user/:userId', requireAuth('user', 'admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        if (req.user.role !== 'admin' && req.params.userId !== req.user._id.toString()) {
+        if (!hasRole(req.user, 'admin') && req.params.userId !== req.user._id.toString()) {
             return res.status(403).json({ error: 'Unauthorized' });
         }
         const payments = await paymentService.getUserPayments(req.params.userId);
@@ -34,9 +39,16 @@ router.get('/user/:userId', requireAuth('user', 'admin'), /** @param {Authentica
     }
 });
 
-// GET /api/payments/:id - Get payment by ID (authenticated)
-router.get('/:id', requireAuth('user', 'admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// GET /api/payments/:id - Get payment by ID (its payer or an admin)
+// Any signed-in user could read any payment. A non-id segment (e.g. "refunds")
+// falls through to the routes below - this one used to swallow GET /refunds.
+router.get('/:id', (req, res, next) => (mongoose.isValidObjectId(req.params.id) ? next() : next('route')),
+    requireAuth('user', 'admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
+        const owned = await Payment.exists({ _id: req.params.id, user: req.user._id });
+        if (!owned && !hasRole(req.user, 'admin')) {
+            return res.status(404).json({ error: 'Payment not found' });
+        }
         const payment = await paymentService.getPaymentById(req.params.id);
         res.json(payment);
     } catch (error) {
@@ -65,9 +77,10 @@ router.post('/calculate-billing', requireAuth('user'), /** @param {Authenticated
 // re-validates and re-prices it from the event's own prices.
 router.post('/apply-discount', requireAuth('user'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        // `amount` is the total payable; `subtotal` is accepted from older clients.
+        // Discounts apply to the ticket subtotal (price x quantity), not the fee
+        // or GST. Older clients sent the total payable as `amount`.
         const { code, eventId } = req.body;
-        const amount = req.body.amount ?? req.body.subtotal;
+        const amount = req.body.subtotal ?? req.body.amount;
         if (!code || !eventId || amount == null) {
             return res.status(400).json({ error: 'code, eventId, and amount are required' });
         }
@@ -80,8 +93,11 @@ router.post('/apply-discount', requireAuth('user'), /** @param {AuthenticatedReq
     }
 });
 
-// POST /api/payments/initiate - Initiate payment (user)
-router.post('/initiate', requireAuth('user'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// POST /api/payments/initiate - Initiate payment (admin only)
+// Every amount here comes from the request body, so a buyer could open a ₹1
+// order for a ₹999 ticket. Checkout creates its orders server-side (ticket
+// purchase and the booking initiate-payment routes); nothing in the apps calls this.
+router.post('/initiate', requireAuth('admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const paymentData = { ...req.body, userId: req.user._id };
         const result = await paymentService.initiatePayment(paymentData);
@@ -94,18 +110,49 @@ router.post('/initiate', requireAuth('user'), /** @param {AuthenticatedRequest} 
 // POST /api/payments/verify - Verify payment (requirement 3.4: auth required)
 router.post('/verify', requireAuth('user', 'admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const result = await paymentService.verifyPayment(req.body);
+        const { paymentId, gatewayOrderId, gatewayPaymentId, gatewaySignature } = req.body;
+        // A non-admin can only verify their own payment.
+        const result = await paymentService.verifyPayment(
+            { paymentId, gatewayOrderId, gatewayPaymentId, gatewaySignature },
+            { actorId: hasRole(req.user, 'admin') ? null : req.user._id }
+        );
         res.json(result);
     } catch (error) {
         res.status(400).json({ error: error.message });
     }
 });
 
-// POST /api/payments/:id/refund - Request refund (user who owns the payment)
-router.post('/:id/refund', requireAuth('user'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// POST /api/payments/webhook - Razorpay server-to-server payment events
+// No session: Razorpay authenticates with the X-Razorpay-Signature header, an
+// HMAC of the raw body under RAZORPAY_WEBHOOK_SECRET. See paymentService.handleWebhook.
+router.post('/webhook', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const result = await paymentService.requestRefund(req.params.id, req.body);
-        res.json(result);
+        const { status, body } = await paymentService.handleWebhook(
+            /** @type {any} */ (req).rawBody,
+            req.header('x-razorpay-signature')
+        );
+        res.status(status).json(body);
+    } catch (error) {
+        // Unexpected (e.g. database down): 500 so Razorpay retries later.
+        console.error('Razorpay webhook failed:', error.message);
+        res.status(500).json({ error: 'Webhook processing failed' });
+    }
+});
+
+// POST /api/payments/:id/refund - Raise a refund request for a payment (admin only)
+// This used to refund straight through Razorpay, skipping "Refunds to be done".
+// Every refund now goes through that queue: this only records a pending
+// request, which an admin then pays by hand and marks refunded.
+router.post('/:id/refund', requireAuth('admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+    try {
+        const refundService = require('../services/refundService');
+        const { amount, reasonDetails } = req.body || {};
+        const refund = await refundService.processRefund(req.params.id, {
+            amount: amount == null ? undefined : amount,
+            reason: 'admin_initiated',
+            reasonDetails: typeof reasonDetails === 'string' ? reasonDetails : `Raised by admin ${req.user._id}`,
+        });
+        res.status(201).json(refund);
     } catch (error) {
         res.status(400).json({ error: error.message });
     }
@@ -154,7 +201,7 @@ router.get('/refunds', requireAuth('admin'), /** @param {AuthenticatedRequest} r
 // GET /api/payments/refunds/user/:userId - Get user's refunds
 router.get('/refunds/user/:userId', requireAuth('user', 'admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        if (req.user.role !== 'admin' && req.params.userId !== req.user._id.toString()) {
+        if (!hasRole(req.user, 'admin') && req.params.userId !== req.user._id.toString()) {
             return res.status(403).json({ error: 'Unauthorized' });
         }
         const refunds = await refundService.getRefundsByUser(req.params.userId);
@@ -164,9 +211,14 @@ router.get('/refunds/user/:userId', requireAuth('user', 'admin'), /** @param {Au
     }
 });
 
-// GET /api/payments/refunds/:id - Get refund details (authenticated)
+// GET /api/payments/refunds/:id - Get refund details (its owner or an admin)
 router.get('/refunds/:id', requireAuth('user', 'admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
+        const owned = mongoose.isValidObjectId(req.params.id) &&
+            await Refund.exists({ _id: req.params.id, user: req.user._id });
+        if (!owned && !hasRole(req.user, 'admin')) {
+            return res.status(404).json({ error: 'Refund not found' });
+        }
         const refund = await refundService.getRefundById(req.params.id);
         res.json(refund);
     } catch (error) {
@@ -174,11 +226,14 @@ router.get('/refunds/:id', requireAuth('user', 'admin'), /** @param {Authenticat
     }
 });
 
-// POST /api/payments/refunds/:id/process - Process pending refund (admin only)
-router.post('/refunds/:id/process', requireAuth('admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// POST /api/payments/refunds/:id/process - Approve or reject a refund request
+// Every customer refund is raised as a pending request ("Refunds to be done").
+// Refunds are paid manually; approving records it as paid, with the reference.
+// Admin or super-admin only - not moderators.
+router.post('/refunds/:id/process', requireAuth('admin'), roleGuard(['super_admin', 'admin']), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const { action, notes } = req.body;
-        const refund = await refundService.processRefundRequest(req.params.id, req.user._id, action, notes);
+        const { action, notes, reference } = req.body;
+        const refund = await refundService.processRefundRequest(req.params.id, req.user._id, action, notes, reference);
         res.json(refund);
     } catch (error) {
         res.status(400).json({ error: error.message });

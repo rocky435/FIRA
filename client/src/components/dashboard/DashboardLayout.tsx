@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import Navbar from '@/components/Navbar';
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock';
 import DashboardSwitcher from '@/components/dashboard/DashboardSwitcher';
 import SidebarFooter from '@/components/dashboard/SidebarFooter';
 import { userNavItems } from '@/components/dashboard/navModel.mjs';
@@ -34,6 +35,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     // sidebar temporarily and never overwrites that preference.
     const [isHovered, setIsHovered] = useState(false);
     const [isDesktop, setIsDesktop] = useState(false);
+    // On a phone the open sidebar is a full-screen drawer: lock the page behind it.
+    useBodyScrollLock(isExpanded && !isDesktop);
 
     useEffect(() => {
         const query = window.matchMedia('(min-width: 1024px)');

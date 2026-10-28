@@ -98,7 +98,7 @@ export default function VenuePortalBookingsPage() {
             fetchBookings();
         } catch (err) {
             console.error('Failed to update booking status:', err);
-            showToast('Failed to update booking status', 'error');
+            showToast(err instanceof Error ? err.message : 'Failed to update booking status', 'error');
         } finally {
             setProcessingId(null);
         }
@@ -278,6 +278,7 @@ export default function VenuePortalBookingsPage() {
                                     >
                                         Reject
                                     </Button>
+                                    {/* The owner answers first; the guest pays once accepted. */}
                                     <Button
                                         size="sm"
                                         onClick={() => handleUpdateStatus(booking._id, 'accepted')}

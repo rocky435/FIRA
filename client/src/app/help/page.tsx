@@ -31,8 +31,8 @@ export default function HelpSupport() {
                                         </svg>
                                     </summary>
                                     <p className="mt-2 text-sm text-gray-300">
-                                        You can create an account by clicking on the "Sign Up" button in the top right corner.
-                                        Fill in your details, verify your email, and you're good to go!
+                                        You can create an account by clicking on the &quot;Sign Up&quot; button in the top right corner.
+                                        Fill in your details, verify your email, and you&apos;re good to go!
                                     </p>
                                 </details>
 
@@ -66,7 +66,7 @@ export default function HelpSupport() {
                         <section>
                             <h2 className="text-xl font-semibold text-white mb-4">2. Contact Support</h2>
                             <p className="mb-6">
-                                Can't find what you're looking for? Our support team is available 24/7 to assist you.
+                                Can&apos;t find what you&apos;re looking for? Our support team is available 24/7 to assist you.
                             </p>
 
                             <div className="grid md:grid-cols-2 gap-4">

@@ -1,0 +1,66 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/material.dart';
+
+import 'firebase_options.dart';
+import 'push/push_notifications.dart'; // lib/push/push_notifications.dart
+
+final navigatorKey = GlobalKey<NavigatorState>();
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+  await PushNotifications.instance.init(
+    authToken: readLoginToken, // <- your existing login-token storage
+    onOpen: openFromNotification,
+  );
+
+  // Already signed in from a previous session? Register again (cheap, keeps it fresh).
+  if (await readLoginToken() != null) {
+    PushNotifications.instance.registerDevice();
+  }
+
+  runApp(const FiraApp());
+}
+
+/// Replace with however your app stores the FIRA login token.
+Future<String?> readLoginToken() async => null;
+
+/// The server sends website paths; open the matching app screen.
+void openFromNotification(String link) {
+  // Wait for the first frame so the navigator exists (app launched by a tap).
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final nav = navigatorKey.currentState;
+    if (nav == null) return;
+    final uri = Uri.parse(link);
+    final seg = uri.pathSegments;
+
+    if (seg.isNotEmpty && seg[0] == 'messages') {
+      nav.pushNamed('/chat', arguments: uri.queryParameters['conversation']);
+    } else if (seg.length == 3 && seg[0] == 'dashboard' && seg[1] == 'bookings') {
+      nav.pushNamed('/booking', arguments: seg[2]);
+    } else if (seg.length == 3 && seg[0] == 'venue-portal' && seg[1] == 'bookings') {
+      nav.pushNamed('/owner-booking', arguments: seg[2]);
+    } else if (seg.length == 2 && seg[0] == 'events') {
+      nav.pushNamed('/event', arguments: seg[1]);
+    } else if (seg.length == 2 && seg[0] == 'dashboard' && seg[1] == 'tickets') {
+      nav.pushNamed('/tickets');
+    } else {
+      nav.pushNamed('/notifications');
+    }
+  });
+}
+
+class FiraApp extends StatelessWidget {
+  const FiraApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      navigatorKey: navigatorKey,
+      home: const Scaffold(body: Center(child: Text('FIRA'))),
+    );
+  }
+}

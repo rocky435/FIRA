@@ -1,6 +1,5 @@
 const Payment = require('../models/Payment');
 const Payout = require('../models/Payout');
-const Refund = require('../models/Refund');
 const User = require('../models/User');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
@@ -35,6 +34,92 @@ async function resolveListingPayoutAccount({ owner, referenceId, referenceModel 
     ) || null;
 }
 
+/**
+ * Count one use of the ticket discount code this payment was priced with. Called
+ * once per payment, from the atomic pending→success flip, so a confirmed sale is
+ * counted exactly once and an abandoned checkout never is. Not capped at maxUses:
+ * the buyer has already paid the discounted price, so the sale is honoured even
+ * if the last uses went to concurrent checkouts.
+ */
+async function countDiscountRedemption(payment) {
+    if (payment.type !== 'ticket' || !payment.discountCode || !(Number(payment.discountAmount) > 0)) return;
+    try {
+        const DiscountCode = require('../models/DiscountCode');
+        await DiscountCode.updateOne(
+            { code: String(payment.discountCode).toUpperCase(), event: payment.referenceId },
+            { $inc: { usedCount: 1 } }
+        );
+    } catch (err) {
+        // Bookkeeping only - never fail a confirmed payment over it.
+        console.error('Failed to count discount redemption:', err.message);
+    }
+}
+
+/**
+ * Mark a payment successful for gateway payment `gatewayPaymentId`. The flip is
+ * atomic, so /verify and the webhook racing each other confirm it once (and
+ * count its discount once). Returns the payment if it is now confirmed by that
+ * gateway payment - including when it already was - or null if it can't be
+ * (refunded, or confirmed by a different gateway payment).
+ */
+async function confirmPayment(paymentId, gatewayPaymentId) {
+    // 'success' (not 'paid') matches the status the rest of the code reads.
+    const updated = await Payment.findOneAndUpdate(
+        { _id: paymentId, status: { $in: ['pending', 'failed'] } },
+        { $set: { status: 'success', gatewayTransactionId: gatewayPaymentId, paidAt: new Date() } },
+        { new: true }
+    );
+    if (updated) {
+        await countDiscountRedemption(updated);
+        return updated;
+    }
+
+    // Already confirmed: a repeat (double tap, retry after a dropped response,
+    // webhook after verify) is fine; anything else is not.
+    const latest = await Payment.findById(paymentId);
+    if (latest && latest.status === 'success' && latest.gatewayTransactionId === gatewayPaymentId) {
+        return latest;
+    }
+    return null;
+}
+
+/**
+ * Deliver what a confirmed payment bought: issue the ticket order, or record the
+ * advance/balance on the booking. Safe to call more than once for one payment.
+ * A failure is logged, not thrown - the payment is real, so it needs a person
+ * (refund or manual issue), and a gateway retry would fail the same way.
+ */
+async function fulfilConfirmedPayment(payment) {
+    try {
+        if (payment.type === 'ticket' && payment.referenceModel === 'Event') {
+            const meta = payment.metadata || {};
+            if (!meta.quantity) {
+                console.error(`Confirmed ticket payment ${payment._id} has no order details; issue manually`);
+                return;
+            }
+            const ticketService = require('./ticketService');
+            await ticketService.purchaseTicket({
+                userId: payment.user,
+                eventId: payment.referenceId,
+                quantity: meta.quantity,
+                ...(meta.ticketType ? { ticketType: meta.ticketType } : {}),
+                paymentId: payment._id,
+            });
+        } else if (payment.referenceModel === 'Booking') {
+            const bookingService = require('./bookingService');
+            await bookingService.fulfilConfirmedPayment(payment);
+        }
+    } catch (err) {
+        console.error(`Could not fulfil confirmed payment ${payment._id}: ${err.message} - needs a refund or manual issue`);
+    }
+}
+
+/** Constant-time comparison of the expected and supplied hex signatures. */
+function signaturesMatch(expected, given) {
+    if (typeof given !== 'string' || given.length !== expected.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given));
+}
+
 const isValidBankDetails = (b) =>
     !!b &&
     /^[0-9]{9,18}$/.test(b.accountNumber || '') &&
@@ -56,8 +141,11 @@ const paymentService = {
         const platformFee = roundMoney(subtotal * platformFeePercentage / 100);
         const gstAmount = roundMoney(platformFee * 0.18);
         const grossTotal = roundMoney(subtotal + platformFee + gstAmount);
-        // Never more than the bill, never negative.
-        const appliedDiscount = roundMoney(Math.min(Math.max(0, Number(discountAmount) || 0), grossTotal));
+        // A discount comes off the ticket price only: never more than the
+        // subtotal, never negative. The platform fee and GST are charged on the
+        // listed price in full, so a deep discount code cannot shrink them (a
+        // 99% code used to take 99% of the fee and GST too).
+        const appliedDiscount = roundMoney(Math.min(Math.max(0, Number(discountAmount) || 0), subtotal));
         const totalAmount = roundMoney(grossTotal - appliedDiscount);
 
         return {
@@ -111,7 +199,7 @@ const paymentService = {
     },
 
     // Initiate payment
-    async initiatePayment({ userId, type, referenceId, referenceModel, amount, subtotal, platformFee, platformFeePercentage, gstAmount, totalAmount, discountCode, discountAmount, discountBearer, listedPrice }) {
+    async initiatePayment({ userId, type, referenceId, referenceModel, amount, subtotal, platformFee, platformFeePercentage, gstAmount, totalAmount, discountCode, discountAmount, discountBearer, listedPrice, metadata = {} }) {
         if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
             throw new Error('Razorpay credentials not configured');
         }
@@ -155,6 +243,7 @@ const paymentService = {
             // so platform-side records preserve intent even when no discount.
             discountBearer: discountBearer || null,
             listedPrice: listedPrice != null ? listedPrice : (subtotal || 0),
+            metadata,
             status: 'pending',
             gatewayOrderId: order.id,
             gatewayResponse: order
@@ -170,10 +259,23 @@ const paymentService = {
     },
 
     // Verify payment (callback from gateway)
-    async verifyPayment({ paymentId, gatewayOrderId, gatewayPaymentId, gatewaySignature }) {
-        const payment = await Payment.findById(paymentId);
-        if (!payment) {
+    //
+    // The Razorpay signature proves that payment `gatewayPaymentId` was made
+    // against order `gatewayOrderId` - nothing more. It used to be checked without
+    // tying that order to *this* payment record, so a signature from a ₹1 order
+    // could mark any other payment (a ₹50,000 booking) as paid. The order must now
+    // be the one this payment created. `actorId`, when given, must own the payment;
+    // otherwise anyone could also mark a stranger's pending payment as failed.
+    async verifyPayment({ paymentId, gatewayOrderId, gatewayPaymentId, gatewaySignature }, { actorId = null } = {}) {
+        const payment = require('mongoose').isValidObjectId(paymentId)
+            ? await Payment.findById(paymentId)
+            : null;
+        if (!payment || (actorId && String(payment.user) !== String(actorId))) {
             throw new Error('Payment not found');
+        }
+
+        if (!payment.gatewayOrderId || typeof gatewayOrderId !== 'string' || gatewayOrderId !== payment.gatewayOrderId) {
+            throw new Error('Payment verification failed: order does not match this payment');
         }
 
         const generated_signature = crypto
@@ -181,93 +283,77 @@ const paymentService = {
             .update(gatewayOrderId + "|" + gatewayPaymentId)
             .digest('hex');
 
-        if (generated_signature === gatewaySignature) {
-            payment.gatewayTransactionId = gatewayPaymentId;
-            payment.status = 'success'; // Changed from 'paid' to 'success' to match initiatePayment status
-            payment.paidAt = new Date();
-            await payment.save();
-
-            return { success: true, payment };
-        } else {
-            payment.status = 'failed';
-            await payment.save();
+        if (!signaturesMatch(generated_signature, gatewaySignature)) {
+            // Only a payment still awaiting confirmation is marked failed; a bad
+            // signature must never undo one that already succeeded.
+            await Payment.updateOne({ _id: payment._id, status: 'pending' }, { $set: { status: 'failed' } });
             throw new Error('Payment verification failed: Invalid signature');
         }
+
+        const confirmed = await confirmPayment(payment._id, gatewayPaymentId);
+        if (confirmed) {
+            return { success: true, payment: confirmed };
+        }
+        throw new Error('This payment can no longer be verified');
     },
 
-    // Request refund - processes refund through Razorpay
-    async requestRefund(paymentId, { reason, reasonDetails, amount = null }) {
-        const payment = await Payment.findById(paymentId);
-        if (!payment) {
-            throw new Error('Payment not found');
+    /**
+     * Razorpay webhook (payment.captured / order.paid).
+     *
+     * The app confirms a payment by calling /verify after checkout. If the app is
+     * killed first - common on mobile, where UPI hands off to another app - the
+     * money is taken but nothing confirms it, so no ticket is issued. Razorpay
+     * also reports the payment here, server to server, and this completes the
+     * order: confirm the payment, then issue the ticket or apply it to the booking.
+     * Everything here is idempotent with the /verify path.
+     *
+     * Returns { status, body } for the route. A non-2xx makes Razorpay retry, so
+     * that is reserved for failures a retry can fix.
+     */
+    async handleWebhook(rawBody, signature) {
+        const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+        if (!secret) {
+            return { status: 503, body: { error: 'Webhook not configured' } };
+        }
+        const expected = crypto.createHmac('sha256', secret).update(rawBody || '').digest('hex');
+        if (!signaturesMatch(expected, signature)) {
+            return { status: 400, body: { error: 'Invalid signature' } };
         }
 
-        if (payment.status !== 'success') {
-            throw new Error('Can only refund successful payments');
-        }
-
-        if (!payment.gatewayTransactionId) {
-            throw new Error('No gateway transaction ID found - cannot process refund');
-        }
-
-        // Use provided amount or full payment amount
-        const refundAmount = amount || payment.amount;
-
-        // Create refund record first with pending status
-        const refund = await Refund.create({
-            payment: paymentId,
-            user: payment.user,
-            reason,
-            reasonDetails,
-            amount: refundAmount,
-            status: 'pending'
-        });
-
-        // Process refund through Razorpay
+        let event;
         try {
-            if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-                throw new Error('Razorpay credentials not configured');
-            }
-
-            const razorpay = new Razorpay({
-                key_id: process.env.RAZORPAY_KEY_ID,
-                key_secret: process.env.RAZORPAY_KEY_SECRET,
-            });
-
-            // Call Razorpay refund API
-            const razorpayRefund = await razorpay.payments.refund(payment.gatewayTransactionId, {
-                amount: toPaise(refundAmount), // Amount in paise
-                speed: 'normal', // 'normal' or 'optimum'
-                notes: {
-                    reason: reason,
-                    refundId: refund._id.toString()
-                },
-                receipt: `refund_${refund._id}`
-            });
-
-            // Update refund record with gateway response
-            refund.gatewayRefundId = razorpayRefund.id;
-            refund.gatewayResponse = razorpayRefund;
-            refund.status = razorpayRefund.status === 'processed' ? 'completed' : 'processing';
-            refund.processedAt = new Date();
-            await refund.save();
-
-            // Update payment status
-            payment.status = 'refunded';
-            payment.refundedAt = new Date();
-            await payment.save();
-
-            return refund;
-
-        } catch (error) {
-            // Update refund record with failure
-            refund.status = 'failed';
-            refund.failureReason = error.message;
-            await refund.save();
-
-            console.error('Razorpay refund failed:', error);
-            throw new Error(`Refund processing failed: ${error.message}`);
+            event = JSON.parse(rawBody.toString('utf8'));
+        } catch {
+            return { status: 400, body: { error: 'Invalid payload' } };
         }
+        if (event.event !== 'payment.captured' && event.event !== 'order.paid') {
+            return { status: 200, body: { ignored: event.event } };
+        }
+
+        const entity = event.payload?.payment?.entity;
+        if (!entity || typeof entity.order_id !== 'string' || typeof entity.id !== 'string') {
+            return { status: 200, body: { ignored: 'no payment entity' } };
+        }
+
+        const payment = await Payment.findOne({ gatewayOrderId: entity.order_id });
+        if (!payment) {
+            return { status: 200, body: { ignored: 'unknown order' } };
+        }
+        // The order was created server-side for this amount; anything else is not
+        // ours to confirm.
+        if (entity.amount !== toPaise(payment.totalAmount || payment.amount)) {
+            console.error(`Webhook amount ${entity.amount} does not match payment ${payment._id}`);
+            return { status: 200, body: { ignored: 'amount mismatch' } };
+        }
+
+        const confirmed = await confirmPayment(payment._id, entity.id);
+        if (!confirmed) {
+            console.error(`Webhook could not confirm payment ${payment._id} (status ${payment.status})`);
+            return { status: 200, body: { ignored: 'not confirmable' } };
+        }
+
+        await fulfilConfirmedPayment(confirmed);
+        return { status: 200, body: { ok: true } };
     },
 
     // Get all payouts

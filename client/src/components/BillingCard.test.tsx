@@ -24,10 +24,10 @@ describe('calculateBilling', () => {
     expect(calculateBilling(99, 1, 5, 99).totalAmount).toBe(5.84);
   });
 
-  it('caps discount at the total payable', () => {
+  it('caps the discount at the ticket price - the fee and GST are always paid', () => {
     const result = calculateBilling(100, 1, 5, 500);
-    expect(result.discountAmount).toBe(105.9);
-    expect(result.totalAmount).toBe(0);
+    expect(result.discountAmount).toBe(100);
+    expect(result.totalAmount).toBe(5.9);
   });
 
   // The preview the buyer sees has to equal what the server charges. If these

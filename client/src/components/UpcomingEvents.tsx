@@ -66,7 +66,7 @@ export default function UpcomingEvents() {
                                     Upcoming <span className="accent-text">Events</span>
                                 </h2>
                                 <p className="text-gray-300 text-sm">
-                                    Don't miss out on the hottest events near you.
+                                    Don&apos;t miss out on the hottest events near you.
                                 </p>
                             </div>
                             <div className="flex gap-2 mt-4 md:mt-0">

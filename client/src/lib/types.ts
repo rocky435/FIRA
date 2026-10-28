@@ -71,6 +71,9 @@ export interface Venue {
         basePrice: number;
         /** Deprecated and no longer written. */
         pricePerHour?: number | null;
+        /** Demand pricing: Saturday/Sunday rate, and rates for particular dates. */
+        weekendPricePerDay?: number | null;
+        specialDates?: { date: string; pricePerDay: number }[];
         currency: string;
     };
     amenities: string[];

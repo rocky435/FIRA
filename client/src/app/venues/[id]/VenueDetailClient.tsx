@@ -6,7 +6,7 @@ import Navbar from '@/components/Navbar';
 import PartyBackground from '@/components/PartyBackground';
 import { BackButton, ShareButton, Button, Modal } from '@/components/ui';
 import { venuesApi, bookingsApi } from '@/lib/api';
-import { venueDayRate, venueBookingTotal, billableDays, bookingAdvance, DEFAULT_PLATFORM_FEE_PERCENTAGE } from '@/lib/venuePricing';
+import { venueDayRate, venueBookingTotal, venuePriceForDay, bookingDayKeys, hasDemandPricing, billableDays, bookingAdvance, DEFAULT_PLATFORM_FEE_PERCENTAGE } from '@/lib/venuePricing';
 import { formatInr, roundMoney } from '@/lib/formatInr';
 import { Venue } from '@/lib/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -121,16 +121,6 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
 
     // Inquiry modal state
     const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
-
-    const loadRazorpay = () => {
-        return new Promise((resolve) => {
-            const script = document.createElement('script');
-            script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-            script.onload = () => resolve(true);
-            script.onerror = () => resolve(false);
-            document.body.appendChild(script);
-        });
-    };
 
     // Get availability info for tooltip - returns all slots
     const getDateAvailability = (date: Date) => {
@@ -392,70 +382,22 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
                 throw new Error("Failed to create booking");
             }
 
-            // 2. Initiate payment for the 10% advance
-            const paymentResult = await bookingsApi.initiatePayment(bookingId, user._id!);
-
-            // 3. Load Razorpay and open modal
-            const isLoaded = await loadRazorpay();
-            if (!isLoaded) {
-                showToast('Razorpay SDK failed to load. Are you online?', 'error');
-                setIsSubmitting(false);
-                return;
-            }
-
-            const options = {
-                key: paymentResult.keyId,
-                amount: paymentResult.amount,
-                currency: paymentResult.currency,
-                name: "Firaa Venues",
-                description: `Advance for ${venue.name}`,
-                order_id: paymentResult.gatewayOrderId,
-                handler: async function (response: any) {
-                    try {
-                        const verifyResult = await bookingsApi.verifyPayment(bookingId, {
-                            gatewayOrderId: response.razorpay_order_id,
-                            gatewayPaymentId: response.razorpay_payment_id,
-                            gatewaySignature: response.razorpay_signature
-                        }) as { success: boolean };
-
-                        if (verifyResult.success) {
-                            showToast('Booking confirmed successfully!', 'success');
-                            setIsBookingModalOpen(false);
-                            setBookingData(EMPTY_BOOKING);
-                            fetchVenue(venue._id); // Refresh availability
-                            // Give the success toast time to be read before
-                            // navigating - an instant redirect made it look like
-                            // nothing had happened.
-                            setTimeout(() => router.push('/dashboard/bookings'), SUCCESS_REDIRECT_DELAY_MS);
-                        } else {
-                            showToast('Payment verification failed', 'error');
-                        }
-                    } catch (err: any) {
-                        console.error(err);
-                        showToast(err.message || 'Payment verification failed', 'error');
-                    } finally {
-                        setIsSubmitting(false);
-                    }
-                },
-                prefill: {
-                    name: user.name,
-                    email: user.email,
-                    contact: user.phone || ''
-                },
-                theme: {
-                    color: "#8b5cf6"
-                },
-                modal: {
-                    ondismiss: function () {
-                        setIsSubmitting(false);
-                        showToast('Payment cancelled. Booking remains pending.', 'warning');
-                    }
-                }
-            };
-
-            const paymentObject = new (window as any).Razorpay(options);
-            paymentObject.open();
-
+            // 2. That is a request: nothing is charged yet. The venue accepts or
+            //    declines it, and the guest pays (10% advance or in full) from the
+            //    booking page once accepted. Auto-accepting venues accept at once.
+            const accepted = (bookingResult as { status?: string }).status === 'accepted';
+            showToast(
+                accepted
+                    ? 'Booking accepted! Pay the advance or the full amount from your booking to confirm it.'
+                    : 'Request sent! You will pay once the venue accepts it.',
+                'success'
+            );
+            setIsBookingModalOpen(false);
+            setBookingData(EMPTY_BOOKING);
+            fetchVenue(venue._id); // Refresh availability
+            setIsSubmitting(false);
+            // Give the toast time to be read before navigating.
+            setTimeout(() => router.push(`/dashboard/bookings/${bookingId}`), SUCCESS_REDIRECT_DELAY_MS);
         } catch (error: any) {
             console.error('Booking error:', error);
             showToast(error.message || 'Failed to submit booking request', 'error');
@@ -973,6 +915,14 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
                                         <span className="text-3xl font-bold text-white">{formatPrice(venueDayRate(venue))}</span>
                                         <span className="text-gray-300">per day</span>
                                     </div>
+                                    {(venue.pricing?.weekendPricePerDay ?? 0) > 0 && (
+                                        <p className="text-sm text-gray-300 mt-1">
+                                            {formatPrice(venue.pricing!.weekendPricePerDay!)} per day on Saturdays and Sundays
+                                        </p>
+                                    )}
+                                    {hasDemandPricing(venue) && (venue.pricing?.specialDates?.length ?? 0) > 0 && (
+                                        <p className="text-xs text-gray-400 mt-1">Some dates have special prices - the total is shown when you pick dates.</p>
+                                    )}
                                 </div>
 
                                 {/* Quick Info */}
@@ -1192,9 +1142,13 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
                             <h4 className="text-violet-300 font-medium mb-3">Booking Cost Summary</h4>
                             {(() => {
                                 const startDate = bookingData.date || selectedDate || '';
-                                const dayRate = venueDayRate(venue);
-                                const days = billableDays(startDate, bookingData.endDate);
-                                const totalAmount = dayRate * days;
+                                // Each day at its own rate (weekend / special-date prices).
+                                const dayPrices = bookingDayKeys(startDate, bookingData.endDate)
+                                    .map(key => ({ key, price: venuePriceForDay(venue, key) }));
+                                const days = dayPrices.length || billableDays(startDate, bookingData.endDate);
+                                const totalAmount = venueBookingTotal(venue, startDate, bookingData.endDate);
+                                const varies = new Set(dayPrices.map(d => d.price)).size > 1;
+                                const dayRate = dayPrices[0]?.price ?? venueDayRate(venue);
                                 const feePct = (venue as { platformFeePercentage?: number }).platformFeePercentage
                                     ?? DEFAULT_PLATFORM_FEE_PERCENTAGE;
 
@@ -1216,14 +1170,23 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
 
                                 const totalRow = (
                                     <>
-                                        <div className="flex justify-between gap-3 text-gray-300">
-                                            <span>Day rate</span>
-                                            <span className="whitespace-nowrap">{formatPrice(dayRate)}</span>
-                                        </div>
-                                        <div className="flex justify-between gap-3 text-gray-300">
-                                            <span>{days} {days === 1 ? 'day' : 'days'}</span>
-                                            <span className="whitespace-nowrap">&times; {days}</span>
-                                        </div>
+                                        {varies ? dayPrices.map(d => (
+                                            <div key={d.key} className="flex justify-between gap-3 text-gray-300">
+                                                <span>{formatDateForDisplay(d.key)}</span>
+                                                <span className="whitespace-nowrap">{formatPrice(d.price)}</span>
+                                            </div>
+                                        )) : (
+                                            <>
+                                                <div className="flex justify-between gap-3 text-gray-300">
+                                                    <span>Day rate</span>
+                                                    <span className="whitespace-nowrap">{formatPrice(dayRate)}</span>
+                                                </div>
+                                                <div className="flex justify-between gap-3 text-gray-300">
+                                                    <span>{days} {days === 1 ? 'day' : 'days'}</span>
+                                                    <span className="whitespace-nowrap">&times; {days}</span>
+                                                </div>
+                                            </>
+                                        )}
                                         <div className="flex justify-between gap-3 text-white font-medium pt-2 border-t border-white/10">
                                             <span>Total Price</span>
                                             <span className="whitespace-nowrap">{formatPrice(totalAmount)}</span>
@@ -1261,7 +1224,7 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
                                                 <span className="whitespace-nowrap">{formatPrice(bill.gstAmount)}</span>
                                             </div>
                                             <div className="flex justify-between gap-3 text-violet-400 font-bold pt-2 border-t border-white/10">
-                                                <span>Payable now</span>
+                                                <span>Advance, once accepted</span>
                                                 <span className="whitespace-nowrap">{formatPrice(bill.payableNow)}</span>
                                             </div>
                                             <div className="flex justify-between gap-3 text-gray-300 pt-2 border-t border-white/10">
@@ -1276,9 +1239,11 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
                                                 balance is paid on Fira, which verifies it and settles
                                                 with the venue. Reminders start 7 days before the event. */}
                                             <p className="text-xs text-gray-300 mt-2 block">
-                                                Pay the balance on Fira by {balanceDueText} (24 hours before your event)
-                                                to keep this booking. We&apos;ll remind you daily from 7 days before.
-                                                If it isn&apos;t paid by then, the booking is cancelled and the deposit is forfeited.
+                                                Nothing is charged now. Once the venue accepts your request, pay this 10% advance
+                                                (or the full amount) within 48 hours to confirm it. Pay the balance on Fira by{' '}
+                                                {balanceDueText} (24 hours before your event) - we&apos;ll remind you daily from 7 days
+                                                before. If it isn&apos;t paid by then, the booking is cancelled and the advance is forfeited.
+                                                The platform fee and GST are not refundable.
                                             </p>
                                         </div>
                                     );
@@ -1308,11 +1273,12 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
                                             <span className="whitespace-nowrap">{formatPrice(gstAmount)}</span>
                                         </div>
                                         <div className="flex justify-between gap-3 text-violet-400 font-bold pt-2 border-t border-white/10">
-                                            <span>Payable now</span>
+                                            <span>Payable once accepted</span>
                                             <span className="whitespace-nowrap">{formatPrice(payableNow)}</span>
                                         </div>
                                         <p className="text-xs text-gray-300 mt-2 block">
-                                            * Your event is within 7 days, so the full amount is due now to secure this booking.
+                                            * Nothing is charged now. Your event is within 7 days, so once the venue accepts,
+                                            the full amount is paid to confirm the booking. The platform fee and GST are not refundable.
                                         </p>
                                     </div>
                                 );
@@ -1339,7 +1305,7 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
                             onClick={submitBooking}
                             disabled={isSubmitting}
                         >
-                            {isSubmitting ? 'Processing...' : 'Proceed to Payment'}
+                            {isSubmitting ? 'Sending...' : 'Send booking request'}
                         </Button>
                     </div>
                 </div>

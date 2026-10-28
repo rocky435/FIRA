@@ -2,10 +2,14 @@ const express = require('express');
 const router = express.Router();
 const userService = require('../services/userService');
 const auth = require('../middleware/auth');
+const { requireAuth, optionalAuth } = auth;
 const { noStoreCache } = require('../middleware/httpCache');
+const { hasRole } = require('../utils/roleUtils');
 
 // GET /api/users - Get all users (admin only)
-router.get('/', auth, noStoreCache, async (req, res) => {
+// This was open to any signed-in user and returned every account's bank and ID
+// details. The admin panel lists users through /api/admin/users.
+router.get('/', requireAuth('admin'), noStoreCache, async (req, res) => {
     try {
         const users = await userService.getAllUsers(req.query);
         res.json(users);
@@ -25,8 +29,50 @@ router.get('/brands', async (req, res) => {
     }
 });
 
+/**
+ * Guard for changes to where payouts go.
+ *
+ * Once an account has payout details, changing them (add, switch default,
+ * delete, edit) needs the account password - a stolen session or an unlocked
+ * laptop could otherwise redirect earnings silently. Setting up the very first
+ * account needs none: there is nothing to redirect yet. Either way the holder
+ * gets an email after a successful change.
+ *
+ * 403 (not 401) for a wrong password, so the apps don't treat it as a dead session.
+ */
+function confirmPayoutChange(describe) {
+    return async (req, res, next) => {
+        try {
+            const User = require('../models/User');
+            const bcrypt = require('bcryptjs');
+            const account = await User.findById(req.user._id).select('password email name bankAccounts bankDetails');
+            const hasExisting = (account.bankAccounts || []).length > 0 || !!account.bankDetails?.accountNumber;
+            if (hasExisting) {
+                const { currentPassword } = req.body || {};
+                if (!currentPassword || !(await bcrypt.compare(String(currentPassword), account.password))) {
+                    return res.status(403).json({
+                        error: 'Enter your account password to change payout details.',
+                        field: 'currentPassword',
+                        code: 'PASSWORD_REQUIRED'
+                    });
+                }
+            }
+            res.on('finish', () => {
+                if (res.statusCode < 400) {
+                    require('../services/emailService')
+                        .sendPayoutAccountChangedEmail(account.email, account.name, describe(req))
+                        .catch(() => {});
+                }
+            });
+            next();
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    };
+}
+
 // PATCH /api/users/me/bank-details - Update bank details
-router.patch('/me/bank-details', auth, async (req, res) => {
+router.patch('/me/bank-details', auth, confirmPayoutChange(() => 'bank details updated'), async (req, res) => {
     try {
         const { accountName, accountNumber, ifscCode, bankName } = req.body;
         const result = await userService.updateBankDetails(req.user._id, { accountName, accountNumber, ifscCode, bankName });
@@ -55,7 +101,7 @@ router.get('/me/bank-accounts', auth, async (req, res) => {
 });
 
 // POST /api/users/me/bank-accounts - add one
-router.post('/me/bank-accounts', auth, async (req, res) => {
+router.post('/me/bank-accounts', auth, confirmPayoutChange(r => `account ending ${String(r.body.accountNumber || '').slice(-4)} added`), async (req, res) => {
     try {
         const { accountName, accountNumber, ifscCode, bankName, makeDefault } = req.body;
         const result = await userService.addBankAccount(req.user._id, {
@@ -71,7 +117,7 @@ router.post('/me/bank-accounts', auth, async (req, res) => {
 });
 
 // PATCH /api/users/me/bank-accounts/:accountId/default - promote to default
-router.patch('/me/bank-accounts/:accountId/default', auth, async (req, res) => {
+router.patch('/me/bank-accounts/:accountId/default', auth, confirmPayoutChange(() => 'default payout account switched'), async (req, res) => {
     try {
         const result = await userService.setDefaultBankAccount(req.user._id, req.params.accountId);
         if (result.error) return res.status(404).json(result);
@@ -82,11 +128,23 @@ router.patch('/me/bank-accounts/:accountId/default', auth, async (req, res) => {
 });
 
 // DELETE /api/users/me/bank-accounts/:accountId
-router.delete('/me/bank-accounts/:accountId', auth, async (req, res) => {
+router.delete('/me/bank-accounts/:accountId', auth, confirmPayoutChange(() => 'a payout account removed'), async (req, res) => {
     try {
         const result = await userService.deleteBankAccount(req.user._id, req.params.accountId);
         if (result.error) return res.status(404).json(result);
         res.json({ accounts: result.accounts });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/users/me/deletion-check - what must be finished before the account
+// can be deleted (empty lists = it can be deleted now).
+router.get('/me/deletion-check', auth, noStoreCache, async (req, res) => {
+    try {
+        const removal = require('../services/listingRemovalService');
+        const blockers = await removal.accountDeletionBlockers(req.user._id);
+        res.json({ canDelete: !removal.hasAny(blockers), blockers });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -99,14 +157,19 @@ router.delete('/me', auth, async (req, res) => {
         const result = await userService.deleteAccount(req.user._id);
         res.json(result);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        // 409 carries the list of what is still upcoming, for the app to show.
+        res.status(error.status || 500).json({ error: error.message, ...(error.blockers ? { blockers: error.blockers } : {}) });
     }
 });
 
 // GET /api/users/:id - Get user by ID
-router.get('/:id', async (req, res) => {
+// Public, but the full document (email, phone, bank and ID details) goes only to
+// the account owner or an admin; everyone else gets the public profile.
+router.get('/:id', optionalAuth, noStoreCache, async (req, res) => {
     try {
-        const user = await userService.getUserById(req.params.id);
+        const isSelfOrAdmin = !!req.user &&
+            (req.user._id.toString() === req.params.id || hasRole(req.user, 'admin'));
+        const user = await userService.getUserById(req.params.id, { publicOnly: !isSelfOrAdmin });
         res.json(user);
     } catch (error) {
         res.status(404).json({ error: error.message });

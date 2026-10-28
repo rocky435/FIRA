@@ -7,8 +7,8 @@ import type { AppliedDiscount } from '@/lib/discount';
 
 interface DiscountCodeInputProps {
   eventId: string;
-  /** The order's total payable (ticket + platform fee + GST) the code is priced against. */
-  amount: number;
+  /** The ticket price x quantity the code is priced against (never the fee or GST). */
+  subtotal: number;
   onApplied: (discount: AppliedDiscount) => void;
   onRemoved: () => void;
   appliedCode: string | null;
@@ -22,7 +22,7 @@ interface DiscountCodeInputProps {
 
 export default function DiscountCodeInput({
   eventId,
-  amount,
+  subtotal,
   onApplied,
   onRemoved,
   appliedCode,
@@ -43,7 +43,7 @@ export default function DiscountCodeInput({
       const result = await paymentsApi.applyDiscount({
         code: trimmed,
         eventId,
-        amount,
+        subtotal,
       });
       onApplied({
         code: (result.code || trimmed).toUpperCase(),

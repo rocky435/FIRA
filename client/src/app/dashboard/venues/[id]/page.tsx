@@ -93,7 +93,6 @@ export default function VenueManagePage() {
     const [draggedImageIndex, setDraggedImageIndex] = useState<number | null>(null);
     const [newImageFiles, setNewImageFiles] = useState<File[]>([]);
     const [imagePreviews, setImagePreviews] = useState<string[]>([]);
-    const [deletingImage, setDeletingImage] = useState<string | null>(null);
 
     const [calendarMonth, setCalendarMonth] = useState(new Date());
     const [selectedDates, setSelectedDates] = useState<string[]>([]);
@@ -201,8 +200,8 @@ export default function VenueManagePage() {
                     fetchVenue(params.id as string);
                 }
             }
-        } catch {
-            showToast('Failed to update booking', 'error');
+        } catch (err) {
+            showToast(err instanceof Error ? err.message : 'Failed to update booking', 'error');
         } finally {
             setProcessingBookingId(null);
         }
@@ -226,9 +225,14 @@ export default function VenueManagePage() {
         if (!venue) return;
         setIsCancelling(true);
         try {
-            await venuesApi.cancel(venue._id);
-            showToast('Venue deleted successfully', 'success');
+            const result = await venuesApi.cancel(venue._id) as { deletionRequested?: boolean; message?: string };
             setShowCancelModal(false);
+            // A venue with upcoming bookings/events goes to the FIRA team for approval.
+            if (result?.deletionRequested) {
+                showToast(result.message || 'Removal request sent to the FIRA team', 'info');
+                return;
+            }
+            showToast('Venue deleted successfully', 'success');
             // The venue list lives in the venue portal now; /dashboard/venues
             // redirects there, so go straight to the real destination.
             router.push('/venue-portal/venues');
@@ -285,23 +289,11 @@ export default function VenueManagePage() {
         }
     };
 
-    const handleRemoveImage = async (imageUrl: string) => {
-        const urlParts = imageUrl.split('/');
-        const filenameWithExt = urlParts[urlParts.length - 1];
-        const filename = filenameWithExt.split('.')[0];
-        const folder = urlParts[urlParts.length - 2];
-        const publicId = `${folder}/${filename}`;
-
-        setDeletingImage(imageUrl);
-        try {
-            await uploadApi.delete(publicId);
-            setEditForm(prev => ({ ...prev, images: prev.images.filter(img => img !== imageUrl) }));
-            if (selectedImage >= editForm.images.length - 1) setSelectedImage(Math.max(0, editForm.images.length - 2));
-        } catch (err) {
-            setError('Failed to delete image');
-        } finally {
-            setDeletingImage(null);
-        }
+    // Removing a photo only takes it out of the form. The server deletes it from
+    // storage when the edit is saved, so cancelling the edit keeps it intact.
+    const handleRemoveImage = (imageUrl: string) => {
+        setEditForm(prev => ({ ...prev, images: prev.images.filter(img => img !== imageUrl) }));
+        if (selectedImage >= editForm.images.length - 1) setSelectedImage(Math.max(0, editForm.images.length - 2));
     };
 
     const handleDragStart = (idx: number) => setDraggedImageIndex(idx);
@@ -624,10 +616,9 @@ export default function VenueManagePage() {
                                         <div className="absolute top-1 left-1 w-5 h-5 bg-black/70 rounded text-white text-xs flex items-center justify-center">{idx + 1}</div>
                                         <button
                                             onClick={(e) => { e.stopPropagation(); handleRemoveImage(image); }}
-                                            disabled={deletingImage === image}
                                             className="absolute top-1 right-1 w-5 h-5 bg-red-500/80 hover:bg-red-500 rounded-full flex items-center justify-center text-white"
                                         >
-                                            {deletingImage === image ? <div className="w-2 h-2 border border-white border-t-transparent rounded-full animate-spin" /> : '×'}
+                                            ×
                                         </button>
                                     </>
                                 )}

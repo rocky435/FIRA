@@ -103,6 +103,12 @@ const paymentSchema = new mongoose.Schema({
     metadata: {
         type: mongoose.Schema.Types.Mixed,
         default: {}
+    },
+    // Set atomically when a ticket order is issued against this payment, so one
+    // successful payment can never be redeemed for more than one order.
+    consumedAt: {
+        type: Date,
+        default: null
     }
 }, {
     timestamps: true

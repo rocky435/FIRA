@@ -6,13 +6,32 @@ const emailService = require('./emailService');
 const passwordValidator = require('../utils/passwordValidator');
 const bankDetailsValidator = require('../utils/bankDetailsValidator');
 const { withRole } = require('../utils/roleUtils');
+const crypto = require('crypto');
+
+const MAX_OTP_ATTEMPTS = 5;
+
+/**
+ * Spend one guess on an OTP record, atomically, before the code is compared.
+ * The attempt counter used to be read, compared and then saved, so parallel
+ * requests each got a guess while the counter still read 0. Returns the record
+ * with its updated count, or null once its guesses are used up.
+ */
+async function takeOtpAttempt(otpRecord) {
+    return OTP.findOneAndUpdate(
+        { _id: otpRecord._id, attempts: { $lt: MAX_OTP_ATTEMPTS } },
+        { $inc: { attempts: 1 } },
+        { new: true }
+    );
+}
 
 // Single source of truth for session token minting. Login, OTP verify, the
 // venue-owner upgrade and the new /refresh endpoint all route through here so
 // the expiry (and the claims) can never drift apart between call sites.
+// `tv` is the account's tokenVersion: bumping it (password change or reset)
+// invalidates every token issued before - see middleware/auth.js.
 function issueToken(user) {
     return jwt.sign(
-        { userId: user._id, role: user.role },
+        { userId: user._id, role: user.role, tv: user.tokenVersion || 0 },
         process.env.JWT_SECRET,
         { expiresIn: '7d' }
     );
@@ -22,10 +41,11 @@ const authService = {
     issueToken,
 
     /**
-     * Generate random 4-digit OTP
+     * Generate a random 6-digit OTP from a cryptographic source. It was 4 digits
+     * from Math.random, which made the password-reset code guessable.
      */
     generateOTP() {
-        return Math.floor(1000 + Math.random() * 9000).toString();
+        return crypto.randomInt(100000, 1000000).toString();
     },
 
     /**
@@ -185,17 +205,16 @@ const authService = {
             throw new Error('Verification code has expired. Please request a new one.');
         }
 
-        // Check attempts
-        if (otpRecord.attempts >= 5) {
+        // Spend a guess first, then compare (see takeOtpAttempt).
+        const attempt = await takeOtpAttempt(otpRecord);
+        if (!attempt) {
             await OTP.deleteOne({ _id: otpRecord._id });
             throw new Error('Too many failed attempts. Please request a new verification code.');
         }
 
         // Verify code
-        if (otpRecord.code !== code) {
-            otpRecord.attempts += 1;
-            await otpRecord.save();
-            const remainingAttempts = 5 - otpRecord.attempts;
+        if (otpRecord.code !== String(code)) {
+            const remainingAttempts = MAX_OTP_ATTEMPTS - attempt.attempts;
             throw new Error(`Invalid verification code. ${remainingAttempts} attempts remaining.`);
         }
 
@@ -307,6 +326,12 @@ const authService = {
             throw new Error('Invalid credentials');
         }
 
+        // A blocked account must not get a session. Checked after the password
+        // so it doesn't reveal which emails exist.
+        if (user.isBlocked) {
+            throw new Error('This account has been suspended. Please contact support.');
+        }
+
         // Check if email is verified
         if (!user.emailVerified) {
             throw new Error('EMAIL_NOT_VERIFIED');
@@ -357,7 +382,11 @@ const authService = {
         if (govIdType) user.govIdType = govIdType;
         if (govIdNumber) user.govIdNumber = govIdNumber;
         if (govIdDocument) user.govIdDocument = govIdDocument;
-        if (bankDetails) {
+        // Onboarding sets payout details only on an account that has none. Changing
+        // existing ones goes through the payout-account routes, which need the
+        // password - otherwise this was a way to redirect earnings without it.
+        const hasPayoutDetails = (user.bankAccounts || []).length > 0 || !!user.bankDetails?.accountNumber;
+        if (bankDetails && !hasPayoutDetails) {
             user.bankDetails = {
                 accountName: bankDetails.accountName ?? user.bankDetails?.accountName ?? null,
                 accountNumber: bankDetails.accountNumber ?? user.bankDetails?.accountNumber ?? null,
@@ -482,17 +511,16 @@ const authService = {
             throw new Error('Reset code has expired. Please request a new one.');
         }
 
-        // Check attempts
-        if (otpRecord.attempts >= 5) {
+        // Spend a guess first, then compare (see takeOtpAttempt).
+        const attempt = await takeOtpAttempt(otpRecord);
+        if (!attempt) {
             await OTP.deleteOne({ _id: otpRecord._id });
             throw new Error('Too many failed attempts. Please request a new reset code.');
         }
 
         // Verify code
-        if (otpRecord.code !== code) {
-            otpRecord.attempts += 1;
-            await otpRecord.save();
-            const remainingAttempts = 5 - otpRecord.attempts;
+        if (otpRecord.code !== String(code)) {
+            const remainingAttempts = MAX_OTP_ATTEMPTS - attempt.attempts;
             throw new Error(`Invalid reset code. ${remainingAttempts} attempts remaining.`);
         }
 
@@ -550,6 +578,10 @@ const authService = {
 
         const salt = await bcrypt.genSalt(10);
         user.password = await bcrypt.hash(newPassword, salt);
+        // Sign out every other session - if the password changed because the
+        // account was compromised, the attacker's token must stop working. The
+        // caller gets a fresh token so this device stays signed in.
+        user.tokenVersion = (user.tokenVersion || 0) + 1;
         await user.save();
 
         // Tell the owner their password moved - this is the signal that
@@ -558,7 +590,7 @@ const authService = {
             console.error('Failed to send password changed email:', err.message);
         });
 
-        return { success: true, message: 'Password changed successfully.' };
+        return { success: true, message: 'Password changed successfully.', token: issueToken(user) };
     },
 
     async resetPassword({ resetToken, newPassword }) {
@@ -581,6 +613,13 @@ const authService = {
             throw new Error(passwordCheck.errors.join('. '));
         }
 
+        // One reset per verified code: consume the verified OTP record, atomically.
+        // The reset token used to work any number of times for its 15 minutes.
+        const consumed = await OTP.findOneAndDelete({ email, type: 'password_reset', verified: true });
+        if (!consumed) {
+            throw new Error('Invalid or expired reset token. Please request a new reset code.');
+        }
+
         // Find user
         const user = await User.findOne({ email });
         if (!user) {
@@ -591,8 +630,9 @@ const authService = {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-        // Update password
+        // Update password, and sign out every existing session (tokenVersion).
         user.password = hashedPassword;
+        user.tokenVersion = (user.tokenVersion || 0) + 1;
         await user.save();
 
         // Delete any remaining reset OTPs

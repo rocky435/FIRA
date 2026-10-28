@@ -234,6 +234,42 @@ class EmailService {
    * @param {string} name - User's name
    * @returns {Promise<boolean>} - Success status
    */
+  /**
+   * Tell the account holder their payout bank details changed. This is the signal
+   * that surfaces a takeover trying to redirect earnings, so it is sent for every
+   * change (added, removed, default switched, details edited).
+   */
+  async sendPayoutAccountChangedEmail(email, name, change) {
+    try {
+      if (!this.transporter) {
+        return false;
+      }
+
+      const mailOptions = {
+        from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to: email,
+        subject: 'Your FIRA payout account was changed',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #8b5cf6;">Payout Account Changed</h2>
+            <p>Hey ${name || 'there'},</p>
+            <p>The bank account your FIRA earnings are paid to was just changed: <strong>${change}</strong>.</p>
+            <p>If you didn't make this change, change your password and contact us immediately.</p>
+            <br>
+            <p>- FIRA Team</p>
+          </div>
+        `,
+        text: `Hey ${name || 'there'}!\n\nThe bank account your FIRA earnings are paid to was just changed: ${change}.\n\nIf you didn't make this change, change your password and contact us immediately.\n\n- FIRA Team`
+      };
+
+      await this.transporter.sendMail(mailOptions);
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to send payout account changed email:', error.message);
+      return false;
+    }
+  }
+
   async sendPasswordChangedEmail(email, name) {
     try {
       if (!this.transporter) {
@@ -417,6 +453,83 @@ class EmailService {
    * @param {object} details - { venueName, daysLeft, balanceAmount, balanceDueAt, bookingId }
    * @returns {Promise<boolean>} - Success status
    */
+  /**
+   * Final notice, 2 days before the booking: pay the balance now, or cancel
+   * (and get back what the venue's cancellation policy allows). After the
+   * deadline - 24 hours before the booking - the booking is cancelled and the
+   * deposit is forfeited.
+   */
+  async sendBalanceFinalNoticeEmail(to, name, details) {
+    try {
+      if (!this.transporter) {
+        return false;
+      }
+      const { venueName, balanceAmount, balanceDueAt, bookingId } = details;
+      const due = new Date(balanceDueAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const link = `${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/bookings/${bookingId}`;
+      const mailOptions = {
+        from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to,
+        subject: `Final notice: pay ₹${balanceAmount} or cancel your booking at ${venueName}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #8b5cf6;">Your booking needs action</h2>
+            <p>Hey ${name || 'there'},</p>
+            <p>The remaining <strong>₹${balanceAmount}</strong> for your booking at <strong>${venueName}</strong> is still unpaid.</p>
+            <p><strong>Pay it by ${due}</strong> to keep your booking.</p>
+            <p>If you can't make it, cancel the booking before then - you will get back what the venue's cancellation policy allows.</p>
+            <p>If it is neither paid nor cancelled by ${due}, the booking is cancelled automatically and the deposit is not refunded.</p>
+            <p><a href="${link}" style="color: #8b5cf6;">Pay or cancel now</a></p>
+            <br>
+            <p>- FIRA Team</p>
+          </div>
+        `,
+        text: `Hey ${name || 'there'}!\n\nThe remaining ₹${balanceAmount} for your booking at ${venueName} is still unpaid.\nPay it by ${due} to keep your booking, or cancel before then to get back what the venue's cancellation policy allows.\nIf it is neither paid nor cancelled by ${due}, the booking is cancelled automatically and the deposit is not refunded.\n\n${link}\n\n- FIRA Team`
+      };
+      await this.transporter.sendMail(mailOptions);
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to send balance final notice email:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * A short booking update to the guest with a link to the booking: accepted -
+   * pay to confirm, your booking is tomorrow, and the like. `lines` are plain
+   * text paragraphs (escaped here; venue names are user-entered).
+   */
+  async sendBookingUpdateEmail(to, name, { subject, heading, lines = [], bookingId, linkText = 'View booking' }) {
+    try {
+      if (!this.transporter || !to) {
+        return false;
+      }
+      const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const link = `${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/bookings/${bookingId}`;
+      const mailOptions = {
+        from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to,
+        subject,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #8b5cf6;">${esc(heading)}</h2>
+            <p>Hey ${esc(name || 'there')},</p>
+            ${lines.map(line => `<p>${esc(line)}</p>`).join('\n            ')}
+            <p><a href="${link}" style="color: #8b5cf6;">${esc(linkText)}</a></p>
+            <br>
+            <p>- FIRA Team</p>
+          </div>
+        `,
+        text: `Hey ${name || 'there'}!\n\n${lines.join('\n\n')}\n\n${link}\n\n- FIRA Team`
+      };
+      await this.transporter.sendMail(mailOptions);
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to send booking update email:', error.message);
+      return false;
+    }
+  }
+
   async sendBalanceReminderEmail(to, name, details) {
     try {
       if (!this.transporter) {

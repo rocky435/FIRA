@@ -405,7 +405,11 @@ export default function VenuesPage() {
     //     );
     // };
 
-    const Section = ({ title, data, sort }: { title: string; data: Venue[]; sort?: string }) => {
+    // A render helper, not a component: declared inside the page so it can read
+    // the page's state, and called as a function so React does not see a brand-new
+    // component type on every render (which remounted each section - resetting
+    // its scroll position and replaying its animation - on every state change).
+    const renderSection = ({ title, data, sort }: { title: string; data: Venue[]; sort?: string }) => {
         if (!data || data.length === 0) return null;
 
         return (
@@ -539,14 +543,14 @@ export default function VenuesPage() {
                                 venues. Section returns null for an empty list,
                                 so a city with nothing simply drops the block -
                                 no empty state, no dead space. */}
-                            <Section
-                                title={selectedCity ? `Near You in ${selectedCity}` : 'Near You'}
-                                data={sections.nearby}
-                            />
+                            {renderSection({
+                                title: selectedCity ? `Near You in ${selectedCity}` : 'Near You',
+                                data: sections.nearby,
+                            })}
 
-                            <Section title="Top Rated" data={sections.topRated} sort="topRated" />
-                            <Section title="In Demand" data={sections.inDemand} sort="inDemand" />
-                            <Section title="Recently Added" data={sections.latest} sort="latest" />
+                            {renderSection({ title: "Top Rated", data: sections.topRated, sort: "topRated" })}
+                            {renderSection({ title: "In Demand", data: sections.inDemand, sort: "inDemand" })}
+                            {renderSection({ title: "Recently Added", data: sections.latest, sort: "latest" })}
 
                             {/* CTA Section */}
                             <FadeIn>

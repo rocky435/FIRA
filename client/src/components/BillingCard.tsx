@@ -31,7 +31,8 @@ export function calculateBilling(
   const platformFee = roundMoney(subtotal * platformFeePercentage / 100);
   const gstAmount = roundMoney(platformFee * 0.18);
   const grossTotal = roundMoney(subtotal + platformFee + gstAmount);
-  const appliedDiscount = roundMoney(Math.min(Math.max(0, discountAmount || 0), grossTotal));
+  // Off the ticket price only - the platform fee and GST are always charged in full.
+  const appliedDiscount = roundMoney(Math.min(Math.max(0, discountAmount || 0), subtotal));
   const totalAmount = roundMoney(grossTotal - appliedDiscount);
 
   return { subtotal, platformFee, gstAmount, grossTotal, discountAmount: appliedDiscount, totalAmount };

@@ -80,7 +80,10 @@ const lastChargedRupees = () => chargedRupees[chargedRupees.length - 1];
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({ instance: { launchTimeout: 60000 } });
+  // The shared setup (setup.ts) has already connected to its own server;
+  // this file uses a server of its own, so leave that one first.
+  await mongoose.disconnect();
   await mongoose.connect(mongoServer.getUri());
 }, 60000);
 
@@ -270,12 +273,13 @@ describe('calculateBilling — money math invariant (broad sweep)', () => {
         fc.nat({ max: 100000 }),
         (price, qty, feePct, rawDiscount) => {
           const b = paymentService.calculateBilling(price, qty, feePct, rawDiscount);
-          // Discount comes off the total payable, capped at it.
+          // A discount comes off the ticket price only, capped at it: the
+          // platform fee and GST are always paid in full.
           return (
             b.grossTotal === roundMoney(b.subtotal + b.platformFee + b.gstAmount) &&
-            b.discountAmount === roundMoney(Math.min(rawDiscount, b.grossTotal)) &&
+            b.discountAmount === roundMoney(Math.min(rawDiscount, b.subtotal)) &&
             b.totalAmount === roundMoney(b.grossTotal - b.discountAmount) &&
-            b.totalAmount >= 0
+            b.totalAmount >= roundMoney(b.platformFee + b.gstAmount) - 0.01
           );
         }
       ),

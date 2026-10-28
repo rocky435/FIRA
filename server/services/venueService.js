@@ -1,9 +1,11 @@
 const Venue = require('../models/Venue');
+const { normalisePricing } = require('../utils/venuePricing');
 const Booking = require('../models/Booking');
 const VenueReview = require('../models/VenueReview');
 const { citySlug } = require('../utils/citySlug');
 const { escapeRegex } = require('../utils/escapeRegex');
 const { roundMoney } = require('../utils/money');
+const { stripProtected } = require('../utils/stripProtected');
 
 const DEFAULT_CANCELLATION_POLICY = {
     freeCancellationHours: 48,
@@ -158,12 +160,20 @@ const venueService = {
 
     // Create venue
     async createVenue(data) {
+        // Same protected fields as an update: a new listing starts 'pending' for
+        // admin review at the default platform fee. Create used to take the body
+        // whole, so a venue could be created already approved, verified, rated and
+        // at 0% platform fee. `owner` is the signed-in caller, set by the route.
+        const safe = venueService.stripProtectedFields(data);
+        // Every venue needs a day rate above 0; demand prices are checked too.
+        safe.pricing = normalisePricing(safe.pricing);
         // Trust boundary: payoutAccount comes from the client through a
         // .passthrough() body schema, so verify it is one of this owner's own saved
         // accounts before storing it. Anything else becomes null = use my default.
         const { sanitizePayoutAccount } = require('../utils/payoutAccount');
         const venue = await Venue.create({
-            ...data,
+            ...safe,
+            owner: data.owner,
             payoutAccount: await sanitizePayoutAccount(data.owner, data.payoutAccount),
         });
         return venue;
@@ -175,19 +185,30 @@ const venueService = {
     // 'approved' } to self-approve (bypassing admin review), forge
     // rating/isVerified, or reassign `owner` to steal/dump a venue. Status is
     // changed only via adminService; soft-delete only via deleteVenue.
-    PROTECTED_VENUE_FIELDS: ['status', 'isVerified', 'isDeleted', 'deletedAt', 'owner', 'rating', '_id', 'createdAt', 'updatedAt'],
+    // platformFeePercentage is the platform's commission - not the owner's to set
+    // (it was writable, so an owner could list their venue at 0%).
+    PROTECTED_VENUE_FIELDS: ['status', 'isVerified', 'isDeleted', 'deletedAt', 'owner', 'rating',
+        'platformFeePercentage', '_id', 'createdAt', 'updatedAt'],
 
     // Pure: return a copy of an update payload with owner-protected fields
-    // removed. Kept separate so it is unit-testable without a DB round-trip.
+    // removed (dotted paths like "rating.average" included). Kept separate so it
+    // is unit-testable without a DB round-trip.
     stripProtectedFields(updateData = {}) {
-        const safe = { ...updateData };
-        for (const field of venueService.PROTECTED_VENUE_FIELDS) delete safe[field];
-        return safe;
+        return stripProtected(updateData, venueService.PROTECTED_VENUE_FIELDS);
     },
 
     // Update venue
     async updateVenue(id, updateData) {
         const safe = venueService.stripProtectedFields(updateData);
+
+        // Pricing changes as a whole object, checked like on create: a dotted
+        // "pricing.pricePerDay" could otherwise set the day rate to 0.
+        for (const key of Object.keys(safe)) {
+            if (key.startsWith('pricing.')) delete safe[key];
+        }
+        if ('pricing' in safe) {
+            safe.pricing = normalisePricing(safe.pricing);
+        }
 
         // Same trust boundary as createVenue. payoutAccount is deliberately not in
         // PROTECTED_VENUE_FIELDS - an owner may move their own earnings to another of
@@ -202,6 +223,8 @@ const venueService = {
             safe.payoutAccount = await sanitizePayoutAccount(existing.owner, safe.payoutAccount);
         }
 
+        const before = 'images' in safe ? await Venue.findById(id).select('images').lean() : null;
+
         const venue = await Venue.findByIdAndUpdate(
             id,
             { $set: safe },
@@ -209,6 +232,13 @@ const venueService = {
         );
         if (!venue) {
             throw new Error('Venue not found');
+        }
+
+        // Photos taken off the listing are deleted from storage once the edit
+        // is saved (not when the owner clicks remove, which a cancelled edit
+        // would leave as a broken image).
+        if (before) {
+            require('./uploadService').deleteRemovedImages(before.images, venue.images);
         }
         return venue;
     },
@@ -347,30 +377,85 @@ const venueService = {
         const now = new Date();
         const hoursRemaining = (bookingDate.getTime() - now.getTime()) / (1000 * 60 * 60);
 
-        // Apply policy tiers
-        if (hoursRemaining <= noCancellationHours) {
+        // Apply policy tiers. The policy is about money paid: a request, or an
+        // accepted booking not paid for yet, can be withdrawn at any time.
+        const paid = booking.paymentStatus === 'paid';
+        if (paid && hoursRemaining <= noCancellationHours) {
             throw new Error('Cancellation window has passed');
         }
 
         let result;
-        if (hoursRemaining > freeCancellationHours) {
+        if (!paid) {
+            result = { refundType: 'none', refundPercentage: 0 };
+        } else if (hoursRemaining > freeCancellationHours) {
             result = { refundType: 'full', refundPercentage: 100 };
         } else {
             // noCancellationHours < hoursRemaining <= freeCancellationHours
             result = { refundType: 'partial', refundPercentage: partialRefundPercentage };
         }
 
+        // Claim the cancellation atomically: only a live booking can be cancelled,
+        // and only once - this used to re-cancel cancelled, rejected or completed
+        // bookings, and two quick taps would both proceed.
+        const claimed = await Booking.findOneAndUpdate(
+            { _id: bookingId, status: { $in: ['pending', 'accepted'] } },
+            { $set: { status: 'cancelled', cancellationReason: 'cancelled_by_guest' } },
+            { new: true }
+        );
+        if (!claimed) {
+            throw new Error(`A ${booking.status} booking cannot be cancelled`);
+        }
+
         // Req 6.1/6.2 — refund is a percentage of the amount actually paid:
         // deposit + balance when the balance is paid, otherwise the deposit alone
-        // (or the full total for legacy/full bookings). Single source of truth.
-        const { amountPaid, refundAmount } = venueService.computeRefund(
-            booking.paymentSchedule, booking.totalAmount, result.refundPercentage
-        );
-        result.amountPaid = amountPaid;
-        result.refundAmount = refundAmount;
+        // (or the full total for legacy/full bookings). Nothing was paid on a
+        // booking whose payment never went through, so nothing is refunded.
+        // Platform fee and GST are not part of the base (Req 6.2 counts the
+        // installments, not the charges on top of them).
+        // Every refund waits for an admin: these are requests in "Refunds to be
+        // done", and no money moves until one is paid. Previously the refund was
+        // computed, returned to the client - and never paid at all.
+        const refundService = require('./refundService');
+        const { amountPaid, refunds } = await refundService.raiseBookingRefunds(booking, result.refundPercentage, {
+            reasonDetails: `Guest cancelled booking ${bookingId} (${result.refundPercentage}% under the venue policy)`,
+            userId,
+        });
 
-        // Update booking status to cancelled
-        await Booking.findByIdAndUpdate(bookingId, { $set: { status: 'cancelled' } });
+        result.amountPaid = amountPaid;
+        result.refundAmount = roundMoney(refunds.reduce((sum, r) => sum + r.amount, 0));
+        result.refundStatus = refunds.length ? 'pending_approval' : 'none';
+        result.refunds = refunds.map(r => ({ _id: r._id, amount: r.amount, status: r.status }));
+
+        // Free the dates for other guests. This never happened on cancellation, so
+        // a cancelled booking kept its days blocked on the venue calendar.
+        try {
+            const { releaseBookingDays } = require('../utils/venueAvailability');
+            releaseBookingDays(venue, booking);
+            await venue.save({ validateModifiedOnly: true });
+        } catch (err) {
+            console.error(`Failed to release calendar for booking ${bookingId}:`, err.message);
+        }
+
+        const notificationService = require('./notificationService');
+        const when = new Date(booking.bookingDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+        notificationService.createNotification({
+            userId: booking.user,
+            type: 'booking_cancelled',
+            title: 'Booking cancelled',
+            message: result.refundAmount > 0
+                ? `Your booking at ${venue.name} on ${when} is cancelled. A refund of ₹${result.refundAmount} has been requested and will be sent once approved.`
+                : `Your booking at ${venue.name} on ${when} is cancelled.`,
+            data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: '/dashboard/bookings' },
+            priority: 'medium'
+        }).catch(err => console.error('booking_cancelled notification failed:', err.message));
+        notificationService.createNotification({
+            userId: venue.owner,
+            type: 'booking_cancelled',
+            title: 'Booking cancelled',
+            message: `A booking at ${venue.name} on ${when} was cancelled by the guest. The date is free again.`,
+            data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: '/dashboard/requests' },
+            priority: 'medium'
+        }).catch(err => console.error('booking_cancelled owner notification failed:', err.message));
 
         return result;
     }

@@ -107,6 +107,12 @@ const adminApi = {
         return handle(res, 'Failed to fetch user');
     },
 
+    // The user's government ID, with a document link that works for 10 minutes.
+    async getGovId(userId) {
+        const res = await fetch(`${API_BASE}/users/${userId}/gov-id`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch ID document');
+    },
+
     async blockUser(userId) {
         const res = await fetch(`${API_BASE}/users/${userId}/block`, { method: 'PUT', headers: authHeaders() });
         return handle(res, 'Failed to block user');
@@ -243,22 +249,6 @@ const adminApi = {
         return handle(res, 'Failed to fetch audit trail');
     },
 
-    async deleteAuditEntry(id) {
-        const res = await fetch(`${API_BASE}/audit-trail/${id}`, {
-            method: 'DELETE',
-            headers: authHeaders()
-        });
-        return handle(res, 'Failed to delete audit entry');
-    },
-
-    async clearAuditTrail() {
-        const res = await fetch(`${API_BASE}/audit-trail/all`, {
-            method: 'DELETE',
-            headers: authHeaders()
-        });
-        return handle(res, 'Failed to clear audit trail');
-    },
-
     // ================== PER-LISTING SETTLEMENT ==================
     async getListingSettlement(kind, listingId) {
         const res = await fetch(`${API_BASE}/listings/${kind}/${listingId}/settlement`, { headers: authHeaders() });
@@ -284,6 +274,26 @@ const adminApi = {
     },
 
     // ================== DISCOUNT CODES ==================
+    // ================== REFUNDS ==================
+    // Every customer refund is raised as a pending request ("Refunds to be done");
+    // refunds are paid manually and then recorded here.
+    async getRefunds(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        const res = await fetch(`${MAIN_API_BASE}/payments/refunds?${query}`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch refunds');
+    },
+
+    // action 'approve' records a refund already paid manually, under `reference`
+    // (Razorpay refund ID or bank UTR); 'reject' needs `notes` as the reason.
+    async processRefund(refundId, action, notes = '', reference = '') {
+        const res = await fetch(`${MAIN_API_BASE}/payments/refunds/${refundId}/process`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ action, notes, reference })
+        });
+        return handle(res, `Failed to ${action} refund`);
+    },
+
     async getDiscountCodes() {
         const res = await fetch(`${MAIN_API_BASE}/discounts/admin/discount-codes`, { headers: authHeaders() });
         return handle(res, 'Failed to fetch discount codes');
@@ -316,15 +326,6 @@ const adminApi = {
             headers: authHeaders()
         });
         return handle(res, 'Failed to delete discount code');
-    },
-
-    // ================== DATA WIPE (development/testing) ==================
-    async wipePaymentData() {
-        const res = await fetch(`${API_BASE}/wipe-payment-data`, {
-            method: 'DELETE',
-            headers: authHeaders()
-        });
-        return handle(res, 'Failed to wipe payment data');
     }
 };
 

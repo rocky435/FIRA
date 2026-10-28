@@ -5,6 +5,7 @@ const auth = require('../middleware/auth');
 const adminAuth = require('../middleware/adminAuth');
 const Event = require('../models/Event');
 const DiscountCode = require('../models/DiscountCode');
+const { hasRole } = require('../utils/roleUtils');
 
 // POST /events/:id/discount-codes — create discount code (requires auth + event ownership)
 router.post('/events/:id/discount-codes', auth, async (req, res) => {
@@ -59,9 +60,19 @@ router.delete('/discount-codes/:id', auth, async (req, res) => {
     }
 });
 
-// GET /events/:id/discount-codes — list discount codes for an event (requires auth)
+// GET /events/:id/discount-codes — list discount codes for an event (organizer or admin)
+// Any signed-in user could list an event's codes, private ones included.
 router.get('/events/:id/discount-codes', auth, async (req, res) => {
     try {
+        const event = require('mongoose').isValidObjectId(req.params.id)
+            ? await Event.findById(req.params.id).select('organizer').lean()
+            : null;
+        if (!event) {
+            return res.status(404).json({ error: 'Event not found' });
+        }
+        if (event.organizer.toString() !== req.user._id.toString() && !hasRole(req.user, 'admin')) {
+            return res.status(403).json({ error: 'Only the event organizer can view its discount codes' });
+        }
         const codes = await DiscountCode.find({ event: req.params.id }).sort({ createdAt: -1 });
         res.json(codes);
     } catch (error) {

@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const authService = require('../services/authService');
 const auth = require('../middleware/auth');
-const { registerLimiter, otpLimiter, loginLimiter } = require('../middleware/rateLimiters');
+const { registerLimiter, otpLimiter, otpPerEmailLimiter, loginLimiter } = require('../middleware/rateLimiters');
 
 /**
  * @typedef {import('../middleware/types').AuthenticatedRequest} AuthenticatedRequest
@@ -116,7 +116,7 @@ router.post('/verify-otp', otpLimiter, /** @param {AuthenticatedRequest} req @pa
 });
 
 // POST /api/auth/resend-otp - Resend OTP
-router.post('/resend-otp', otpLimiter, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+router.post('/resend-otp', otpLimiter, otpPerEmailLimiter, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const { email } = req.body;
 
@@ -182,7 +182,7 @@ router.get('/me', auth, /** @param {AuthenticatedRequest} req @param {Response} 
 });
 
 // POST /api/auth/forgot-password - Request password reset
-router.post('/forgot-password', otpLimiter, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+router.post('/forgot-password', otpLimiter, otpPerEmailLimiter, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const { email } = req.body;
 

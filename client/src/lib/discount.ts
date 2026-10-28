@@ -10,8 +10,8 @@ export interface AppliedDiscount {
 }
 
 /**
- * The rupee value of a code against `baseAmount` - the order's total payable
- * (ticket subtotal + platform fee + GST). Mirror of
+ * The rupee value of a code against `baseAmount` - the ticket subtotal (price x
+ * quantity); a discount never reduces the platform fee or GST. Mirror of
  * server/services/discountService.js `computeDiscountAmount`.
  *
  * The checkout keeps the code's type and value and re-prices it here on every

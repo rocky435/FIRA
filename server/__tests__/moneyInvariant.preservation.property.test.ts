@@ -73,7 +73,10 @@ const lastChargedRupees = () => chargedRupees[chargedRupees.length - 1];
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({ instance: { launchTimeout: 60000 } });
+  // The shared setup (setup.ts) has already connected to its own server;
+  // this file uses a server of its own, so leave that one first.
+  await mongoose.disconnect();
   await mongoose.connect(mongoServer.getUri());
 }, 60000);
 
@@ -140,16 +143,18 @@ describe('Preservation — booking advance subtotal is 10% of the booking total'
       const booking = await Booking.create({
         user: user._id,
         venue: new mongoose.Types.ObjectId(),
-        bookingDate: new Date(Date.now() + 3 * 24 * 3600 * 1000),
+        // More than 7 days out, so the 10% advance is on offer (nearer than
+        // that the whole amount is due at once).
+        bookingDate: new Date(Date.now() + 30 * 24 * 3600 * 1000),
         startTime: '10:00',
         endTime: '12:00',
         status: 'accepted',
         totalAmount,
       });
 
-      await bookingService.initiateBookingPayment(booking._id, user._id);
+      await bookingService.initiateBookingPayment(booking._id, user._id, { plan: 'advance' });
 
-      const advance = Math.round(totalAmount * 0.10);
+      const advance = Math.round(totalAmount * 0.10 * 100) / 100; // to the paise, like roundMoney
       const expected = paymentService.calculateBilling(advance, 1, 5);
       const charged = lastChargedRupees();
       const payment = await Payment.findOne({ referenceId: booking._id, referenceModel: 'Booking' });

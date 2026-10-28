@@ -17,6 +17,16 @@ function dayKey(date) {
 }
 
 /**
+ * The server-local calendar day of an instant, as 'YYYY-MM-DD'. Production runs
+ * with TZ=Asia/Kolkata, so this is the day in India - what an event at 1am IST
+ * means by "its day", where dayKey (UTC) would give the day before.
+ */
+function localDayKey(date) {
+    const d = new Date(date);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
  * True if the venue has an owner-set 'busy' block on the given day.
  * `blockedDates` may be undefined on older venue docs - treated as "no blocks".
  */
@@ -135,8 +145,19 @@ function releaseBookingDays(venue, booking) {
     venue.blockedDates = venue.blockedDates.filter(d => !keys.has(d.date) || (d.slots && d.slots.length > 0));
 }
 
+/**
+ * Whether a venue can take bookings or host events: approved by an admin,
+ * active, and not deleted.
+ * @param {{ status?: string, isActive?: boolean, isDeleted?: boolean } | null | undefined} venue
+ */
+function isVenueBookable(venue) {
+    return !!venue && venue.status === 'approved' && venue.isActive !== false && venue.isDeleted !== true;
+}
+
 module.exports = {
+    isVenueBookable,
     dayKey,
+    localDayKey,
     isDayBlockedByOwner,
     isDayTaken,
     bookingDayKeys,

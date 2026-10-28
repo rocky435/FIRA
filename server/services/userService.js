@@ -7,10 +7,32 @@ const Booking = require('../models/Booking');
 const Ticket = require('../models/Ticket');
 const Notification = require('../models/Notification');
 const PushSubscription = require('../models/PushSubscription');
+const DeviceToken = require('../models/DeviceToken');
 const Inquiry = require('../models/Inquiry');
 const bankDetailsValidator = require('../utils/bankDetailsValidator');
 
+// What anyone may see about an account. Everything else - email, phone, bank
+// accounts, government ID, block/verification state - is for the owner and
+// admins only. The profile route used to return the whole document to anyone.
+const PUBLIC_PROFILE_FIELDS = [
+    '_id', 'name', 'avatar', 'coverPhoto', 'description', 'city', 'citySlug',
+    'socialLinks', 'role', 'roles', 'isVerified', 'verificationBadge',
+    'followers', 'following', 'createdAt',
+];
+
+// What a user may change on their own account through PUT /users/:id. Roles,
+// verification, block state, bank and KYC fields each have their own guarded
+// flow; this route used to $set the whole request body, so a user could send
+// {"roles":["admin"]} and become an admin.
+const SELF_EDITABLE_FIELDS = [
+    'name', 'phone', 'description', 'avatar', 'coverPhoto', 'socialLinks',
+    'city', 'address', 'location', 'ownerName', 'businessName', 'businessPhone',
+];
+
 const userService = {
+    PUBLIC_PROFILE_FIELDS,
+    SELF_EDITABLE_FIELDS,
+
     // Get all users
     async getAllUsers(query = {}) {
         const { page = 1, limit = 10, role } = query;
@@ -152,9 +174,11 @@ const userService = {
         }
     },
 
-    // Get user by ID
-    async getUserById(id) {
-        const user = await User.findById(id).select('-password').lean();
+    // Get user by ID. `publicOnly` limits the result to PUBLIC_PROFILE_FIELDS -
+    // use it whenever the caller is not the account owner or an admin.
+    async getUserById(id, { publicOnly = false } = {}) {
+        const projection = publicOnly ? PUBLIC_PROFILE_FIELDS.join(' ') : '-password';
+        const user = await User.findById(id).select(projection).lean();
         if (!user) {
             throw new Error('User not found');
         }
@@ -171,12 +195,15 @@ const userService = {
 
     // Update user
     async updateUser(id, updateData) {
-        const { password, ...safeData } = updateData; // Don't allow password update here
+        const safeData = {};
+        for (const key of SELF_EDITABLE_FIELDS) {
+            if (updateData && updateData[key] !== undefined) safeData[key] = updateData[key];
+        }
 
         const user = await User.findByIdAndUpdate(
             id,
             { $set: safeData },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('-password');
 
         if (!user) {
@@ -207,6 +234,18 @@ const userService = {
             throw new Error('User not found');
         }
 
+        // Nothing upcoming or ongoing may be left behind: deleting used to wipe
+        // the account's events and venues - and other customers' paid tickets
+        // and bookings with them. The caller gets the list to finish first.
+        const removal = require('./listingRemovalService');
+        const blockers = await removal.accountDeletionBlockers(userId);
+        if (removal.hasAny(blockers)) {
+            throw Object.assign(
+                new Error('This account still has upcoming or ongoing events, bookings or tickets. Finish or cancel them first.'),
+                { status: 409, blockers }
+            );
+        }
+
         await Promise.all([
             Event.deleteMany({ organizer: userId }),
             Venue.deleteMany({ owner: userId }),
@@ -216,6 +255,7 @@ const userService = {
             Ticket.deleteMany({ user: userId }),
             Notification.deleteMany({ user: userId }),
             PushSubscription.deleteMany({ user: userId }),
+            DeviceToken.deleteMany({ user: userId }),
             Inquiry.deleteMany({ user: userId }),
         ]);
 

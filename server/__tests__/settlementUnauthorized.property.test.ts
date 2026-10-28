@@ -307,7 +307,9 @@ describe('Property 16 — unauthorized requests are rejected and write nothing',
                 const res = await send(target, base, String(seed._id), token);
                 const label = `${who} on ${target}`;
 
-                if (ACCEPTED.includes(who)) {
+                // An admin with no sub-role may read (roleGuard's documented
+                // fallback for admins from before sub-roles) but never write.
+                if (ACCEPTED.includes(who) || (who === 'missingAdminRole' && target === 'read')) {
                     // Req 11.1/11.2 — the two authorized roles get through and
                     // reach the service. Without this half, rejecting everything
                     // would satisfy the property.

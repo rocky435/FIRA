@@ -77,7 +77,15 @@ const bookingSchema = new mongoose.Schema({
         ref: 'Payment',
         default: null
     },
+    // Once the owner accepts, the guest pays the advance or the whole amount by
+    // this, or the booking is cancelled and the dates released.
+    paymentDueAt: {
+        type: Date,
+        default: null
+    },
     ownerResponse: {
+        // The owner accepts or rejects by this; an unanswered request then expires.
+        respondBy: { type: Date, default: null },
         respondedAt: { type: Date, default: null },
         modifiedDates: {
             bookingDate: { type: Date, default: null },
@@ -96,7 +104,11 @@ const bookingSchema = new mongoose.Schema({
             default: 'not_applicable'
         },
         balancePayment: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', default: null },
-        lastReminderOn: { type: String, default: null } // 'YYYY-MM-DD', once-per-day reminder dedupe
+        lastReminderOn: { type: String, default: null }, // 'YYYY-MM-DD', once-per-day reminder dedupe
+        // When the one-time "pay now or cancel" email went out, 2 days before the booking.
+        finalNoticeSentAt: { type: Date, default: null },
+        // When the "your booking is tomorrow" reminder went out, to a fully paid booking.
+        dayBeforeReminderSentAt: { type: Date, default: null }
     },
     cancellationReason: { type: String, default: null } // e.g. 'missed_payment_deadline'
 }, {

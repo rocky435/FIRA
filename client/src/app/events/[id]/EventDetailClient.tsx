@@ -133,12 +133,21 @@ export default function EventDetailClient({ initialEvent = null }: { initialEven
         }
     };
 
-    const submitPrivateCode = () => {
-        if (privateCode === event?.privateCode) {
+    // Checked by the server: the page never receives the event's code, so it
+    // cannot (and must not) compare it here. The verified code is then sent with
+    // the purchase, which the server checks again.
+    const [isCheckingCode, setIsCheckingCode] = useState(false);
+    const submitPrivateCode = async () => {
+        if (!event?._id || !privateCode.trim()) return;
+        setIsCheckingCode(true);
+        try {
+            await eventsApi.verifyCode(event._id, privateCode.trim());
             setIsPrivateCodeModalOpen(false);
             setIsTicketModalOpen(true);
-        } else {
-            showToast('Invalid access code', 'error');
+        } catch (err: any) {
+            showToast(err?.status === 429 ? 'Too many attempts. Please wait a few minutes.' : 'Invalid access code', 'error');
+        } finally {
+            setIsCheckingCode(false);
         }
     };
 
@@ -183,6 +192,8 @@ export default function EventDetailClient({ initialEvent = null }: { initialEven
                 // The server re-validates and re-prices the code; without it the
                 // discount the buyer was shown was never actually charged.
                 ...(appliedDiscount ? { discountCode: appliedDiscount.code } : {}),
+                // Private events: the server re-checks the access code on purchase.
+                ...(event.eventType === 'private' ? { accessCode: privateCode.trim() } : {}),
             });
 
             // 2. Handle Payment Flow (keeping for future when payments are enabled)
@@ -917,8 +928,8 @@ export default function EventDetailClient({ initialEvent = null }: { initialEven
                         <Button variant="secondary" className="flex-1" onClick={() => setIsPrivateCodeModalOpen(false)}>
                             Cancel
                         </Button>
-                        <Button className="flex-1" onClick={submitPrivateCode}>
-                            Submit
+                        <Button className="flex-1" onClick={submitPrivateCode} disabled={isCheckingCode || !privateCode.trim()}>
+                            {isCheckingCode ? 'Checking...' : 'Submit'}
                         </Button>
                     </div>
                 </div>
@@ -948,11 +959,11 @@ export default function EventDetailClient({ initialEvent = null }: { initialEven
                     // Price shown for the active selection.
                     const activePrice = selectedTier ? selectedTier.price : event.ticketPrice;
                     const feePct = (event as { platformFeePercentage?: number }).platformFeePercentage ?? 5;
-                    // The discount comes off the total payable (ticket + fee + GST)
-                    // and is recomputed from the current tier and quantity.
-                    const grossTotal = calculateBilling(activePrice, ticketQuantity, feePct).totalAmount;
+                    // The discount comes off the ticket price (price x quantity) only,
+                    // never the fee or GST, recomputed from the current tier and quantity.
+                    const ticketSubtotal = calculateBilling(activePrice, ticketQuantity, feePct).subtotal;
                     const discountAmount = appliedDiscount
-                        ? computeDiscountAmount(appliedDiscount.type, appliedDiscount.value, grossTotal)
+                        ? computeDiscountAmount(appliedDiscount.type, appliedDiscount.value, ticketSubtotal)
                         : 0;
                     return (
                 <div className="space-y-6">
@@ -1065,7 +1076,7 @@ export default function EventDetailClient({ initialEvent = null }: { initialEven
                             <>
                                 <DiscountCodeInput
                                     eventId={event._id!}
-                                    amount={grossTotal}
+                                    subtotal={ticketSubtotal}
                                     onApplied={(discount) => setAppliedDiscount(discount)}
                                     onRemoved={() => setAppliedDiscount(null)}
                                     appliedCode={appliedDiscount?.code ?? null}

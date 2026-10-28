@@ -7,7 +7,51 @@ const earningsService = require('../services/earningsService');
 const settlementService = require('../services/settlementService');
 
 const auth = require('../middleware/auth');
-const { publicCache, invalidateCache } = require('../middleware/httpCache');
+const { requireAuth } = auth;
+const { publicCache, noStoreCache, invalidateCache } = require('../middleware/httpCache');
+const { optionalAuth } = auth;
+const { loginLimiter } = require('../middleware/rateLimiters');
+const { hasRole } = require('../utils/roleUtils');
+const Event = require('../models/Event');
+
+/**
+ * Load the event and confirm the caller is its organizer (or an admin).
+ * Edit, delete and cancel only required *a* signed-in user, so anyone could
+ * change, delete or cancel (and mass-refund) any event.
+ * Sends the 404/403 itself and returns null when the caller may not proceed.
+ */
+async function requireEventOrganizer(req, res) {
+    const event = require('mongoose').isValidObjectId(req.params.id)
+        ? await Event.findById(req.params.id).select('organizer')
+        : null;
+    if (!event) {
+        res.status(404).json({ error: 'Event not found' });
+        return null;
+    }
+    if (String(event.organizer) !== String(req.user._id) && !hasRole(req.user, 'admin')) {
+        res.status(403).json({ error: 'Only the event organizer can do this' });
+        return null;
+    }
+    return event;
+}
+
+/**
+ * Once tickets are sold, the organizer cannot delete or cancel the event
+ * themselves: the request is recorded for an admin, who removes it from the
+ * admin panel (cancelling the tickets and raising the refunds). Responds 202 and
+ * returns true when the request was sent; false when the caller may go ahead.
+ */
+async function sentToAdminForRemoval(req, res) {
+    if (hasRole(req.user, 'admin')) return false;
+    const removal = require('../services/listingRemovalService');
+    if (!(await removal.eventHasSales(req.params.id))) return false;
+    await removal.requestRemoval(Event, req.params.id, req.user._id, req.body && req.body.reason);
+    res.status(202).json({
+        deletionRequested: true,
+        message: 'Tickets have been sold for this event, so it cannot be removed directly. Your request has been sent to the FIRA team for approval.',
+    });
+    return true;
+}
 
 /**
  * Validate ticketTiers array for event create/edit.
@@ -44,18 +88,24 @@ function validateTicketTiers(ticketTiers) {
  */
 
 // GET /api/events - Get all events
-router.get('/', publicCache, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// An organizer's own listing (?organizer=<self>) includes their private events,
+// so it depends on who is asking and must never be stored by a shared cache.
+const listingCache = (req, res, next) => (req.query.organizer ? noStoreCache : publicCache)(req, res, next);
+
+router.get('/', optionalAuth, listingCache, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const { includeCompleted, ...restQuery } = req.query;
-        const events = await eventService.getAllEvents(restQuery);
+        const events = await eventService.getAllEvents(restQuery, { viewerId: req.user?._id || null });
 
         // When includeCompleted=true, fetch completed events separately
         if (includeCompleted === 'true') {
             const Event = require('../models/Event');
             const completedEvents = await Event.find({
                 status: 'completed',
+                eventType: 'public',
                 isDeleted: { $ne: true }
             })
+                .select('-privateCode')
                 .populate('organizer', 'name email verificationBadge')
                 .populate('venue', 'name address images')
                 .sort({ endDateTime: -1 })
@@ -100,13 +150,11 @@ router.get('/upcoming', /** @param {AuthenticatedRequest} req @param {Response} 
 });
 
 // GET /api/events/venue-requests - Get events pending venue approval (for venue owners)
-router.get('/venue-requests', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// Always the caller's own venues. The ?userId= the client still sends is ignored;
+// it used to be trusted, so anyone could read any owner's request queue.
+router.get('/venue-requests', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const { userId } = req.query;
-        if (!userId) {
-            return res.status(400).json({ error: 'userId is required' });
-        }
-        const result = await eventService.getVenueEventRequests(userId, req.query);
+        const result = await eventService.getVenueEventRequests(req.user._id, req.query);
         res.json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -114,7 +162,7 @@ router.get('/venue-requests', /** @param {AuthenticatedRequest} req @param {Resp
 });
 
 // GET /api/events/admin-pending - Get events pending admin approval
-router.get('/admin-pending', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+router.get('/admin-pending', requireAuth('admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const result = await eventService.getPendingAdminApproval(req.query);
         res.json(result);
@@ -124,12 +172,27 @@ router.get('/admin-pending', /** @param {AuthenticatedRequest} req @param {Respo
 });
 
 // GET /api/events/:id - Get event by ID
-router.get('/:id', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+router.get('/:id', optionalAuth, noStoreCache, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const event = await eventService.getEventById(req.params.id);
+        const event = await eventService.getEventById(req.params.id, req.user?._id || null, {
+            viewerIsAdmin: hasRole(req.user, 'admin'),
+        });
         res.json(event);
     } catch (error) {
         res.status(404).json({ error: error.message });
+    }
+});
+
+// POST /api/events/:id/verify-code - Check a private event's access code
+// The code is checked here, never in the browser (the page no longer receives
+// it). Rate-limited so codes cannot be guessed by brute force.
+router.post('/:id/verify-code', loginLimiter, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+    try {
+        const valid = await eventService.checkPrivateCode(req.params.id, req.body && req.body.code);
+        if (!valid) return res.status(400).json({ error: 'Invalid access code' });
+        res.json({ valid: true });
+    } catch (error) {
+        res.status(404).json({ error: 'Event not found' });
     }
 });
 
@@ -191,6 +254,8 @@ router.put('/:id', auth, /** @param {AuthenticatedRequest} req @param {Response}
             return res.status(400).json({ error: tierError });
         }
 
+        if (!(await requireEventOrganizer(req, res))) return;
+
         // Fetch current event state to detect field changes for notifications
         const currentEvent = await eventService.getEventById(req.params.id);
 
@@ -229,6 +294,8 @@ router.put('/:id', auth, /** @param {AuthenticatedRequest} req @param {Response}
 // DELETE /api/events/:id - Delete event
 router.delete('/:id', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
+        if (!(await requireEventOrganizer(req, res))) return;
+        if (await sentToAdminForRemoval(req, res)) return;
         await eventService.deleteEvent(req.params.id);
         await invalidateCache('events');
         res.json({ message: 'Event deleted successfully' });
@@ -240,6 +307,8 @@ router.delete('/:id', auth, /** @param {AuthenticatedRequest} req @param {Respon
 // POST /api/events/:id/cancel - Cancel event
 router.post('/:id/cancel', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
+        if (!(await requireEventOrganizer(req, res))) return;
+        if (await sentToAdminForRemoval(req, res)) return;
         const { reason } = req.body;
         const result = await eventService.cancelEvent(req.params.id, reason);
         res.json(result);
@@ -259,37 +328,47 @@ router.post('/:id/access', auth, /** @param {AuthenticatedRequest} req @param {R
 });
 
 // PUT /api/events/:id/access/:requestId - Approve/reject access request
-router.put('/:id/access/:requestId', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// Organizer (or admin) only - see eventService.handleAccessRequest.
+router.put('/:id/access/:requestId', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const result = await eventService.handleAccessRequest(req.params.requestId, req.body.status);
+        const result = await eventService.handleAccessRequest(req.params.requestId, req.body.status, {
+            eventId: req.params.id,
+            actorId: req.user._id,
+            isAdmin: hasRole(req.user, 'admin'),
+        });
         res.json(result);
     } catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(/** @type {any} */ (error).status || 400).json({ error: error.message });
     }
 });
 
 // POST /api/events/:id/venue-approve - Venue owner approves/rejects event
-router.post('/:id/venue-approve', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// The owner is the signed-in caller. venueOwnerId used to be read from the body,
+// and owner ids are public, so anyone could approve on an owner's behalf.
+router.post('/:id/venue-approve', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const { venueOwnerId, status, rejectionReason } = req.body;
-        if (!venueOwnerId || !status) {
-            return res.status(400).json({ error: 'venueOwnerId and status are required' });
+        const { status, rejectionReason } = req.body;
+        if (!status) {
+            return res.status(400).json({ error: 'status is required' });
         }
-        const event = await eventService.venueApproveEvent(req.params.id, venueOwnerId, { status, rejectionReason });
+        const event = await eventService.venueApproveEvent(req.params.id, req.user._id.toString(), { status, rejectionReason });
+        await invalidateCache('events');
         res.json(event);
     } catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(/** @type {any} */ (error).status || 400).json({ error: error.message });
     }
 });
 
 // POST /api/events/:id/admin-approve - Admin approves/rejects event
-router.post('/:id/admin-approve', /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+// Admin only; the acting admin is the caller (adminId in the body is ignored).
+router.post('/:id/admin-approve', requireAuth('admin'), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
-        const { adminId, status, rejectionReason } = req.body;
-        if (!adminId || !status) {
-            return res.status(400).json({ error: 'adminId and status are required' });
+        const { status, rejectionReason } = req.body;
+        if (!status) {
+            return res.status(400).json({ error: 'status is required' });
         }
-        const event = await eventService.adminApproveEvent(req.params.id, adminId, { status, rejectionReason });
+        const event = await eventService.adminApproveEvent(req.params.id, req.user._id.toString(), { status, rejectionReason });
+        await invalidateCache('events');
         res.json(event);
     } catch (error) {
         res.status(400).json({ error: error.message });
@@ -304,7 +383,7 @@ router.post('/:id/admin-approve', /** @param {AuthenticatedRequest} req @param {
  * Provisions a link for any tier missing one before returning, so there is nothing to
  * generate: the organiser opens the event and copies the link for the tier they need.
  */
-router.get('/:id/scanning-codes', auth, async (req, res) => {
+router.get('/:id/scanning-codes', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const codes = await eventService.listScanningCodes(req.params.id, req.user._id);
         res.json(codes);
@@ -317,7 +396,7 @@ router.get('/:id/scanning-codes', auth, async (req, res) => {
 });
 
 // PATCH /api/events/:id/scanning-codes/:codeId/deactivate - Deactivate a scanning code
-router.patch('/:id/scanning-codes/:codeId/deactivate', auth, async (req, res) => {
+router.patch('/:id/scanning-codes/:codeId/deactivate', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
         const code = await eventService.deactivateScanningCode(req.params.codeId, req.user._id);
         res.json(code);

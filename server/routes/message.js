@@ -4,6 +4,7 @@ const { Conversation, Message, User, BrandProfile, Inquiry, Event, Venue } = req
 const authMiddleware = require('../middleware/auth');
 const sse = require('../lib/sse');
 const pushService = require('../services/pushService');
+const fcmService = require('../services/fcmService');
 const { messageLimiter } = require('../middleware/rateLimiters');
 
 // All routes require authentication
@@ -59,14 +60,18 @@ async function fanOutMessage({ conversation, message, content, senderId }) {
     // Chat deliberately creates no Notification row: one row per message would
     // bury every booking and payment alert in the feed. Unread badge + push is
     // the standard treatment for chat.
+    const payload = {
+        title,
+        body: content.trim().substring(0, 140),
+        url: `/messages?conversation=${conversation._id}`,
+        data: { type: 'message', conversationId: conversation._id.toString() }
+    };
     pushService
-        .sendToUsers(recipients, {
-            title,
-            body: content.trim().substring(0, 140),
-            url: `/messages?conversation=${conversation._id}`,
-            data: { conversationId: conversation._id.toString() }
-        })
+        .sendToUsers(recipients, payload)
         .catch(err => console.error('Message push failed:', err.message));
+    fcmService
+        .sendToUsers(recipients, payload)
+        .catch(err => console.error('Message FCM push failed:', err.message));
 }
 
 // GET /api/messages/conversations - Get all conversations for current user

@@ -72,7 +72,9 @@ const postService = {
         const brand = await BrandProfile.findById(brandId);
         if (!brand) throw new Error('Brand not found');
 
-        if (brand.user.toString() !== userId) {
+        // String() both sides: routes pass req.user._id (an ObjectId), which never
+        // equals a string under !==, so every owner was refused.
+        if (brand.user.toString() !== String(userId)) {
             throw new Error('Not authorized to update this post');
         }
 
@@ -92,7 +94,7 @@ const postService = {
         const brand = await BrandProfile.findById(brandId);
         if (!brand) throw new Error('Brand not found');
 
-        if (brand.user.toString() !== userId) {
+        if (brand.user.toString() !== String(userId)) {
             throw new Error('Not authorized to delete this post');
         }
 
@@ -138,7 +140,7 @@ const postService = {
             
             // Get unique user IDs (exclude the organizer)
             const userIds = [...new Set(tickets.map(t => t.user.toString()))]
-                .filter(uid => uid !== userId);
+                .filter(uid => uid !== String(userId));
             
             if (userIds.length > 0) {
                 // Create notifications for all ticket holders
@@ -285,7 +287,7 @@ const postService = {
         if (!comment) throw new Error('Comment not found');
 
         // Only comment author or post author can delete
-        if (comment.user.toString() !== userId && post.author.toString() !== userId) {
+        if (comment.user.toString() !== String(userId) && post.author.toString() !== String(userId)) {
             throw new Error('Not authorized to delete this comment');
         }
 

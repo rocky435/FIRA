@@ -96,4 +96,7 @@ payoutSchema.index({ type: 1 });
 payoutSchema.index({ status: 1 });
 payoutSchema.index({ createdAt: -1 });
 
+// The account number paid to is encrypted at rest, like on the user.
+require('../utils/fieldEncryption').encryptFields(payoutSchema, ['bankDetails.accountNumber']);
+
 module.exports = mongoose.model('Payout', payoutSchema);

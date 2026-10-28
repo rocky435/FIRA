@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock';
+import { useMobileViewport } from '@/hooks/useMobileViewport';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { notificationsApi, messagesApi } from '@/lib/api';
@@ -22,6 +24,9 @@ export default function Navbar() {
     // 0 = no keyboard (nav stays pinned at the layout-viewport bottom, as today).
     const [keyboardOffset, setKeyboardOffset] = useState(0);
     const { isAuthenticated, isLoading, user, logout } = useAuth();
+    // The phone menu and side drawer cover the page: stop it scrolling behind them.
+    const { isMobile } = useMobileViewport();
+    useBodyScrollLock(isMobile && ((isMenuOpen && !isAuthenticated) || isSideDrawerOpen));
     const pathname = usePathname();
     const router = useRouter();
 

@@ -71,6 +71,7 @@ export default function PayoutAccountStep({ value, onChange, error, subject }: P
                 </div>
                 <BankAccountForm
                     onSubmit={handleAdd}
+                    requirePassword={accounts.length > 0}
                     onCancel={accounts.length > 0 ? () => setIsAdding(false) : undefined}
                     showDefaultToggle={accounts.length > 0}
                     submitLabel="Save and use this account"

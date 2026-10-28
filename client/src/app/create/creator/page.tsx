@@ -25,6 +25,10 @@ const creatorTypes = [
 export default function CreateCreatorPage() {
     const router = useRouter();
     const { user, isLoading } = useAuth();
+    // Hooks run before any early return: this was called below the loading
+    // spinner's return, so the render after loading called one more hook than the
+    // first and React threw "Rendered more hooks than during the previous render".
+    const { showToast } = useToast();
     const [currentStep, setCurrentStep] = useState(1);
 
     // Scroll back to the top on each step - see create/event for why.
@@ -102,7 +106,6 @@ export default function CreateCreatorPage() {
         );
     }
 
-    const { showToast } = useToast();
     if (!user) return null;
 
     // Still checking whether a profile exists - showing the form and then

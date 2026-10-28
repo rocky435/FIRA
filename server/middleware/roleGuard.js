@@ -17,7 +17,11 @@
  */
 function roleGuard(allowedRoles) {
   return (req, res, next) => {
-    const adminRole = req.user && req.user.adminRole;
+    // No signed-in user at all is never let through, whatever the fallback.
+    if (!req.user) {
+      return res.status(403).json({ error: 'Insufficient permissions for this action' });
+    }
+    const adminRole = req.user.adminRole;
 
     // ponytail: legacy admins without adminRole assigned are treated as super_admin
     // since they already passed adminAuth (role === 'admin'). This prevents lockout

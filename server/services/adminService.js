@@ -370,17 +370,26 @@ const adminService = {
     // Delist a venue. Reuses the owner-facing soft delete (isDeleted +
     // isActive:false) so bookings, payouts and reconciliation figures stay
     // queryable — a hard delete here would silently break earnings totals.
+    // Removing a venue with live events at it is refused - those events (and the
+    // tickets sold for them) have to be dealt with first. Its upcoming bookings
+    // are cancelled and what the guests paid is raised as refunds to be done.
     async deleteVenue(venueId, adminUserId) {
         const named = await Venue.findById(venueId).select('name').lean();
+        const removal = require('./listingRemovalService');
+        const { events } = await removal.venueObligations(venueId);
+        if (events.length) {
+            throw Object.assign(new Error('This venue has upcoming events. Cancel or move them before removing the venue.'), { status: 409, events });
+        }
+        const cancelledBookings = await removal.cancelVenueBookingsForRemoval(venueId);
         const result = await require('./venueService').deleteVenue(venueId);
         await adminService.recordAdminAction({
             adminUser: adminUserId,
             action: 'delete',
             entityType: 'venue',
             entityId: venueId,
-            metadata: { name: named?.name },
+            metadata: { name: named?.name, cancelledBookings },
         });
-        return result;
+        return { ...result, cancelledBookings };
     },
 
     // ================== EVENTS ==================
@@ -474,15 +483,23 @@ const adminService = {
     // Delist an event. Same reasoning as deleteVenue: soft delete via the
     // existing organizer-facing path keeps tickets and revenue queryable.
     // Refunds are NOT triggered here — use the cancel flow for that.
+    // An event with sold tickets is removed by cancelling it: the tickets are
+    // cancelled and refunds raised in "Refunds to be done" (eventService.cancelEvent).
+    // Removing it quietly left buyers holding tickets for an event that was gone.
     async deleteEvent(eventId, adminUserId) {
-        const named = await Event.findById(eventId).select('name').lean();
-        const result = await require('./eventService').deleteEvent(eventId);
+        const named = await Event.findById(eventId).select('name status').lean();
+        const eventService = require('./eventService');
+        const removal = require('./listingRemovalService');
+        const hadSales = named && named.status !== 'cancelled' && await removal.eventHasSales(eventId);
+        const result = hadSales
+            ? await eventService.cancelEvent(eventId, 'Event removed by FIRA')
+            : await eventService.deleteEvent(eventId);
         await adminService.recordAdminAction({
             adminUser: adminUserId,
             action: 'delete',
             entityType: 'event',
             entityId: eventId,
-            metadata: { name: named?.name },
+            metadata: { name: named?.name, ticketsCancelled: !!hadSales },
         });
         return result;
     },
@@ -759,25 +776,6 @@ const adminService = {
             // is falsy - a coincidence, not a contract.
             pages: Math.max(1, Math.ceil(total / parsedLimit)),
         };
-    },
-
-    /**
-     * Delete audit entries.
-     *
-     * With an id, drops that one entry. With no id, clears the whole trail. This is
-     * housekeeping for a table that only grows - it is not itself audited, because
-     * an audit OF deleting the audit log, written to the same log, is the first
-     * thing a bad actor would delete next. Gated to super_admin/admin at the route.
-     */
-    async deleteAuditLog(id) {
-        const res = await AuditLog.findByIdAndDelete(id);
-        if (!res) throw new Error('Audit entry not found');
-        return { success: true };
-    },
-
-    async clearAuditTrail() {
-        const { deletedCount } = await AuditLog.deleteMany({});
-        return { success: true, deleted: deletedCount };
     }
 };
 

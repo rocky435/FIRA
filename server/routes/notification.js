@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const notificationService = require('../services/notificationService');
 const pushService = require('../services/pushService');
+const fcmService = require('../services/fcmService');
 const sse = require('../lib/sse');
 
 const auth = require('../middleware/auth');
@@ -93,6 +94,56 @@ router.post('/push/test', auth, async (req, res) => {
     }
 });
 
+/* ------------------------------------------------------------------ *
+ * Native app push (FCM)
+ *
+ * The Flutter app registers its FCM token after sign-in and on every
+ * token refresh, and unregisters it before logout. Web Push above is
+ * unchanged. Also above `/:id` for the same reason.
+ * ------------------------------------------------------------------ */
+
+// POST /api/notifications/fcm/register - { fid | token, platform?, deviceId?, appVersion?, previousToken? }
+router.post('/fcm/register', auth, async (req, res) => {
+    try {
+        const { token, fid, platform, deviceId, appVersion, previousToken } = req.body || {};
+        await fcmService.registerToken(req.user._id, { token, fid, platform, deviceId, appVersion, previousToken });
+        res.status(201).json({ success: true, pushEnabled: fcmService.isEnabled() });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// POST /api/notifications/fcm/unregister - { fid | token } - call before logout
+router.post('/fcm/unregister', auth, async (req, res) => {
+    try {
+        const result = await fcmService.removeToken(req.user._id, req.body?.fid ?? req.body?.token);
+        res.json({ success: true, ...result });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// POST /api/notifications/fcm/test - send yourself a test push on your app devices
+router.post('/fcm/test', auth, async (req, res) => {
+    try {
+        if (!fcmService.isEnabled()) {
+            return res.status(503).json({ error: 'App push notifications are not configured on this server' });
+        }
+        const result = await fcmService.sendToUser(req.user._id, {
+            title: 'FIRA notifications are on 🎉',
+            body: "That's what an alert will look like. You're all set.",
+            url: '/notifications',
+            data: { type: 'test' }
+        });
+        if (result.sent === 0) {
+            return res.status(404).json({ error: 'No registered app device received the test notification.', ...result });
+        }
+        res.json({ success: true, ...result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // GET /api/notifications/unread - Get unread count
 router.get('/unread', auth, async (req, res) => {
     try {
@@ -106,7 +157,7 @@ router.get('/unread', auth, async (req, res) => {
 // GET /api/notifications/:id - Get notification by ID
 router.get('/:id', auth, async (req, res) => {
     try {
-        const notification = await notificationService.getNotificationById(req.params.id);
+        const notification = await notificationService.getNotificationById(req.params.id, req.user._id);
         res.json(notification);
     } catch (error) {
         res.status(404).json({ error: error.message });
@@ -116,7 +167,7 @@ router.get('/:id', auth, async (req, res) => {
 // PUT /api/notifications/:id/read - Mark as read
 router.put('/:id/read', auth, async (req, res) => {
     try {
-        const notification = await notificationService.markAsRead(req.params.id);
+        const notification = await notificationService.markAsRead(req.params.id, req.user._id);
         res.json(notification);
     } catch (error) {
         res.status(400).json({ error: error.message });
@@ -136,7 +187,7 @@ router.put('/read-all', auth, async (req, res) => {
 // DELETE /api/notifications/:id - Delete notification
 router.delete('/:id', auth, async (req, res) => {
     try {
-        await notificationService.deleteNotification(req.params.id);
+        await notificationService.deleteNotification(req.params.id, req.user._id);
         res.json({ message: 'Notification deleted' });
     } catch (error) {
         res.status(500).json({ error: error.message });

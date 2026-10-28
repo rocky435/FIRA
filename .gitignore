@@ -11,4 +11,7 @@ nul
 client/.env
 server/.env
 admin/.env
+# Firebase service account keys (FCM) - never commit
+*firebase-adminsdk*.json
+firebase-service-account*.json
 node_modules/
