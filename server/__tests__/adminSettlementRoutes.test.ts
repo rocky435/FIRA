@@ -54,8 +54,12 @@ async function makeAdmin(name: string, adminRole?: string) {
   });
 }
 
+// Event payouts go only to an organiser with a verified PAN.
 async function makeOrganizer() {
-  return User.create({ name: 'Olive Organizer', email: `${new mongoose.Types.ObjectId()}@x.test`, password: 'x' });
+  return User.create({
+    name: 'Olive Organizer', email: `${new mongoose.Types.ObjectId()}@x.test`, password: 'x',
+    panNumber: 'ABCDE1234F', panStatus: 'verified',
+  });
 }
 
 async function makeEvent(organizer: any) {

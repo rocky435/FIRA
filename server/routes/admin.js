@@ -4,6 +4,7 @@ const router = express.Router();
 const adminService = require('../services/adminService');
 const earningsService = require('../services/earningsService');
 const settlementService = require('../services/settlementService');
+const identityService = require('../services/identityService');
 const adminAuth = require('../middleware/adminAuth');
 const roleGuard = require('../middleware/roleGuard');
 const validate = require('../middleware/validate');
@@ -48,22 +49,46 @@ router.get('/users/:id', async (req, res) => {
 // GET /api/admin/users/:id/gov-id - The user's government ID, for verifying a
 // venue owner: type, number, and a link to the document that works for 10
 // minutes. The document itself is private in storage.
+// Also carries the PAN and both review states (services/identityService.js);
+// the flat govId* fields are kept for older admin builds.
 router.get('/users/:id/gov-id', roleGuard(['super_admin', 'admin']), async (req, res) => {
     try {
-        const mongoose = require('mongoose');
-        if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'User not found' });
-        const user = await User.findById(req.params.id).select('name govIdType govIdNumber govIdDocument govIdVerified');
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        const { privateDocumentLink } = require('../services/uploadService');
+        const identity = await identityService.getForAdmin(req.params.id);
         res.set('Cache-Control', 'no-store');
         res.json({
-            govIdType: user.govIdType,
-            govIdNumber: user.govIdNumber,
-            govIdVerified: user.govIdVerified,
-            documentUrl: user.govIdDocument ? privateDocumentLink(user.govIdDocument) : null,
+            ...identity,
+            govIdType: identity.govId.type,
+            govIdNumber: identity.govId.number,
+            govIdVerified: identity.govId.status === 'verified',
+            documentUrl: identity.govId.documentUrl,
         });
     } catch (error) {
+        res.status(error.status || 500).json({ error: error.message });
+    }
+});
+
+// ================== ID CHECKS ==================
+// Venue owners' government IDs and organisers' PANs waiting for a decision.
+router.get('/identity-checks', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json({ users: await identityService.listPending({ limit: req.query.limit }) });
+    } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// PUT /api/admin/users/:id/identity/:kind/review - kind 'gov-id' | 'pan',
+// { action: 'verify' | 'reject', reason } (reason required to reject).
+router.put('/users/:id/identity/:kind/review', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        const { action, reason } = req.body || {};
+        const identity = await identityService.review(req.params.id, req.params.kind, { action, reason }, req.user._id);
+        res.json(identity);
+    } catch (error) {
+        const body = { error: error.message };
+        if (error.field) body.field = error.field;
+        res.status(error.status || 500).json(body);
     }
 });
 
@@ -150,6 +175,16 @@ router.delete('/venues/:id', roleGuard(['super_admin', 'admin']), async (req, re
     } catch (error) {
         res.status(error.status || (error.message === 'Venue not found' ? 404 : 400))
             .json({ error: error.message, ...(error.events ? { events: error.events } : {}) });
+    }
+});
+
+// ================== VENUE BOOKINGS ==================
+// Every booking across every venue, newest first (adminService.getBookings).
+router.get('/bookings', async (req, res) => {
+    try {
+        res.json(await adminService.getBookings(req.query));
+    } catch (error) {
+        res.status(error.status || 500).json({ error: error.message });
     }
 });
 
@@ -315,6 +350,18 @@ router.get('/earnings/overview', roleGuard(['super_admin', 'admin']), async (req
     }
 });
 
+// Who is owed money across every venue and event, most owed first - the
+// payout to-do list (settlementService.getPayoutQueue). Read-only; paying is
+// still recorded per listing through the settlement routes below.
+router.get('/earnings/payout-queue', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        const kind = req.query.kind && req.query.kind !== 'all' ? String(req.query.kind) : undefined;
+        res.json(await settlementService.getPayoutQueue({ kind }));
+    } catch (error) {
+        res.status(error.status || 500).json({ error: error.message });
+    }
+});
+
 // Per-recipient payable breakdown, partitioned by Payout type, same optional range.
 router.get('/earnings/recipients', roleGuard(['super_admin', 'admin']), async (req, res) => {
     try {
@@ -413,6 +460,26 @@ function sendSettlementError(res, error) {
 
 const settlementAdmin = (req) => ({ _id: req.user._id, name: req.user.name, adminRole: req.user.adminRole });
 
+/**
+ * Event earnings go to the organiser, and are paid out only to an organiser
+ * whose PAN an admin has verified (services/identityService.js). Venues need
+ * no check here: a venue is approved only once its owner's ID is verified.
+ * Returns null when nothing is required.
+ */
+async function payoutCheckFor(kind, listingId) {
+    if (kind !== 'event') return null;
+    const mongoose = require('mongoose');
+    if (!mongoose.isValidObjectId(listingId)) return null;
+    const event = await require('../models/Event').findById(listingId).select('organizer').lean();
+    if (!event || !event.organizer) return null;
+    const organizer = await User.findById(event.organizer).select('panStatus panNumber panDocument').lean();
+    return {
+        required: 'pan',
+        userId: String(event.organizer),
+        status: identityService.statusOf(organizer, 'pan'),
+    };
+}
+
 // Listing_Stats + the ledger + the derived state (Requirements 1, 2, 3, 11.1).
 // Read-only, so it uses the standard roleGuard (which lets legacy admins
 // without an explicit adminRole through) rather than the strict
@@ -421,7 +488,12 @@ const settlementAdmin = (req) => ({ _id: req.user._id, name: req.user.name, admi
 router.get('/listings/:kind/:id/settlement', roleGuard(['super_admin', 'admin']), async (req, res) => {
     try {
         const settlement = await settlementService.getListingSettlement({ kind: req.params.kind, listingId: req.params.id });
-        res.json(settlement);
+        const [payoutCheck, payTo] = await Promise.all([
+            payoutCheckFor(req.params.kind, req.params.id),
+            // The full account, for the admin making the transfer.
+            settlementService.getPayTo(req.params.kind, req.params.id),
+        ]);
+        res.json({ ...settlement, payoutCheck, payTo });
     } catch (error) {
         sendSettlementError(res, error);
     }
@@ -430,6 +502,14 @@ router.get('/listings/:kind/:id/settlement', roleGuard(['super_admin', 'admin'])
 // Record one real transfer (Requirements 4, 5, 6, 8, 10, 11.2).
 router.post('/listings/:kind/:id/settlement/entries', settlementRoleGuard, validate(entrySchema), async (req, res) => {
     try {
+        const check = await payoutCheckFor(req.params.kind, req.params.id);
+        if (check && check.status !== 'verified') {
+            return res.status(409).json({
+                error: "The organiser's PAN is not verified yet. Verify it in ID Checks before paying out.",
+                code: 'pan_not_verified',
+                payoutCheck: check,
+            });
+        }
         const result = await settlementService.recordEntry({
             kind: req.params.kind,
             listingId: req.params.id,

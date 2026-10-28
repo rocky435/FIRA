@@ -261,7 +261,8 @@ describe('Property 16 — unauthorized requests are rejected and write nothing',
         const mk = async (name: string, extra: Record<string, any>) =>
             User.create({ name, email: `${new ObjectId()}@x.test`, password: 'x', ...extra });
 
-        const owner = await mk('Olive Organizer', {});
+        // Event payouts go only to an organiser with a verified PAN.
+        const owner = await mk('Olive Organizer', { panNumber: 'ABCDE1234F', panStatus: 'verified' });
         const users: Record<Exclude<Session, 'noToken'>, any> = {
             super_admin: await mk('Sue Super', { role: 'admin', roles: ['admin'], adminRole: 'super_admin' }),
             admin: await mk('Ada Admin', { role: 'admin', roles: ['admin'], adminRole: 'admin' }),

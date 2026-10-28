@@ -102,6 +102,9 @@ const earningsService = {
     REFUNDED,
     PENDING_PAYOUT,
     COMPLETED_PAYOUT,
+    // The owner-share $sum expression, for callers that group it differently
+    // (settlementService's payout queue groups it per booking / per event).
+    OWNER_SHARE_SUM: PAID_DISCOUNT_SUMS.ownerShare,
 
     /**
      * Mask a bank account number for display, preserving only the last four

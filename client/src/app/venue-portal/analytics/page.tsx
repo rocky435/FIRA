@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { isVenueOwner } from '@/lib/types';
 import { venuesApi, bookingsApi } from '@/lib/api';
+import { amountReceived } from '@/lib/paymentSchedule';
 import VenueDashboardLayout from '@/components/venue-portal/VenueDashboardLayout';
 import { FadeIn, SlideUp } from '@/components/animations';
 
@@ -97,11 +98,14 @@ export default function VenuePortalAnalyticsPage() {
                                 tempMonthly[mName].bookings++;
                             }
 
+                            // Money actually received from the guest. An accepted
+                            // booking nobody has paid for yet is not revenue.
                             if (b.status === 'accepted' || b.status === 'completed') {
-                                venueRevenue += (b.totalAmount || 0);
-                                totalRevenue += (b.totalAmount || 0);
+                                const received = amountReceived(b);
+                                venueRevenue += received;
+                                totalRevenue += received;
                                 if (tempMonthly[mName]) {
-                                    tempMonthly[mName].revenue += (b.totalAmount || 0);
+                                    tempMonthly[mName].revenue += received;
                                 }
                             }
                         }
@@ -190,7 +194,7 @@ export default function VenuePortalAnalyticsPage() {
                         {[
                             { label: 'Total Views', value: loading ? '...' : stats.totalViews.toLocaleString(), color: 'violet' },
                             { label: 'Bookings', value: loading ? '...' : stats.totalBookings.toLocaleString(), color: 'green' },
-                            { label: 'Revenue', value: loading ? '...' : `₹${stats.totalRevenue.toLocaleString()}`, color: 'blue' },
+                            { label: 'Received from guests', value: loading ? '...' : `₹${stats.totalRevenue.toLocaleString()}`, color: 'blue' },
                         ].map((stat, i) => (
                             <div key={i} className="bg-white/[0.02] backdrop-blur-sm border border-white/[0.08] rounded-2xl p-4 sm:p-5 hover:bg-white/[0.04] hover:border-white/[0.12] transition-all duration-300 group cursor-pointer">
                                 <div className="text-xl sm:text-2xl font-bold text-white mb-1">{stat.value}</div>

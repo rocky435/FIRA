@@ -136,7 +136,9 @@ export default function RootLayout({
         <link rel="preconnect" href="https://res.cloudinary.com" />
         <JsonLd data={siteGraph} />
       </head>
-      <body className={`${inter.variable} ${fascinate.variable} antialiased`}>
+      {/* Browser extensions (e.g. Grammarly) add attributes to <body> before React
+          hydrates; this ignores those on <body> only, not in the page below. */}
+      <body className={`${inter.variable} ${fascinate.variable} antialiased`} suppressHydrationWarning>
         <SkipLink />
         <AuthProvider>
           <ToastProvider>

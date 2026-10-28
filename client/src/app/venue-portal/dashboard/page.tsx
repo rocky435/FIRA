@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { isVenueOwner } from '@/lib/types';
 import { venuesApi, bookingsApi, eventsApi } from '@/lib/api';
+import { amountReceived } from '@/lib/paymentSchedule';
 import VenueDashboardLayout from '@/components/venue-portal/VenueDashboardLayout';
 import { Button, Pagination } from '@/components/ui';
 import { usePaged } from '@/hooks/usePaged';
@@ -82,7 +83,8 @@ export default function VenuePortalDashboardPage() {
                         if (Array.isArray(bookings)) {
                             totalBookings += bookings.length;
                             pendingBookings += bookings.filter(b => b.status === 'pending').length;
-                            totalRevenue += bookings.filter(b => b.status === 'accepted' || b.status === 'completed').reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+                            // Money actually received, not the price of every accepted booking.
+                            totalRevenue += bookings.filter(b => b.status === 'accepted' || b.status === 'completed').reduce((sum, b) => sum + amountReceived(b), 0);
                         }
                     } catch (bookingErr) {
                         console.error(`Failed to fetch bookings for venue ${venue._id}:`, bookingErr);
@@ -256,7 +258,7 @@ export default function VenuePortalDashboardPage() {
                                 </div>
                                 <div>
                                     <h3 className="text-lg font-semibold text-white">Total Revenue</h3>
-                                    <p className="text-sm text-gray-300">All-time earnings from bookings</p>
+                                    <p className="text-sm text-gray-300">Paid by guests so far, before FIRA&apos;s commission</p>
                                 </div>
                             </div>
                             <Link href="/venue-portal/analytics" className="text-violet-400 hover:text-violet-300 text-sm font-medium flex items-center gap-1 group/link">

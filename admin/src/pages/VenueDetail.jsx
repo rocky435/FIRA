@@ -224,7 +224,10 @@ export default function VenueDetail() {
                     {/* Right Column: Summary Card */}
                     <div>
                         <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6 sticky top-8">
-                            <h2 className="text-lg font-semibold text-white mb-4">Booking Summary</h2>
+                            <div className="flex items-baseline justify-between gap-3 mb-4">
+                                <h2 className="text-lg font-semibold text-white">Booking Summary</h2>
+                                <Link to={`/bookings?venue=${id}`} className="text-sm text-violet-400 hover:text-violet-300 whitespace-nowrap">See bookings</Link>
+                            </div>
                             <div className="space-y-4">
                                 <div className="flex justifying-between items-center">
                                     <span className="text-gray-300">Completed Bookings</span>

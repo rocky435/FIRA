@@ -49,6 +49,26 @@ export function formatDateTimeRange(startDateTimeStr: string, endDateTimeStr: st
     return `from ${startPart} to ${endPart}`;
 }
 
+/**
+ * A booking's dates: "12 Nov 2026" for one day, "12 – 13 Nov 2026" or
+ * "30 Oct – 3 Nov 2026" for a range. `endDate` is null/absent (or the same day)
+ * for a single-day booking.
+ */
+export function formatBookingDates(bookingDate: string, endDate?: string | null): string {
+    const start = parseDate(bookingDate);
+    if (isNaN(start.getTime())) return 'Invalid Date';
+    const full = (d: Date) => d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    const end = endDate ? parseDate(endDate) : null;
+    if (!end || isNaN(end.getTime()) || end.toDateString() === start.toDateString()) return full(start);
+
+    const sameYear = start.getFullYear() === end.getFullYear();
+    const sameMonth = sameYear && start.getMonth() === end.getMonth();
+    const startPart = sameMonth
+        ? String(start.getDate())
+        : start.toLocaleDateString('en-IN', sameYear ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' });
+    return `${startPart} – ${full(end)}`;
+}
+
 // Format single DateTime: "30th December 14:00"
 export function formatSingleDateTime(dateTimeStr: string): string {
     const date = parseDate(dateTimeStr);

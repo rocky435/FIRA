@@ -27,6 +27,8 @@ interface Event {
     status: string;
     venueApproval?: { status?: string };
     adminApproval?: { status?: string };
+    /** The venue booking, on the organiser's own list: paid before the event goes live. */
+    booking?: { _id: string; status?: string; paymentStatus?: string; totalAmount?: number } | string | null;
     currentAttendees?: number;
     maxAttendees?: number;
 }
@@ -55,9 +57,16 @@ function eventStatusLabel(e: Event): { text: string; tone: 'green' | 'yellow' | 
     // status is 'pending' here - report which approval is still outstanding.
     const venueDone = !e.venueApproval || e.venueApproval.status === 'approved';
     const adminDone = e.adminApproval?.status === 'approved';
+    if (venueDue(e)) return { text: adminDone ? 'Pay the venue to go live' : 'Pay the venue', tone: 'yellow' };
     if (venueDone && !adminDone) return { text: 'Awaiting admin approval', tone: 'yellow' };
     if (!venueDone && adminDone) return { text: 'Awaiting venue approval', tone: 'yellow' };
     return { text: 'Pending review', tone: 'yellow' };
+}
+
+/** The unpaid venue booking of the organiser's event, if the venue approved it and awaits payment. */
+function venueDue(e: Event) {
+    const b = e.booking && typeof e.booking === 'object' ? e.booking : null;
+    return b && b.status === 'accepted' && b.paymentStatus !== 'paid' && (b.totalAmount ?? 0) > 0 ? b : null;
 }
 
 interface Ticket {
@@ -216,10 +225,22 @@ export default function EventsPage() {
                     red: 'bg-red-500/20 text-red-400',
                     gray: 'bg-gray-500/20 text-gray-300',
                 }[tone];
+                const due = venueDue(e);
                 return (
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize whitespace-nowrap ${toneClass}`}>
-                        {text}
-                    </span>
+                    <div className="flex flex-col items-center gap-1.5">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${due ? '' : 'capitalize'} ${toneClass}`}>
+                            {text}
+                        </span>
+                        {due && (
+                            <Link
+                                href={`/dashboard/bookings/${due._id}`}
+                                onClick={(ev) => ev.stopPropagation()}
+                                className="px-3 py-1 rounded-lg bg-violet-500 hover:bg-violet-400 text-white text-xs font-semibold whitespace-nowrap"
+                            >
+                                Pay ₹{(due.totalAmount ?? 0).toLocaleString('en-IN')}
+                            </Link>
+                        )}
+                    </div>
                 );
             },
         },

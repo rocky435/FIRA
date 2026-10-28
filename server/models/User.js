@@ -181,6 +181,28 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // Admin review of the ID above (services/identityService.js). A venue cannot
+  // be approved until its owner's is 'verified'. govIdVerified mirrors it.
+  govIdStatus: {
+    type: String,
+    enum: ['none', 'pending', 'verified', 'rejected'],
+    default: 'none'
+  },
+  govIdRejectionReason: { type: String, default: null },
+  govIdReviewedAt: { type: Date, default: null },
+  govIdReviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  // PAN of an event organiser, reviewed the same way. Event earnings cannot be
+  // recorded as paid out until it is 'verified'.
+  panNumber: { type: String, default: null },
+  panDocument: { type: String, default: null },  // URL in the private gov-ids folder
+  panStatus: {
+    type: String,
+    enum: ['none', 'pending', 'verified', 'rejected'],
+    default: 'none'
+  },
+  panRejectionReason: { type: String, default: null },
+  panReviewedAt: { type: Date, default: null },
+  panReviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   // Business details (for venue owners)
   businessName: {
     type: String,
@@ -210,6 +232,7 @@ require('../utils/fieldEncryption').encryptFields(userSchema, [
   'bankAccounts.accountNumber',
   'bankDetails.accountNumber',
   'govIdNumber',
+  'panNumber',
 ]);
 
 module.exports = mongoose.model('User', userSchema);

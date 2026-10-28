@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { Button, Input, StepperModal } from '@/components/ui';
@@ -10,7 +10,10 @@ import { useToast } from '@/components/ui/Toast';
 import { eventsApi, venuesApi, uploadApi, usersApi, clearRequestCache } from '@/lib/api';
 import { isVenueOwner } from '@/lib/types';
 import PayoutAccountStep from '@/components/dashboard/PayoutAccountStep';
+import EventPanStep from '@/components/dashboard/EventPanStep';
 import { openPickerOnClick } from '@/lib/dateInput';
+import { firstTakenDay, clashingEvent, localKey, venueDayStatus, type VenueEventCalendar } from '@/lib/venueEventAvailability';
+import VenueDateCalendar from '@/components/VenueDateCalendar';
 import { isFilled, isClean, isValidPincode, isValidLocationLink, type FieldErrors } from '@/lib/validation';
 import { CitySearch, Select } from '@/components/ui';
 
@@ -282,6 +285,10 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
             : 'border-white/10 focus:ring-violet-500/50 focus:border-violet-500/50'
         } ${extra}`;
     const [venues, setVenues] = useState<{ _id: string; name: string }[]>([]);
+    // The picked venue's taken days and other events, so dates are checked on
+    // the date step rather than by the server's error on the last one.
+    const [venueCalendar, setVenueCalendar] = useState<VenueEventCalendar | null>(null);
+    const [loadingVenueCalendar, setLoadingVenueCalendar] = useState(false);
     const [loadingVenues, setLoadingVenues] = useState(true);
     /** Single banner image file - kept for backward compat, first in gallery */
     const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
@@ -309,6 +316,19 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
      * without leaving the flow.
      */
     const [payoutAccountId, setPayoutAccountId] = useState<string | null>(null);
+    // Whether the organiser's PAN has been submitted (EventPanStep reports it).
+    const [panReady, setPanReady] = useState(false);
+    const handlePanReady = useCallback((ready: boolean) => {
+        setPanReady(ready);
+        if (ready) {
+            setFieldErrors(prev => {
+                if (!prev.pan) return prev;
+                const rest = { ...prev };
+                delete rest.pan;
+                return rest;
+            });
+        }
+    }, []);
     /** Payout is always the final step. Derived so adding a step cannot desync it. */
     const totalSteps = 5;
 
@@ -470,6 +490,31 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
         fetchVenues();
     }, [preselectedVenueId]);
 
+    const calendarVenueId = formData.useCustomVenue ? '' : formData.venueId;
+    useEffect(() => {
+        if (!calendarVenueId) {
+            setVenueCalendar(null);
+            return;
+        }
+        let cancelled = false;
+        setLoadingVenueCalendar(true);
+        // Fresh read: the cached copy can predate a booking made a moment ago.
+        clearRequestCache(`/venues/${calendarVenueId}`);
+        venuesApi.getById(calendarVenueId)
+            .then((v) => { if (!cancelled) setVenueCalendar(v as VenueEventCalendar); })
+            // No calendar is not fatal: the server still checks the dates on create.
+            .catch(() => { if (!cancelled) setVenueCalendar(null); })
+            .finally(() => { if (!cancelled) setLoadingVenueCalendar(false); });
+        return () => { cancelled = true; };
+    }, [calendarVenueId]);
+
+    const selectedVenueName = venues.find(v => v._id === formData.venueId)?.name || 'This venue';
+    const prettyDayKey = (key: string) => {
+        const [y, m, d] = key.split('-').map(Number);
+        return new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    };
+    const prettyTime = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+
     /**
      * Per-step rules, returning a field -> message map.
      *
@@ -503,6 +548,24 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
                 formData.date === formData.endDate && formData.endTime <= formData.startTime
             ) {
                 found.endTime = 'End time must be after the start time';
+            }
+            // The listed venue must be free: the same checks the server makes on
+            // create, here so the organiser hears it on this step.
+            if (!formData.useCustomVenue && formData.venueId && venueCalendar && formData.date && !found.endDate) {
+                const taken = firstTakenDay(venueCalendar, formData.date, formData.endDate, event?._id);
+                if (taken) {
+                    found.date = `${selectedVenueName} isn't available on ${prettyDayKey(taken)}. Pick other dates from its calendar below.`;
+                } else if (formData.startTime && formData.endTime && !found.endTime) {
+                    const clash = clashingEvent(
+                        venueCalendar,
+                        new Date(`${formData.date}T${formData.startTime}:00`),
+                        new Date(`${formData.endDate || formData.date}T${formData.endTime}:00`),
+                        event?._id,
+                    );
+                    if (clash) {
+                        found.startTime = `Another event is at ${selectedVenueName} from ${prettyTime(clash.start)} to ${prettyTime(clash.end)} on ${prettyDayKey(localKey(new Date(clash.start)))}. Pick a time that doesn't overlap.`;
+                    }
+                }
             }
             // No maxAttendees rule here any more - capacity comes from the tiers, and
             // each tier already has to be at least 1 (step 3).
@@ -558,6 +621,9 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
         // inline, so this blocks without dead-ending.
         if (currentStep === totalSteps) {
             if (!payoutAccountId) found.payoutAccount = 'Choose or add a payout account';
+            // A new organiser's PAN, needed before their earnings can be paid out.
+            // Submitted is enough here; an admin verifies it before any payout.
+            if (!isEditing && !panReady) found.pan = 'Save your PAN to continue';
         }
 
         return found;
@@ -605,7 +671,7 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
                 if (field.startsWith('customVenue.')) return 2;
                 if (['date', 'endDate', 'startTime', 'endTime', 'venueId'].includes(field)) return 2;
                 if (field.startsWith('tier-')) return 3;
-                if (field === 'payoutAccount') return totalSteps;
+                if (field === 'payoutAccount' || field === 'pan') return totalSteps;
                 return 1;
             };
             setStep(Math.min(...Object.keys(found).map(stepOf)));
@@ -1007,6 +1073,21 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
                                             </>
                                         )}
                                     </div>
+                                    {calendarVenueId && (
+                                        <div className="mb-4">
+                                            <VenueDateCalendar
+                                                venueName={selectedVenueName}
+                                                loading={loadingVenueCalendar}
+                                                startKey={formData.date}
+                                                endKey={formData.endDate}
+                                                dayStatus={(key) => venueDayStatus(venueCalendar, key, event?._id)}
+                                                onChange={(start, end) => {
+                                                    setField('date', start);
+                                                    setField('endDate', end);
+                                                }}
+                                            />
+                                        </div>
+                                    )}
                                     <div className="flex items-center gap-3 mb-2">
                                         <div className="flex-1 h-px bg-white/10"></div>
                                         <span className="text-xs text-gray-300">OR</span>
@@ -1589,6 +1670,13 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
         {
             label: 'Payout Account',
             content: (
+                <div className="space-y-6">
+                {!isEditing && (
+                    <EventPanStep
+                        onReadyChange={handlePanReady}
+                        error={fieldErrors.pan}
+                    />
+                )}
                 <PayoutAccountStep
                     subject="event"
                     value={payoutAccountId}
@@ -1603,6 +1691,7 @@ function CreateEventForm({ isOpen, onClose, onCreated, event = null }: CreateEve
                     }}
                     error={fieldErrors.payoutAccount}
                 />
+                </div>
             ),
         },
     ];

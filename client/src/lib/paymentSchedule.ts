@@ -43,6 +43,22 @@ export function daysUntil(balanceDueAt: string | Date | null | undefined, now?: 
 }
 
 /**
+ * What the guest has actually paid toward the booking price (fees excluded):
+ * nothing until the advance or full amount is in, then the advance, plus the
+ * balance once that is paid too. A booking only accepted is not money received.
+ */
+export function amountReceived(
+    booking: Pick<Booking, 'paymentStatus' | 'totalAmount'> & { paymentSchedule?: ScheduleLike }
+): number {
+    if (booking.paymentStatus !== 'paid') return 0;
+    const s = booking.paymentSchedule;
+    if (s?.type === 'installment') {
+        return (s.depositAmount || 0) + (s.balanceStatus === 'paid' ? (s.balanceAmount || 0) : 0);
+    }
+    return booking.totalAmount || 0;
+}
+
+/**
  * Reduce a booking's schedule to a flat display shape (Req 1.6). Missing
  * schedule falls back to a 'full' display of `totalAmount` (0 if absent).
  */

@@ -9,6 +9,7 @@ import { FadeIn, SlideUp } from '@/components/animations';
 import { useToast } from '@/components/ui/Toast';
 import { usersApi, authApi, type AccountDeletionBlockers } from '@/lib/api';
 import BankAccountsSection from '@/components/dashboard/BankAccountsSection';
+import IdentitySection from '@/components/dashboard/IdentitySection';
 import PushNotificationToggle from '@/components/PushNotificationToggle';
 
 /**
@@ -290,6 +291,12 @@ export default function SettingsContent() {
                         </div>
                     </div>
                 </div>
+            </FadeIn>
+
+            {/* ID checks: PAN for event payouts, government ID for venue
+                approval. Shows why one was not accepted and lets them re-upload. */}
+            <FadeIn delay={0.21}>
+                <IdentitySection />
             </FadeIn>
 
             {/* Payout accounts. Multiple saved accounts with one default, which

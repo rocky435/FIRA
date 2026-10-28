@@ -83,7 +83,10 @@ export default function Venues() {
             await adminApi.updateVenueStatus(id, 'approved');
             fetchVenues();
         } catch (err) {
+            // Most often: the owner's government ID is not verified yet, and the
+            // message says where to do that.
             console.error('Failed to approve venue:', err);
+            alert(err.message || 'Failed to approve venue');
         }
     };
 
@@ -128,15 +131,24 @@ export default function Venues() {
         if (bulk.count === 0) return;
         if (!window.confirm(`${label} ${bulk.count} selected venue${bulk.count !== 1 ? 's' : ''}?`)) return;
         setBulkBusy(true);
+        // Carry on past a refused venue (e.g. its owner's ID is not verified yet)
+        // so one does not stop the rest, then list what was refused and why.
+        const failures = [];
         try {
-            for (const id of bulk.selectedIds) await fn(id);
+            for (const id of bulk.selectedIds) {
+                try {
+                    await fn(id);
+                } catch (err) {
+                    failures.push(err.message || 'failed');
+                }
+            }
             bulk.clear();
-            await fetchVenues();
-        } catch (err) {
-            alert(err.message || `Failed to ${label.toLowerCase()} some venues`);
-            await fetchVenues();
         } finally {
+            await fetchVenues();
             setBulkBusy(false);
+        }
+        if (failures.length) {
+            alert(`${failures.length} venue${failures.length !== 1 ? 's' : ''} not done:\n\n${failures.join('\n')}`);
         }
     };
     const bulkActions = [

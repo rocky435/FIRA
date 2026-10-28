@@ -86,6 +86,49 @@ router.patch('/me/bank-details', auth, confirmPayoutChange(() => 'bank details u
 });
 
 /* ------------------------------------------------------------------ *
+ * Identity checks (services/identityService.js): the venue owner's
+ * government ID and the organiser's PAN. Submitting puts it in the admin's
+ * review queue; the status is the admin's to set, never the user's.
+ * ------------------------------------------------------------------ */
+
+const identityService = require('../services/identityService');
+
+function sendIdentityError(res, error) {
+    const body = { error: error.message };
+    if (error.field) body.field = error.field;
+    res.status(error.status || 500).json(body);
+}
+
+// GET /api/users/me/identity - status of my checks (and why one was rejected)
+router.get('/me/identity', auth, noStoreCache, async (req, res) => {
+    try {
+        res.json(await identityService.getOwn(req.user._id));
+    } catch (error) {
+        sendIdentityError(res, error);
+    }
+});
+
+// PUT /api/users/me/identity/gov-id - { govIdType, govIdNumber, govIdDocument }
+router.put('/me/identity/gov-id', auth, async (req, res) => {
+    try {
+        const { govIdType, govIdNumber, govIdDocument } = req.body || {};
+        res.json(await identityService.submitGovId(req.user._id, { govIdType, govIdNumber, govIdDocument }));
+    } catch (error) {
+        sendIdentityError(res, error);
+    }
+});
+
+// PUT /api/users/me/identity/pan - { panNumber, panDocument }
+router.put('/me/identity/pan', auth, async (req, res) => {
+    try {
+        const { panNumber, panDocument } = req.body || {};
+        res.json(await identityService.submitPan(req.user._id, { panNumber, panDocument }));
+    } catch (error) {
+        sendIdentityError(res, error);
+    }
+});
+
+/* ------------------------------------------------------------------ *
  * Payout accounts. All declared before '/:id' so the literal segments are not
  * captured as an id param.
  * ------------------------------------------------------------------ */

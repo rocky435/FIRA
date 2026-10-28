@@ -13,6 +13,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/components/ui/Toast';
 import InquiryForm from '@/components/InquiryForm';
 import PaymentDueWidgets from '@/components/PaymentDueWidgets';
+import VenueDateCalendar from '@/components/VenueDateCalendar';
 
 /**
  * How long the success state stays on screen before we navigate to the
@@ -71,8 +72,6 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
         return `${day}/${month}/${year}`;
     };
     const [bookingData, setBookingData] = useState(EMPTY_BOOKING);
-    const [hoveredDate, setHoveredDate] = useState<string | null>(null);
-    const [calendarMonth, setCalendarMonth] = useState(new Date());
     const [isSubmitting, setIsSubmitting] = useState(false);
     // In-modal booking validation errors (8.4/8.6) — keyed by field so each
     // error renders next to its input inside the modal, never behind it.
@@ -88,28 +87,8 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
             return next;
         });
 
-    // Availability calendar is bounded to the current month + next (the copy
-    // says "next 2 months"), so navigation is clamped to that 2-month window
-    // (8.11). ponytail: 2 is the copy's ceiling; widen both the copy and this
-    // bound together if the availability window ever grows.
+    // The booking calendar shows the current month and the next (8.11).
     const CALENDAR_MONTHS = 2;
-    const calendarFirstMonth = (() => {
-        const d = new Date();
-        return new Date(d.getFullYear(), d.getMonth(), 1);
-    })();
-    const calendarLastMonth = new Date(
-        calendarFirstMonth.getFullYear(),
-        calendarFirstMonth.getMonth() + (CALENDAR_MONTHS - 1),
-        1
-    );
-    const canGoPrevMonth =
-        calendarMonth.getFullYear() > calendarFirstMonth.getFullYear() ||
-        (calendarMonth.getFullYear() === calendarFirstMonth.getFullYear() &&
-            calendarMonth.getMonth() > calendarFirstMonth.getMonth());
-    const canGoNextMonth =
-        calendarMonth.getFullYear() < calendarLastMonth.getFullYear() ||
-        (calendarMonth.getFullYear() === calendarLastMonth.getFullYear() &&
-            calendarMonth.getMonth() < calendarLastMonth.getMonth());
 
     // Review form state
     const [canReview, setCanReview] = useState(false);
@@ -444,181 +423,29 @@ export default function VenueDetailClient({ initialVenue = null }: { initialVenu
         );
     }
 
-    // Availability calendar — presented INSIDE the booking popup after the user
-    // proceeds (8.8), not on the page ahead of booking. Selecting a day feeds
-    // `selectedDate`, which the modal's Start Date input reads.
+    // Availability calendar, inside the booking popup (8.8). The same calendar
+    // Create Event uses: tap a day, then a later day for a range. It fills the
+    // Start/End Date inputs below, which stay for typing a date directly.
+    const calendarStart = bookingData.date || selectedDate || '';
     const availabilityCalendar = (
-        <div className="bg-black/40 border border-white/10 rounded-2xl p-4 sm:p-6">
-            <h3 className="text-lg font-semibold text-white mb-1">Availability Calendar</h3>
-            <p className="text-gray-300 text-sm mb-6">Showing availability for the next 2 months. Day-wise booking only.</p>
-
-            {/* Legend */}
-            <div className="flex flex-wrap gap-4 mb-6">
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 rounded bg-green-500/30 border border-green-500/50"></div>
-                    <span className="text-sm text-gray-300">Available</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 rounded bg-red-500/30 border border-red-500/50"></div>
-                    <span className="text-sm text-gray-300">Booked</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 rounded bg-gray-500/30 border border-gray-500/50"></div>
-                    <span className="text-sm text-gray-300">Closed</span>
-                </div>
-            </div>
-
-            {/* Month Navigation */}
-            <div className="flex items-center justify-between mb-6">
-                <button
-                    onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}
-                    disabled={!canGoPrevMonth}
-                    className="p-2 hover:bg-white/10 rounded-lg transition-colors text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                    </svg>
-                </button>
-                <span className="text-white font-medium">
-                    {calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                </span>
-                <button
-                    onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}
-                    disabled={!canGoNextMonth}
-                    className="p-2 hover:bg-white/10 rounded-lg transition-colors text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                </button>
-            </div>
-
-            {/* Calendar Grid */}
-            <div className="grid grid-cols-7 gap-2">
-                {/* Day headers */}
-                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
-                    <div key={day} className="text-center text-xs text-gray-300 font-medium py-2">
-                        {day}
-                    </div>
-                ))}
-
-                {/* Generate calendar days for the month */}
-                {(() => {
-                    const slots = [];
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0);
-
-                    const year = calendarMonth.getFullYear();
-                    const month = calendarMonth.getMonth();
-                    const firstDayOfMonth = new Date(year, month, 1);
-                    const lastDayOfMonth = new Date(year, month + 1, 0);
-
-                    // Add empty slots for days before the first day of month
-                    const firstDayOfWeek = firstDayOfMonth.getDay();
-                    for (let i = 0; i < firstDayOfWeek; i++) {
-                        slots.push(
-                            <div key={`empty-${i}`} className="aspect-square"></div>
-                        );
-                    }
-
-                    // Generate days for this month
-                    for (let d = 1; d <= lastDayOfMonth.getDate(); d++) {
-                        const date = new Date(year, month, d);
-                        const isPast = date < today;
-                        const isToday = date.toDateString() === today.toDateString();
-
-                        const yearStr = date.getFullYear();
-                        const monthStr = String(date.getMonth() + 1).padStart(2, '0');
-                        const dayStr = String(date.getDate()).padStart(2, '0');
-                        const dateStr = `${yearStr}-${monthStr}-${dayStr}`;
-                        const isSelected = selectedDate === dateStr;
-                        const isHovered = hoveredDate === dateStr;
-                        const availability = getDateAvailability(date);
-
-                        // Determine background class based on availability color
-                        let bgClass = '';
-                        if (isPast) {
-                            bgClass = 'bg-gray-800/30 border-gray-700/30 text-gray-600 cursor-not-allowed';
-                        } else if (isSelected) {
-                            bgClass = 'bg-violet-500/30 border-violet-500 ring-2 ring-violet-500 text-white cursor-pointer';
-                        } else if (availability.isClosed) {
-                            bgClass = 'bg-gray-500/20 border-gray-500/40 text-gray-300 cursor-not-allowed';
-                        } else if (availability.color === 'red') {
-                            bgClass = 'bg-red-500/20 border-red-500/40 text-red-300 cursor-not-allowed';
-                        } else if (availability.color === 'orange') {
-                            bgClass = 'bg-orange-500/20 border-orange-500/40 text-orange-300 hover:bg-orange-500/30 cursor-pointer';
-                        } else {
-                            bgClass = 'bg-green-500/20 border-green-500/40 text-green-300 hover:bg-green-500/30 cursor-pointer';
-                        }
-
-                        slots.push(
-                            <div key={dateStr} className="relative">
-                                <button
-                                    className={`w-full aspect-square rounded-lg border text-xs font-medium flex flex-col items-center justify-center transition-colors ${bgClass}`}
-                                    onClick={() => {
-                                        if (!isPast && !availability.isClosed && availability.color !== 'red') {
-                                            setSelectedDate(dateStr);
-                                            // A new start date invalidates an end date before it.
-                                            setBookingData((prev) => ({
-                                                ...prev,
-                                                date: dateStr,
-                                                endDate: prev.endDate && prev.endDate < dateStr ? '' : prev.endDate,
-                                            }));
-                                            patchBookingErrors({ date: undefined, endDate: undefined });
-                                        }
-                                    }}
-                                    disabled={isPast || availability.isClosed || availability.color === 'red'}
-                                    onMouseEnter={() => setHoveredDate(dateStr)}
-                                    onMouseLeave={() => setHoveredDate(null)}
-                                >
-                                    <span className={isToday ? 'font-bold' : ''}>{d}</span>
-                                </button>
-
-                                {/* Hover Tooltip */}
-                                {isHovered && !isPast && (
-                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 pointer-events-none">
-                                        <div className="px-3 py-2 rounded-lg text-xs shadow-xl border bg-gray-900/95 border-gray-700 text-white min-w-[140px]">
-                                            <div className="font-semibold mb-1 text-gray-300">
-                                                {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                            </div>
-                                            {availability.isClosed ? (
-                                                <div className="flex items-center gap-1.5 text-gray-300">
-                                                    <span className="w-2 h-2 rounded-full bg-gray-500"></span>
-                                                    Closed
-                                                </div>
-                                            ) : availability.slots.length > 0 ? (
-                                                <div className="space-y-1">
-                                                    {availability.slots.map((slot, idx) => (
-                                                        <div key={idx} className="flex items-center gap-1.5">
-                                                            <span className={`w-2 h-2 rounded-full ${slot.type === 'booked' ? 'bg-orange-500' : 'bg-red-500'}`}></span>
-                                                            <span className={slot.type === 'booked' ? 'text-orange-400' : 'text-red-400'}>
-                                                                {slot.type === 'booked' ? 'Booked' : 'Busy'}: {slot.startTime} - {slot.endTime}
-                                                            </span>
-                                                        </div>
-                                                    ))}
-                                                    <div className="flex items-center gap-1.5 text-green-400">
-                                                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                                        Available: Other hours
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="flex items-center gap-1.5 text-green-400">
-                                                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                                    Available: {availability.defaultStart} - {availability.defaultEnd}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-gray-900/95" />
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    }
-
-                    return slots;
-                })()}
-            </div>
-        </div>
+        <VenueDateCalendar
+            venueName={venue.name}
+            startKey={calendarStart}
+            endKey={bookingData.endDate || calendarStart}
+            // The current month and the next, as before (8.11).
+            monthsAhead={CALENDAR_MONTHS - 1}
+            dayStatus={(key) => {
+                const [y, m, d] = key.split('-').map(Number);
+                const a = getDateAvailability(new Date(y, m - 1, d));
+                if (a.isClosed) return 'closed';
+                return a.color === 'red' ? 'taken' : 'free';
+            }}
+            onChange={(start, end) => {
+                setSelectedDate(start);
+                setBookingData((prev) => ({ ...prev, date: start, endDate: end > start ? end : '' }));
+                patchBookingErrors({ date: undefined, endDate: undefined });
+            }}
+        />
     );
 
     return (

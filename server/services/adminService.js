@@ -10,6 +10,22 @@ const { escapeRegex } = require('../utils/escapeRegex');
 /** Case-insensitive "contains" match on a user-supplied search term. */
 const searchRegex = (value) => new RegExp(escapeRegex(value), 'i');
 
+// What a paid booking has received, as an aggregation expression: the same rule
+// as venueService.computeRefund (advance, plus the rest once that is paid; or
+// the full amount).
+const BOOKING_RECEIVED = {
+    $cond: [
+        { $eq: ['$paymentSchedule.type', 'installment'] },
+        {
+            $add: [
+                { $ifNull: ['$paymentSchedule.depositAmount', 0] },
+                { $cond: [{ $eq: ['$paymentSchedule.balanceStatus', 'paid'] }, { $ifNull: ['$paymentSchedule.balanceAmount', 0] }, 0] },
+            ],
+        },
+        { $ifNull: [{ $cond: [{ $gt: ['$paymentSchedule.depositAmount', 0] }, '$paymentSchedule.depositAmount', null] }, '$totalAmount'] },
+    ],
+};
+
 const adminService = {
     // ================== DASHBOARD STATS ==================
     async getStats() {
@@ -42,12 +58,12 @@ const adminService = {
             Ticket.aggregate([
                 { $group: { _id: null, total: { $sum: '$price' } } }
             ]),
-            // Venue booking revenue was missing from the dashboard headline:
-            // totalRevenue only summed ticket prices, so venue bookings (which go
-            // through Razorpay and record a Booking.totalAmount) were invisible.
+            // Venue booking revenue: what guests have actually paid. Summing
+            // totalAmount over accepted bookings counted bookings nobody had
+            // paid for yet (accepting comes before paying).
             Booking.aggregate([
-                { $match: { status: { $in: ['accepted', 'completed'] } } },
-                { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+                { $match: { paymentStatus: 'paid' } },
+                { $group: { _id: null, total: { $sum: BOOKING_RECEIVED } } }
             ])
         ]);
 
@@ -284,6 +300,70 @@ const adminService = {
         };
     },
 
+    // Every venue booking in one list, so an admin can see what is booked and
+    // paid without opening each venue. `search` matches the venue name or the
+    // guest's name/email; `venue` narrows to one venue. `received` is what the
+    // guest has actually paid so far (the same figure a cancellation refunds
+    // against), not the booking's price.
+    async getBookings(query = {}) {
+        const { page = 1, limit = 20, search, status, paymentStatus, venue } = query;
+        const pageNum = Math.max(1, parseInt(page) || 1);
+        const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20));
+        const filter = {};
+
+        if (venue) {
+            const mongoose = require('mongoose');
+            if (!mongoose.isValidObjectId(venue)) {
+                return { bookings: [], counts: {}, totalPages: 0, currentPage: pageNum, total: 0 };
+            }
+            // An ObjectId, not the string: the counts below go through aggregate,
+            // which does not cast.
+            filter.venue = new mongoose.Types.ObjectId(String(venue));
+        }
+        if (search) {
+            const [venueIds, userIds] = await Promise.all([
+                Venue.find({ name: searchRegex(search) }).distinct('_id'),
+                User.find({ $or: [{ name: searchRegex(search) }, { email: searchRegex(search) }] }).distinct('_id'),
+            ]);
+            filter.$or = [{ venue: { $in: venueIds } }, { user: { $in: userIds } }];
+        }
+        // Counts per status for the filter chips, before the status filter itself.
+        const countRows = await Booking.aggregate([
+            { $match: filter },
+            { $group: { _id: '$status', n: { $sum: 1 } } },
+        ]);
+        const counts = Object.fromEntries(countRows.map((r) => [r._id, r.n]));
+
+        if (status && status !== 'all') filter.status = status;
+        if (paymentStatus && paymentStatus !== 'all') filter.paymentStatus = paymentStatus;
+
+        const [rows, total] = await Promise.all([
+            Booking.find(filter)
+                .select('venue user bookingDate endDate startTime endTime status paymentStatus totalAmount paymentSchedule expectedGuests createdAt')
+                .populate({ path: 'venue', select: 'name address.city owner', populate: { path: 'owner', select: 'name email' } })
+                .populate('user', 'name email phone')
+                .sort({ createdAt: -1 })
+                .skip((pageNum - 1) * limitNum)
+                .limit(limitNum)
+                .lean(),
+            Booking.countDocuments(filter),
+        ]);
+
+        const { computeRefund } = require('./venueService');
+        const bookings = rows.map((b) => ({
+            ...b,
+            received: b.paymentStatus === 'paid' ? computeRefund(b.paymentSchedule, b.totalAmount, 0).amountPaid : 0,
+        }));
+
+        return {
+            bookings,
+            counts,
+            totalPages: Math.ceil(total / limitNum),
+            currentPage: pageNum,
+            total,
+        };
+    },
+
     // Venue owners with their venues + bank details (admin-only read — this
     // router is gated behind adminAuth, so surfacing bankDetails here is safe).
     // Flow 8.6: list venue owners, expandable to their venues, with the owner's
@@ -331,7 +411,11 @@ const adminService = {
 
         // Get booking stats
         const bookings = await Booking.find({ venue: id });
-        const totalRevenue = bookings.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+        // What guests have paid, not the price of every booking ever requested.
+        const { computeRefund } = require('./venueService');
+        const totalRevenue = bookings.reduce((sum, b) => sum + (b.paymentStatus === 'paid'
+            ? computeRefund(b.paymentSchedule, b.totalAmount, 0).amountPaid
+            : 0), 0);
 
         return {
             ...venue.toObject(),
@@ -347,8 +431,17 @@ const adminService = {
         // Read the old status first so the trail can show what changed, not just what
         // it ended up as. "approved" on its own does not tell a reviewer whether this
         // was a first approval or a reversal of a rejection.
-        const before = await Venue.findById(venueId).select('status name').lean();
+        const before = await Venue.findById(venueId).select('status name owner').lean();
         if (!before) throw new Error('Venue not found');
+
+        // A venue goes public only once a person has checked who owns it. Venues
+        // already approved stay approved; this guards the move into 'approved'.
+        if (status === 'approved' && before.status !== 'approved') {
+            const identityService = require('./identityService');
+            if (!(await identityService.isVerified(before.owner, 'gov-id'))) {
+                throw new Error(`Verify the owner's government ID before approving "${before.name}" (Venue Owners or ID Checks).`);
+            }
+        }
 
         const venue = await Venue.findByIdAndUpdate(
             venueId,

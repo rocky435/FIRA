@@ -117,6 +117,22 @@ describe('createBooking — same-day conflict (double-booking fix)', () => {
     });
 });
 
+describe('createBooking — an owner booking their own venue', () => {
+    it('is refused, pointing them at blocking dates instead', async () => {
+        const owner = await makeUser('Owner');
+        await mongoose.connection.db!.collection('venues').updateOne({ _id: venueId }, { $set: { owner } });
+
+        await expect(
+            bookingService.createBooking(bookingInput({ user: owner, venue: venueId }))
+        ).rejects.toThrow(/your own venue/);
+        expect(await Booking.countDocuments({ venue: venueId })).toBe(0);
+
+        // Anyone else can still book it.
+        await bookingService.createBooking(bookingInput({ user: userA, venue: venueId }));
+        expect(await Booking.countDocuments({ venue: venueId })).toBe(1);
+    });
+});
+
 describe('createBooking — same-day start/end time validation', () => {
     it('rejects identical start and end time on a same-day booking', async () => {
         await expect(

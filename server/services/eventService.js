@@ -14,6 +14,7 @@ const { escapeRegex } = require('../utils/escapeRegex');
  * silently invisible with no indication why.
  */
 const PUBLICLY_VISIBLE_STATUSES = ['approved', 'upcoming', 'ongoing'];
+const formatWhen = (date) => new Date(date).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 /**
  * The venue days an event occupies, each with the slot it takes that day: from
@@ -262,10 +263,13 @@ const eventService = {
             sortOption = { isFeatured: -1, ...sortOption };
         }
 
-        const events = await Event.find(filter)
+        const eventsQuery = Event.find(filter)
             .select(ownListing ? undefined : '-privateCode')
             .populate('organizer', 'name email avatar verificationBadge')
-            .populate('venue', 'name address images')
+            .populate('venue', 'name address images');
+        // The organiser's own list shows whether the venue still needs paying.
+        if (ownListing) eventsQuery.populate('booking', 'status paymentStatus totalAmount paymentDueAt');
+        const events = await eventsQuery
             .limit(parseInt(limit))
             .skip((parseInt(page) - 1) * parseInt(limit))
             .sort(sortOption)
@@ -419,6 +423,8 @@ const eventService = {
             const conflictingEvents = await Event.find({
                 venue: venue,
                 status: { $nin: ['cancelled', 'rejected'] },
+                // A deleted event has released its days (releaseVenueAvailability).
+                isDeleted: { $ne: true },
                 // Check for any overlap: existing event overlaps if:
                 // existingStart < newEnd AND existingEnd > newStart
                 $and: [
@@ -505,14 +511,10 @@ const eventService = {
 
         const event = await Event.create(data);
 
-        // If fully approved, update venue availability
-        if (event.status === 'approved') {
+        // If fully approved (a custom venue for a fast-tracked organiser - a
+        // listed venue always waits for its owner), hold any listed venue's days.
+        if (event.status === 'approved' && event.venue) {
             await this.updateVenueAvailability(event);
-            const booking = await this.createBookingForEvent(event);
-            if (booking) {
-                event.booking = booking._id;
-                await event.save();
-            }
         }
 
         // Send email notification to venue owner (only for non-custom venues)
@@ -611,6 +613,22 @@ const eventService = {
             }
         }
 
+        // A venue that approved these dates (and may already be paid for them)
+        // has not agreed to others. Moving a paid venue booking would take the
+        // owner's money for days they never accepted, so that is refused; an
+        // unpaid one goes back to the owner for the new dates.
+        const datesMoving = (updateData.startDateTime && +new Date(updateData.startDateTime) !== +new Date(event.startDateTime))
+            || (updateData.endDateTime && +new Date(updateData.endDateTime) !== +new Date(event.endDateTime));
+        if (datesMoving && event.venue && event.venueApproval?.status === 'approved' && !('venue' in updateData && String(updateData.venue || '') !== String(event.venue))) {
+            const Booking = require('../models/Booking');
+            const paid = await Booking.exists({ event: event._id, status: 'accepted', paymentStatus: 'paid' });
+            if (paid) {
+                throw new Error("You've paid the venue for the current dates. Cancel this event and create a new one, or ask the venue owner, to change them.");
+            }
+            updateData.venueApproval = { status: 'pending' };
+            if (PUBLICLY_VISIBLE_STATUSES.includes(event.status)) updateData.status = 'pending';
+        }
+
         // Check if date/time is being changed and tickets are already sold
         if (updateData.startDateTime || updateData.endDateTime) {
             const currentStart = event.startDateTime ? event.startDateTime.toISOString() : null;
@@ -651,23 +669,15 @@ const eventService = {
             );
         }
 
-        // An approved event holds its venue's days. If it moved venue or dates,
-        // free the old days, and hold the new ones if it is still approved.
-        const heldDays = PUBLICLY_VISIBLE_STATUSES.includes(event.status) && event.venue;
+        // An event the venue approved holds its venue's days. If it moved venue
+        // or dates, free the old days; the venue approves the new ones afresh.
+        const heldDays = event.venue && (PUBLICLY_VISIBLE_STATUSES.includes(event.status) || event.venueApproval?.status === 'approved');
         const moved = updatedEvent && (
             String(updatedEvent.venue || '') !== String(event.venue || '')
             || +new Date(updatedEvent.startDateTime) !== +new Date(event.startDateTime)
             || +new Date(updatedEvent.endDateTime) !== +new Date(event.endDateTime));
         if (heldDays && moved) {
             await this.releaseVenueForEvent(event);
-            if (PUBLICLY_VISIBLE_STATUSES.includes(updatedEvent.status) && updatedEvent.venue) {
-                await this.updateVenueAvailability(updatedEvent);
-                const booking = await this.createBookingForEvent(updatedEvent);
-                if (booking && String(booking._id) !== String(updatedEvent.booking)) {
-                    updatedEvent.booking = booking._id;
-                    await updatedEvent.save();
-                }
-            }
         }
         return updatedEvent;
     },
@@ -688,7 +698,7 @@ const eventService = {
         if (!event) {
             throw new Error('Event not found');
         }
-        await this.releaseVenueForEvent(event);
+        await this.releaseVenueForEvent(event, { refund: 'policy', reason: 'The organiser deleted the event' });
         return { message: 'Event deleted successfully', event };
     },
 
@@ -715,7 +725,7 @@ const eventService = {
         event.isActive = false;
         event.currentAttendees = 0;
         await event.save();
-        await this.releaseVenueForEvent(event);
+        await this.releaseVenueForEvent(event, { refund: 'policy', reason });
 
         // Process refunds for all ticket holders
         let refundResults = null;
@@ -857,36 +867,41 @@ const eventService = {
             rejectionReason: status === 'rejected' ? rejectionReason : undefined
         };
 
-        // If venue rejected, update event status
+        // If venue rejected, update event status. Anything already paid for the
+        // venue goes back in full: the organiser did nothing wrong.
+        let booking = null;
         if (status === 'rejected') {
             event.status = 'rejected';
-            await this.releaseVenueForEvent(event);
+            await this.releaseVenueForEvent(event, { refund: 'full', reason: 'The venue declined the event' });
         }
-        // If both approved, set to approved
-        else if (status === 'approved' && event.adminApproval?.status === 'approved') {
-            event.status = 'approved';
-
-            // Mark event dates as booked in venue daySlots
-            await this.updateVenueAvailability(event);
-
-            // Create booking automatically
-            const booking = await this.createBookingForEvent(event);
-            if (booking) {
-                event.booking = booking._id;
-            }
+        // Approved: the venue's days are held and the organiser is asked to pay
+        // the full venue price. The event goes live only once that is paid and
+        // the admin has approved it (goLiveIfReady) - it used to go live with
+        // the venue never paid.
+        else if (status === 'approved') {
+            booking = await this.holdVenueForEvent(event);
+            if (booking) event.booking = booking._id;
         }
 
         await event.save();
+        if (status === 'approved') await this.goLiveIfReady(event);
 
+        const unpaid = booking && booking.paymentStatus !== 'paid' && booking.totalAmount > 0;
         // Notify organizer
         await Notification.create({
             user: event.organizer,
             title: status === 'approved' ? 'Venue Approved Your Event' : 'Venue Rejected Your Event',
-            message: status === 'approved'
-                ? `The venue has approved your event "${event.name}". Waiting for admin approval.`
-                : `The venue has rejected your event "${event.name}". Reason: ${rejectionReason || 'Not specified'}`,
+            message: status !== 'approved'
+                ? `The venue has rejected your event "${event.name}". Reason: ${rejectionReason || 'Not specified'}`
+                : unpaid
+                    ? `${event.venue?.name || 'The venue'} approved "${event.name}". Pay the venue's ₹${booking.totalAmount} by ${formatWhen(booking.paymentDueAt)} to keep the date - the event goes live once it is paid${event.adminApproval?.status === 'approved' ? '' : ' and the admin approves it'}.`
+                    : `The venue has approved your event "${event.name}".${event.status === 'approved' ? ' It is now live!' : ' Waiting for admin approval.'}`,
             type: 'system',
-            data: { referenceId: event._id, referenceModel: 'Event' }
+            data: {
+                referenceId: unpaid ? booking._id : event._id,
+                referenceModel: unpaid ? 'Booking' : 'Event',
+                ...(unpaid ? { actionUrl: `/dashboard/bookings/${booking._id}` } : {}),
+            }
         });
 
         return event;
@@ -912,92 +927,88 @@ const eventService = {
             rejectionReason: status === 'rejected' ? rejectionReason : undefined
         };
 
-        // If admin rejected, update event status
+        // If admin rejected, update event status (a paid venue is refunded in full)
         if (status === 'rejected') {
             event.status = 'rejected';
-            await this.releaseVenueForEvent(event);
-        }
-        // If admin approved, set to approved (backward compat: if venueApproval not set, consider it approved)
-        else if (status === 'approved') {
-            const venueApproved = !event.venueApproval || event.venueApproval.status === 'approved' || !event.venueApproval.status;
-            if (venueApproved) {
-                event.status = 'approved';
-
-                // Mark event dates as booked in venue daySlots
-                await this.updateVenueAvailability(event);
-
-                // Create booking automatically
-                const booking = await this.createBookingForEvent(event);
-                if (booking) {
-                    event.booking = booking._id;
-                }
-            }
+            await this.releaseVenueForEvent(event, { refund: 'full', reason: 'The event was not approved' });
         }
 
         await event.save();
+        // Approved: live only once the venue has approved and been paid.
+        const live = status === 'approved' && await this.goLiveIfReady(event, { announce: false });
+
+        let waitingFor = '';
+        if (status === 'approved' && !live) {
+            const venueApproved = !event.venueApproval?.status || event.venueApproval.status === 'approved';
+            waitingFor = venueApproved
+                ? ' It goes live once the venue booking is paid.'
+                : ' It goes live once the venue approves it and the venue booking is paid.';
+        }
 
         // Notify organizer
         await Notification.create({
             user: event.organizer,
             title: status === 'approved' ? 'Event Approved by Admin' : 'Event Rejected by Admin',
-            message: status === 'approved'
-                ? `Your event "${event.name}" has been approved and is now live!`
-                : `Your event "${event.name}" was rejected by admin. Reason: ${rejectionReason || 'Not specified'}`,
+            message: status !== 'approved'
+                ? `Your event "${event.name}" was rejected by admin. Reason: ${rejectionReason || 'Not specified'}`
+                : live
+                    ? `Your event "${event.name}" has been approved and is now live!`
+                    : `Your event "${event.name}" has been approved.${waitingFor}`,
             type: 'system',
             data: { referenceId: event._id, referenceModel: 'Event' }
         });
 
-        // If event is approved, notify brand followers
-        console.log(`🔍 Debug: Admin status=${status}, Event status=${event.status}, Organizer=${event.organizer}`);
-        if (status === 'approved' && event.status === 'approved') {
-            console.log('✅ Event fully approved, checking for brand profile...');
-            try {
-                const BrandProfile = require('../models/BrandProfile');
-                const notificationService = require('./notificationService');
-
-                // Check if organizer has a brand profile
-                const brandProfile = await BrandProfile.findOne({ user: event.organizer });
-                console.log(`🔍 Brand profile found: ${brandProfile ? brandProfile.name : 'NONE'}`);
-                
-                if (brandProfile) {
-                    // Populate event with venue for email
-                    const populatedEvent = await Event.findById(event._id).populate('venue', 'name address');
-                    
-                    const result = await notificationService.notifyBrandFollowers(
-                        brandProfile._id,
-                        'brand_new_event',
-                        {
-                            title: `${brandProfile.name} New Event`,
-                            message: `${brandProfile.name} just announced "${populatedEvent.name}"! Get your tickets now.`,
-                            referenceId: populatedEvent._id,
-                            referenceModel: 'Event',
-                            actionUrl: `/events/${populatedEvent._id}`,
-                            extra: {
-                                event: {
-                                    _id: populatedEvent._id,
-                                    name: populatedEvent.name,
-                                    date: populatedEvent.startDateTime,
-                                    startDateTime: populatedEvent.startDateTime,
-                                    images: populatedEvent.images,
-                                    ticketPrice: populatedEvent.ticketPrice,
-                                    venue: populatedEvent.venue
-                                }
-                            }
-                        },
-                        true // send email
-                    );
-                    console.log(`✅ Notified ${brandProfile.name}'s followers about new event:`, result);
-                } else {
-                    console.log('⚠️ Organizer does not have a brand profile - no followers to notify');
-                }
-            } catch (notifErr) {
-                console.error('Failed to notify brand followers:', notifErr.message);
-            }
-        } else {
-            console.log(`⚠️ Event not fully approved: admin status=${status}, event.status=${event.status}`);
-        }
-
+        if (live) await this.announceEventLive(event);
         return event;
+    },
+
+    /**
+     * Tell the organiser's brand followers about an event that has just gone
+     * live. Best-effort: a failure here never undoes the approval.
+     */
+    async announceEventLive(event) {
+        try {
+            const BrandProfile = require('../models/BrandProfile');
+            const notificationService = require('./notificationService');
+
+            // Check if organizer has a brand profile
+            const brandProfile = await BrandProfile.findOne({ user: event.organizer });
+            console.log(`🔍 Brand profile found: ${brandProfile ? brandProfile.name : 'NONE'}`);
+            
+            if (brandProfile) {
+                // Populate event with venue for email
+                const populatedEvent = await Event.findById(event._id).populate('venue', 'name address');
+                
+                const result = await notificationService.notifyBrandFollowers(
+                    brandProfile._id,
+                    'brand_new_event',
+                    {
+                        title: `${brandProfile.name} New Event`,
+                        message: `${brandProfile.name} just announced "${populatedEvent.name}"! Get your tickets now.`,
+                        referenceId: populatedEvent._id,
+                        referenceModel: 'Event',
+                        actionUrl: `/events/${populatedEvent._id}`,
+                        extra: {
+                            event: {
+                                _id: populatedEvent._id,
+                                name: populatedEvent.name,
+                                date: populatedEvent.startDateTime,
+                                startDateTime: populatedEvent.startDateTime,
+                                images: populatedEvent.images,
+                                ticketPrice: populatedEvent.ticketPrice,
+                                venue: populatedEvent.venue
+                            }
+                        }
+                    },
+                    true // send email
+                );
+                console.log(`✅ Notified ${brandProfile.name}'s followers about new event:`, result);
+            } else {
+                console.log('⚠️ Organizer does not have a brand profile - no followers to notify');
+            }
+        } catch (notifErr) {
+            console.error('Failed to notify brand followers:', notifErr.message);
+        }
     },
 
     // Get events pending venue approval (for venue owners)
@@ -1124,7 +1135,7 @@ const eventService = {
      * marked booked for good and nobody could book them. Best-effort: the
      * caller's change to the event already stands.
      */
-    async releaseVenueForEvent(event) {
+    async releaseVenueForEvent(event, { refund = 'policy', reason = 'The event was cancelled' } = {}) {
         try {
             const Venue = require('../models/Venue');
             const Booking = require('../models/Booking');
@@ -1132,12 +1143,33 @@ const eventService = {
             const venueId = event.venue?._id || event.venue;
             if (!venueId) return;
 
-            await Booking.updateMany(
-                { event: event._id, status: { $in: ['pending', 'accepted'] } },
-                { $set: { status: 'cancelled', cancellationReason: 'event_cancelled' } }
-            );
-
             const venue = await Venue.findById(venueId);
+
+            // Each live venue booking is claimed one at a time, so a booking is
+            // cancelled - and its payment refunded - exactly once. A paid venue
+            // is refunded in full when the venue or admin turned the event down,
+            // and under the venue's cancellation policy when the organiser called
+            // it off (the same rule as a guest cancelling a booking).
+            const live = await Booking.find({ event: event._id, status: { $in: ['pending', 'accepted'] } }).select('_id').lean();
+            for (const { _id } of live) {
+                const booking = await Booking.findOneAndUpdate(
+                    { _id, status: { $in: ['pending', 'accepted'] } },
+                    { $set: { status: 'cancelled', cancellationReason: 'event_cancelled' } },
+                    { new: true }
+                );
+                if (!booking) continue;
+                // A paid booking also holds the days under its own id.
+                if (venue) require('../utils/venueAvailability').releaseBookingDays(venue, booking);
+                if (booking.paymentStatus !== 'paid') continue;
+                const pct = refund === 'full'
+                    ? 100
+                    : require('./venueService').cancellationRefund(venue, booking).refundPercentage;
+                await require('./refundService').raiseBookingRefunds(booking, pct, {
+                    reasonDetails: `${reason} - venue booking for "${event.name}" (${pct}% refunded)`,
+                    userId: booking.user,
+                });
+            }
+
             if (!venue) return;
             const days = eventVenueDays(event);
             const keys = new Set(days.map(d => d.key));
@@ -1434,60 +1466,140 @@ const eventService = {
         return scanningCode;
     },
 
-    // Helper: Create booking automatically when event is approved
-    async createBookingForEvent(event) {
+    /**
+     * Hold the venue for an event its owner approved: the venue's days are
+     * blocked and a venue booking is opened that the organiser pays in full
+     * (no 10% advance for events) by the same deadline a guest gets - 48 hours,
+     * or sooner when the event is close. Priced like any booking at the venue:
+     * its day rate for each day the event spans. Unpaid by the deadline, the
+     * booking lapses and the event is cancelled (scheduledJobs). Returns the
+     * open booking (an existing one is reused), or null for no listed venue.
+     *
+     * An organiser hosting at their own venue owes nothing, so their booking is
+     * opened as paid-for and the event needs only the approvals.
+     */
+    async holdVenueForEvent(event) {
         const Booking = require('../models/Booking');
         const Venue = require('../models/Venue');
+        const paymentScheduleUtil = require('../utils/paymentSchedule');
+        const { bookingTotal } = require('../utils/venuePricing');
 
         if (!event.venue) return null;
-
         const venueId = event.venue._id || event.venue;
-        const venue = await Venue.findById(venueId);
 
-        // Check if a booking already exists for this event
-        const existingBooking = await Booking.findOne({ event: event._id, status: { $in: ['pending', 'accepted'] } });
-        if (existingBooking) {
-            console.log(`[createBookingForEvent] Booking already exists for event ${event._id}`);
-            return existingBooking;
-        }
+        const existing = await Booking.findOne({ event: event._id, status: { $in: ['pending', 'accepted'] } });
+        if (existing) return existing;
 
-        // Calculate hours/days and pricing
-        const start = new Date(event.startDateTime);
-        const end = new Date(event.endDateTime);
-        const durationHours = Math.ceil((end - start) / (1000 * 60 * 60)) || 1;
+        const venue = await Venue.findById(venueId).select('owner pricing');
+        const days = eventVenueDays(event);
+        if (!venue || !days.length) return null;
 
-        let totalAmount = 0;
-        if (venue) {
-            const basePrice = venue.pricing?.basePrice || 0;
-            const pricePerHour = venue.pricing?.pricePerHour || 0;
-            totalAmount = pricePerHour > 0 ? (pricePerHour * durationHours) : basePrice;
-        }
+        await this.updateVenueAvailability(event);
 
-        // Helper to format time
-        const formatTime = (dt) => {
-            const hours = dt.getHours().toString().padStart(2, '0');
-            const mins = dt.getMinutes().toString().padStart(2, '0');
-            return `${hours}:${mins}`;
-        };
+        const own = String(venue.owner) === String(event.organizer?._id || event.organizer);
+        const keys = days.map(d => d.key);
+        const totalAmount = own ? 0 : bookingTotal(venue, keys);
+        const bookingDate = new Date(`${keys[0]}T00:00:00Z`);
+        const startTime = days[0].startTime;
+        const free = !(totalAmount > 0);
 
-        const bookingData = {
+        return Booking.create({
             user: event.organizer,
             venue: venueId,
             event: event._id,
             bookingType: 'event',
-            bookingDate: start,
-            startTime: formatTime(start),
-            endTime: formatTime(end),
-            purpose: event.description || `Event: ${event.name}`,
+            bookingDate,
+            endDate: keys.length > 1 ? new Date(`${keys[keys.length - 1]}T00:00:00Z`) : null,
+            startTime,
+            endTime: days[days.length - 1].endTime,
+            purpose: `Event: ${event.name}`,
             expectedGuests: event.maxAttendees || 0,
             status: 'accepted',
-            totalAmount: totalAmount,
-            paymentStatus: 'pending'
-        };
+            totalAmount,
+            paymentSchedule: paymentScheduleUtil.fullSchedule(totalAmount),
+            // Nothing to pay: a venue with no price, or the owner's own event.
+            paymentStatus: free ? 'paid' : 'pending',
+            paymentDueAt: free ? null : paymentScheduleUtil.stepDeadline(new Date(), bookingDate, startTime),
+            ownerResponse: { respondedAt: new Date() },
+        });
+    },
 
-        const booking = await Booking.create(bookingData);
-        console.log(`[createBookingForEvent] Created booking ${booking._id} for event ${event._id}`);
-        return booking;
+    /**
+     * Publish the event if everything it needs is in place: the admin approved
+     * it, the venue approved it, and the venue booking is paid. Returns whether
+     * it is live. Safe to call repeatedly (after either approval, or a payment).
+     */
+    async goLiveIfReady(eventOrId, { announce = true } = {}) {
+        const Booking = require('../models/Booking');
+        const event = eventOrId && eventOrId._id && typeof eventOrId.save === 'function'
+            ? eventOrId
+            : await Event.findById(eventOrId?._id || eventOrId);
+        if (!event) return false;
+        if (PUBLICLY_VISIBLE_STATUSES.includes(event.status)) return true;
+        if (event.status !== 'pending' || event.isDeleted) return false;
+
+        if (event.adminApproval?.status !== 'approved') return false;
+        const venueApproved = !event.venueApproval?.status || event.venueApproval.status === 'approved';
+        if (!venueApproved) return false;
+
+        const listedVenue = event.venue && !event.customVenue?.isCustom;
+        if (listedVenue) {
+            const booking = await Booking.findOne({ event: event._id, status: 'accepted' }).select('paymentStatus').lean();
+            if (!booking || booking.paymentStatus !== 'paid') return false;
+        }
+
+        // Claimed atomically, so a payment and an approval landing together
+        // publish (and announce) the event once.
+        const claimed = await Event.findOneAndUpdate(
+            { _id: event._id, status: 'pending' },
+            { $set: { status: 'approved' } },
+            { new: true }
+        );
+        if (!claimed) return PUBLICLY_VISIBLE_STATUSES.includes((await Event.findById(event._id).select('status').lean())?.status);
+        event.status = 'approved';
+        if (listedVenue) await this.updateVenueAvailability(claimed);
+        if (announce) {
+            const Notification = require('../models/Notification');
+            await Notification.create({
+                user: claimed.organizer,
+                title: 'Your event is live',
+                message: `"${claimed.name}" is approved and the venue is paid. It is now live!`,
+                type: 'system',
+                data: { referenceId: claimed._id, referenceModel: 'Event' },
+            }).catch(err => console.error('event-live notification failed:', err.message));
+            await this.announceEventLive(claimed);
+        }
+        return true;
+    },
+
+    /** The organiser paid for the venue: publish the event if the admin has approved it. */
+    async onVenueBookingPaid(booking) {
+        if (!booking || !booking.event) return false;
+        return this.goLiveIfReady(booking.event);
+    },
+
+    /**
+     * The organiser did not pay for the venue in time (the booking is already
+     * cancelled by scheduledJobs): the event is cancelled and its venue days
+     * freed. Nothing was paid, and an event that never went live sold no tickets.
+     */
+    async onVenueBookingLapsed(booking) {
+        if (!booking || !booking.event) return;
+        const event = await Event.findOneAndUpdate(
+            { _id: booking.event, status: { $in: ['pending', 'approved'] } },
+            { $set: { status: 'cancelled', cancelledAt: new Date(), cancellationReason: 'The venue was not paid for in time', isActive: false } },
+            { new: true }
+        );
+        if (!event) return;
+        await this.releaseVenueForEvent(event, { refund: 'full', reason: 'The venue was not paid for in time' });
+        const Notification = require('../models/Notification');
+        await Notification.create({
+            user: event.organizer,
+            title: 'Event cancelled - venue not paid',
+            message: `The venue for "${event.name}" was not paid for by ${formatWhen(booking.paymentDueAt)}, so the event is cancelled and the dates are released.`,
+            type: 'system',
+            data: { referenceId: event._id, referenceModel: 'Event' },
+        }).catch(err => console.error('venue-lapsed notification failed:', err.message));
     }
 };
 

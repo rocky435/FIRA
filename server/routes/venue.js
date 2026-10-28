@@ -128,8 +128,13 @@ router.get('/:id', optionalAuth, /** @param {AuthenticatedRequest} req @param {R
         }
         // Best-effort: the calendar degrades to blockedDates alone if this fails,
         // and createBooking re-checks every day server-side regardless.
-        const unavailableDates = await venueService.getUnavailableDates(venue._id).catch(() => []);
-        res.json({ ...venue, unavailableDates });
+        // eventSlots: when other events here run, so Create Event can show a
+        // clash before the last step. createEvent re-checks regardless.
+        const [unavailableDates, eventSlots] = await Promise.all([
+            venueService.getUnavailableDates(venue._id).catch(() => []),
+            venueService.getEventSlots(venue._id).catch(() => []),
+        ]);
+        res.json({ ...venue, unavailableDates, eventSlots });
     } catch (error) {
         res.status(404).json({ error: error.message });
     }
@@ -197,6 +202,22 @@ router.put('/:id', venueOwnerAuth, validate(locationLinkBody), /** @param {Authe
         res.json(venue);
     } catch (error) {
         res.status(400).json({ error: error.message });
+    }
+});
+
+// PUT /api/venues/:id/blocked-days - the owner blocks or unblocks whole days
+// booked outside FIRA. Body: { block?: ['YYYY-MM-DD'], unblock?: [...] }.
+const blockedDaysBody = z.object({
+    block: z.array(z.string()).max(366).optional(),
+    unblock: z.array(z.string()).max(366).optional(),
+});
+router.put('/:id/blocked-days', venueOwnerAuth, validate(blockedDaysBody), /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
+    try {
+        const blockedDates = await venueService.setOwnerBlockedDays(req.params.id, req.user._id, req.body);
+        await invalidateCache('venues');
+        res.json({ blockedDates });
+    } catch (error) {
+        res.status(error.status || 400).json({ error: error.message, ...(error.days ? { days: error.days } : {}) });
     }
 });
 

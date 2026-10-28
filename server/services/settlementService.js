@@ -18,6 +18,8 @@ const Settlement = require('../models/Settlement');
 const Event = require('../models/Event');
 const Venue = require('../models/Venue');
 const User = require('../models/User');
+const Payment = require('../models/Payment');
+const Booking = require('../models/Booking');
 const AuditLog = require('../models/AuditLog');
 const earningsService = require('./earningsService');
 const notificationService = require('./notificationService');
@@ -789,6 +791,73 @@ const settlementService = {
             ...delivery,
         };
     },
+
+    /**
+     * Who is owed money, across every venue and event at once - the admin's
+     * payout to-do list, so nobody has to open each listing to find out.
+     *
+     * Each row's money comes from the same readListingLedger the listing's own
+     * settlement panel reads, so the list and the panel can never disagree.
+     * On top of that it reports `dueNow`: the part of the outstanding amount
+     * earned from bookings (or an event) that have already happened. Money for
+     * a date still to come can still be refunded to the guest, so it is shown
+     * as `upcoming` rather than as ready to pay. Recorded transfers are counted
+     * against the finished part first.
+     *
+     * A listing is listed once a guest has paid for it or a transfer has been
+     * recorded against it. One whose figures cannot be read is listed with
+     * `error` set and no money at all - never a guessed zero.
+     *
+     * @param {{ kind?: 'event'|'venue', now?: Date }} [params]
+     */
+    async getPayoutQueue({ kind, now = new Date() } = {}) {
+        if (kind != null && !Object.prototype.hasOwnProperty.call(LISTING_KINDS, kind)) {
+            throw fail(400, 'kind must be "venue" or "event"');
+        }
+        const kinds = kind ? [kind] : ['venue', 'event'];
+        /** @type {Array<{ kind: string, id: string, finishedShare: number }>} */
+        const candidates = [];
+        for (const k of kinds) candidates.push(...await payoutCandidates(k, now));
+
+        /** @type {any[]} */
+        const rows = (await mapLimit(candidates, 5, queueRow)).filter(Boolean);
+        // Most owed first; listings whose figures failed go to the top so they are seen.
+        rows.sort((a, b) => (b.error ? 1 : 0) - (a.error ? 1 : 0)
+            || (b.money ? b.money.outstandingAmount : 0) - (a.money ? a.money.outstandingAmount : 0)
+            || String(a.name).localeCompare(String(b.name)));
+
+        const totals = { outstanding: 0, dueNow: 0, owedListings: 0, blockedListings: 0, unreadable: 0 };
+        for (const row of rows) {
+            if (row.error) { totals.unreadable += 1; continue; }
+            totals.outstanding += row.money.outstandingAmount;
+            totals.dueNow += row.money.dueNow;
+            if (row.money.outstandingAmount > EPSILON) {
+                totals.owedListings += 1;
+                if (row.blockedReason) totals.blockedListings += 1;
+            }
+        }
+        totals.outstanding = roundMoney(totals.outstanding);
+        totals.dueNow = roundMoney(totals.dueNow);
+
+        return { rows, totals, generatedAt: now };
+    },
+
+    /**
+     * The bank account a listing's earnings go to, in full, for the admin who
+     * is about to make the transfer: the account the listing named, else the
+     * owner's default. Null when the owner has saved no complete account.
+     *
+     * @param {string} kind
+     * @param {string} listingId
+     */
+    async getPayTo(kind, listingId) {
+        const spec = Object.prototype.hasOwnProperty.call(LISTING_KINDS, kind) ? LISTING_KINDS[kind] : null;
+        if (!spec || !mongoose.isValidObjectId(listingId)) return null;
+        const doc = await spec.model.findById(listingId).select(`${spec.ownerField} payoutAccount`).lean();
+        if (!doc || !doc[spec.ownerField]) return null;
+        const owner = await User.findById(doc[spec.ownerField]).select('bankAccounts bankDetails').lean();
+        return resolvePayTo(doc, owner);
+    },
 };
 
 // What each listing kind is, in one place: the model to resolve it through, the
@@ -1152,6 +1221,188 @@ function settlementState(settledToDate, netPayable) {
     if (diff > EPSILON) return 'over_settled';
     if (Math.abs(diff) <= EPSILON) return 'fully_settled';
     return 'partially_settled';
+}
+
+/**
+ * The listings of one kind that can owe anybody anything, each with the owner
+ * share earned from dates that have already passed (see getPayoutQueue).
+ *
+ * @param {string} kind
+ * @param {Date} now
+ * @returns {Promise<Array<{ kind: string, id: string, finishedShare: number }>>}
+ */
+async function payoutCandidates(kind, now) {
+    const referenceModel = kind === 'venue' ? 'Booking' : 'Event';
+    const [shares, settledIds] = await Promise.all([
+        Payment.aggregate([
+            { $match: { referenceModel, status: earningsService.PAID } },
+            { $group: { _id: '$referenceId', ownerShare: earningsService.OWNER_SHARE_SUM } },
+        ]),
+        Settlement.distinct('listing', /** @type {any} */ ({ listingKind: kind })),
+    ]);
+
+    /** @type {Map<string, number>} listing id -> owner share from finished dates */
+    const finished = new Map();
+    const touch = (/** @type {any} */ id) => {
+        const key = String(id);
+        if (!finished.has(key)) finished.set(key, 0);
+        return key;
+    };
+    const add = (/** @type {string} */ key, /** @type {number} */ amount) => {
+        finished.set(key, (finished.get(key) || 0) + (amount || 0));
+    };
+    const ids = shares.map((s) => s._id).filter((id) => mongoose.isValidObjectId(id));
+
+    if (kind === 'venue') {
+        const bookings = await Booking.find({ _id: { $in: ids } }).select('venue bookingDate endDate').lean();
+        const byId = new Map(bookings.map((b) => [String(b._id), b]));
+        for (const share of shares) {
+            const booking = /** @type {any} */ (byId.get(String(share._id)));
+            if (!booking || !booking.venue) continue;
+            const key = touch(booking.venue);
+            if (dayHasPassed(booking.endDate || booking.bookingDate, now)) add(key, share.ownerShare);
+        }
+    } else {
+        const events = await Event.find({ _id: { $in: ids } }).select('endDateTime').lean();
+        const ended = new Set(events
+            .filter((e) => e.endDateTime && new Date(e.endDateTime).getTime() <= now.getTime())
+            .map((e) => String(e._id)));
+        for (const share of shares) {
+            const key = touch(share._id);
+            if (ended.has(key)) add(key, share.ownerShare);
+        }
+    }
+    for (const id of settledIds) touch(id);
+
+    return [...finished].map(([id, finishedShare]) => ({ kind, id, finishedShare }));
+}
+
+/**
+ * A booking day is over once the whole of it has passed (bookings are stored
+ * as a calendar day, with the times kept separately).
+ *
+ * @param {any} day
+ * @param {Date} now
+ */
+function dayHasPassed(day, now) {
+    if (!day) return false;
+    const start = new Date(day).getTime();
+    return Number.isFinite(start) && start + 24 * 60 * 60 * 1000 <= now.getTime();
+}
+
+/**
+ * One payout-queue row. Null when the listing no longer exists at all.
+ *
+ * @param {{ kind: string, id: string, finishedShare: number }} candidate
+ */
+async function queueRow({ kind, id, finishedShare }) {
+    const spec = LISTING_KINDS[kind];
+    const doc = /** @type {any} */ (await spec.model.findById(id).select(`name isDeleted payoutAccount ${spec.ownerField}`).lean());
+    if (!doc) return null;
+
+    const ownerId = doc[spec.ownerField];
+    const [read, owner] = await Promise.all([
+        readListingLedger(kind, id).catch((err) => ({ failed: err })),
+        ownerId
+            ? User.findById(ownerId)
+                .select('name email bankAccounts bankDetails govIdStatus govIdVerified govIdNumber govIdDocument panStatus panNumber panDocument')
+                .lean()
+            : null,
+    ]);
+
+    const base = {
+        kind,
+        id: String(doc._id),
+        name: doc.name || '',
+        deleted: doc.isDeleted === true,
+        owner: owner ? { id: String(owner._id), name: owner.name || '', email: owner.email || '' } : null,
+    };
+    if ('failed' in read) {
+        return { ...base, error: 'Figures unavailable for this listing' };
+    }
+
+    const { figures, ledger } = read;
+    const finishedOwed = Math.max(0, Math.floor(roundMoney(finishedShare)) - ledger.settledToDate);
+    const dueNow = roundMoney(Math.min(ledger.outstandingAmount, finishedOwed));
+
+    const payTo = resolvePayTo(doc, owner);
+    // Lazy, like payoutCheckFor in routes/admin.js: only the queue needs it.
+    const identityService = require('./identityService');
+    const idKind = kind === 'event' ? 'pan' : 'gov-id';
+    const idStatus = identityService.statusOf(owner, idKind);
+
+    let blockedReason = null;
+    if (!owner) blockedReason = 'The owner account no longer exists';
+    else if (kind === 'event' && idStatus !== 'verified') blockedReason = 'PAN not verified';
+    else if (!payTo) blockedReason = 'No bank account saved';
+
+    return {
+        ...base,
+        money: {
+            grossCollected: figures.money.grossCollected,
+            netPayable: figures.money.netPayable,
+            settledToDate: ledger.settledToDate,
+            outstandingAmount: ledger.outstandingAmount,
+            excessAmount: ledger.excessAmount,
+            dueNow,
+            upcoming: roundMoney(ledger.outstandingAmount - dueNow),
+        },
+        state: ledger.state,
+        activity: {
+            successfulPayments: figures.activity.successfulPayments,
+            lastPaymentAt: figures.activity.lastPaymentAt,
+        },
+        idCheck: { kind: idKind, status: idStatus },
+        payTo: payTo ? { ...payTo, accountNumber: earningsService.maskAccountNumber(payTo.accountNumber) } : null,
+        blockedReason,
+    };
+}
+
+/**
+ * The listing's chosen payout account, else the owner's default; null unless
+ * all four bank fields are present (the same rule earningsService applies).
+ *
+ * @param {any} listing
+ * @param {any} owner
+ * @returns {{ accountName: string, accountNumber: string, ifscCode: string, bankName: string, fromListing: boolean } | null}
+ */
+function resolvePayTo(listing, owner) {
+    if (!owner) return null;
+    const chosen = listing && listing.payoutAccount && Array.isArray(owner.bankAccounts)
+        ? owner.bankAccounts.find((/** @type {any} */ a) => String(a._id) === String(listing.payoutAccount))
+        : null;
+    const account = chosen || owner.bankDetails;
+    if (!earningsService.hasBankDetails(account)) return null;
+    return {
+        accountName: account.accountName,
+        accountNumber: account.accountNumber,
+        ifscCode: account.ifscCode,
+        bankName: account.bankName,
+        fromListing: Boolean(chosen),
+    };
+}
+
+/**
+ * Run `fn` over `items` with at most `limit` in flight, keeping input order.
+ *
+ * @template T, R
+ * @param {T[]} items
+ * @param {number} limit
+ * @param {(item: T) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
+async function mapLimit(items, limit, fn) {
+    /** @type {R[]} */
+    const out = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < items.length) {
+            const i = next++;
+            out[i] = await fn(items[i]);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return out;
 }
 
 module.exports = settlementService;

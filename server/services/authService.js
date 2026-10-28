@@ -138,6 +138,8 @@ const authService = {
             userData.govIdType = govIdType;
             userData.govIdNumber = govIdNumber;
             userData.govIdDocument = govIdDocument;
+            // Waits in the admin's ID checks before any venue can be approved.
+            if (govIdNumber || govIdDocument) userData.govIdStatus = 'pending';
             // Trust boundary: reject malformed bank details before persisting to
             // User.bankDetails, so payouts can't be broken later by bad data.
             if (bankDetails && Object.values(bankDetails).some(v => v)) {
@@ -379,9 +381,18 @@ const authService = {
         // re-submit never wipes previously saved KYC / bank details.
         if (businessName) user.businessName = businessName;
         if (businessPhone) user.businessPhone = businessPhone;
+        const idChanged = (govIdType && govIdType !== user.govIdType)
+            || (govIdNumber && govIdNumber !== user.govIdNumber)
+            || (govIdDocument && govIdDocument !== user.govIdDocument);
         if (govIdType) user.govIdType = govIdType;
         if (govIdNumber) user.govIdNumber = govIdNumber;
         if (govIdDocument) user.govIdDocument = govIdDocument;
+        // A new or changed ID is reviewed again, however it was marked before.
+        if (idChanged) {
+            user.govIdStatus = 'pending';
+            user.govIdVerified = false;
+            user.govIdRejectionReason = null;
+        }
         // Onboarding sets payout details only on an account that has none. Changing
         // existing ones goes through the payout-account routes, which need the
         // password - otherwise this was a way to redirect earnings without it.

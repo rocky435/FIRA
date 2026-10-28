@@ -224,6 +224,9 @@ describe('Case D — payout is the typed amount, no commission', () => {
   it('records the typed amount as both gross and net with zero commission', async () => {
     const owner = await makeUser({
       role: 'venue_owner',
+      // Ticket earnings go only to an organiser with a verified PAN.
+      panNumber: 'ABCDE1234F',
+      panStatus: 'verified',
       bankDetails: {
         accountName: 'Owner',
         accountNumber: '123456789012',

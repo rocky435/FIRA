@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { isVenueOwner } from '@/lib/types';
 import { bookingsApi } from '@/lib/api';
+import { formatBookingDates } from '@/lib/dateUtils';
 import { useToast } from '@/components/ui/Toast';
 import { Button } from '@/components/ui';
 import VenueDashboardLayout from '@/components/venue-portal/VenueDashboardLayout';
@@ -16,6 +17,8 @@ interface Booking {
     venue: { _id: string; name: string; images?: string[] };
     user: { _id: string; name: string; email: string; phone?: string };
     bookingDate: string;
+    /** Last day of a multi-day booking; absent for a single day. */
+    endDate?: string | null;
     startTime: string;
     endTime: string;
     status: string;
@@ -146,7 +149,7 @@ export default function VenueBookingDetailPage() {
                                 <h2 className="text-sm font-semibold text-white mb-4">Request</h2>
                                 <dl className="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
                                     {[
-                                        ['Date', new Date(booking.bookingDate).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })],
+                                        [booking.endDate ? 'Dates' : 'Date', formatBookingDates(booking.bookingDate, booking.endDate)],
                                         ['Time', `${booking.startTime} - ${booking.endTime}`],
                                         ['Expected guests', booking.expectedGuests ? `${booking.expectedGuests}` : '—'],
                                         ['Purpose', booking.purpose || 'Not specified'],

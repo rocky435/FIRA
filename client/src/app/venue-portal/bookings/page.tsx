@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { isVenueOwner } from '@/lib/types';
 import { venuesApi, bookingsApi } from '@/lib/api';
+import { formatBookingDates } from '@/lib/dateUtils';
 import { useToast } from '@/components/ui/Toast';
 import { Button, DataTable } from '@/components/ui';
 import type { Column } from '@/components/ui';
@@ -16,6 +17,8 @@ interface Booking {
     venue: { _id: string; name: string; images?: string[] };
     user: { _id: string; name: string; email: string; phone?: string };
     bookingDate: string;
+    /** Last day of a multi-day booking; absent for a single day. */
+    endDate?: string | null;
     startTime: string;
     endTime: string;
     status: string;
@@ -162,9 +165,7 @@ export default function VenuePortalBookingsPage() {
             key: 'date',
             header: 'Date',
             cell: (b) => (
-                <span className="whitespace-nowrap">
-                    {new Date(b.bookingDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                </span>
+                <span className="whitespace-nowrap">{formatBookingDates(b.bookingDate, b.endDate)}</span>
             ),
         },
         {

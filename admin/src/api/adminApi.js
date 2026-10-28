@@ -113,6 +113,24 @@ const adminApi = {
         return handle(res, 'Failed to fetch ID document');
     },
 
+    // ================== ID CHECKS ==================
+    // Government IDs (venue owners) and PANs (organisers) waiting for review.
+    async getIdentityChecks() {
+        const res = await fetch(`${API_BASE}/identity-checks`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch ID checks');
+    },
+
+    // kind 'gov-id' | 'pan'; action 'verify' | 'reject' (reject needs a reason,
+    // which the user is shown). Returns the user's updated identity.
+    async reviewIdentity(userId, kind, action, reason = '') {
+        const res = await fetch(`${API_BASE}/users/${userId}/identity/${kind}/review`, {
+            method: 'PUT',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ action, reason }),
+        });
+        return handle(res, `Failed to ${action} ${kind === 'pan' ? 'PAN' : 'ID'}`);
+    },
+
     async blockUser(userId) {
         const res = await fetch(`${API_BASE}/users/${userId}/block`, { method: 'PUT', headers: authHeaders() });
         return handle(res, 'Failed to block user');
@@ -247,6 +265,20 @@ const adminApi = {
         const query = new URLSearchParams(params).toString();
         const res = await fetch(`${API_BASE}/audit-trail?${query}`, { headers: authHeaders() });
         return handle(res, 'Failed to fetch audit trail');
+    },
+
+    // ================== VENUE BOOKINGS ==================
+    // Every booking across every venue: { bookings, counts, total, totalPages }.
+    async getBookings(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        const res = await fetch(`${API_BASE}/bookings?${query}`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch bookings');
+    },
+
+    // Who is owed money across every venue and event: { rows, totals }.
+    async getPayoutQueue(kind = 'all') {
+        const res = await fetch(`${API_BASE}/earnings/payout-queue?kind=${encodeURIComponent(kind)}`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch payouts');
     },
 
     // ================== PER-LISTING SETTLEMENT ==================

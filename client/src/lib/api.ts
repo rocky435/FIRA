@@ -227,6 +227,22 @@ export interface BankAccount {
     createdAt?: string;
 }
 
+/** 'none' = nothing submitted; 'pending' = waiting for an admin. */
+export type IdentityStatus = 'none' | 'pending' | 'verified' | 'rejected';
+export interface IdentityCheck {
+    status: IdentityStatus;
+    /** Never the full number - only its last four characters. */
+    numberLast4: string | null;
+    hasDocument: boolean;
+    /** Why an admin rejected it; shown to the user. */
+    rejectionReason: string | null;
+    reviewedAt: string | null;
+}
+export interface Identity {
+    govId: IdentityCheck & { type: string | null };
+    pan: IdentityCheck;
+}
+
 type BlockerEvent = { _id: string; name: string; startDateTime: string; status: string };
 type BlockerBooking = { _id: string; bookingDate: string; startTime: string; status: string; venue: string | null };
 export interface AccountDeletionBlockers {
@@ -310,6 +326,14 @@ export const usersApi = {
             method: 'DELETE',
             body: JSON.stringify({ currentPassword }),
         }),
+    /* Identity checks, reviewed by an admin: a venue owner's government ID (needed
+       before a venue is approved) and an organiser's PAN (needed before event
+       earnings are paid out). Submitting puts it back in review. */
+    getIdentity: () => request<Identity>('/users/me/identity'),
+    submitGovId: (data: { govIdType: string; govIdNumber: string; govIdDocument: string }) =>
+        request<Identity>('/users/me/identity/gov-id', { method: 'PUT', body: JSON.stringify(data) }),
+    submitPan: (data: { panNumber: string; panDocument: string }) =>
+        request<Identity>('/users/me/identity/pan', { method: 'PUT', body: JSON.stringify(data) }),
     // Delete the authenticated user's own account + associated data.
     // Server endpoint (DELETE /api/users/me) already exists; this just wires it.
     deleteAccount: () => request('/users/me', { method: 'DELETE' }),
@@ -472,6 +496,12 @@ export const venuesApi = {
     getUserVenues: (userId: string) => request(`/venues?owner=${userId}`),
     getMyVenues: () => request(`/venues/my-venues`),
     getById: (id: string) => request(`/venues/${id}`),
+    /** Owner only: block or unblock whole days ('YYYY-MM-DD') booked outside FIRA. */
+    setBlockedDays: (id: string, days: { block?: string[]; unblock?: string[] }) =>
+        request<{ blockedDates: { date: string; slots?: { type?: string; event?: string | null }[] }[] }>(`/venues/${id}/blocked-days`, {
+            method: 'PUT',
+            body: JSON.stringify(days),
+        }),
     create: (data: unknown) =>
         request('/venues', {
             method: 'POST',

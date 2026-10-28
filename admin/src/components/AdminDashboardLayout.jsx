@@ -8,6 +8,9 @@ const navItems = [
     { href: '/', icon: 'home', label: 'Dashboard' },
     { href: '/venues', icon: 'building', label: 'Venues' },
     { href: '/venue-owners', icon: 'users', label: 'Venue Owners' },
+    { href: '/id-checks', icon: 'idcard', label: 'ID Checks' },
+    { href: '/bookings', icon: 'calendar', label: 'Venue Bookings' },
+    { href: '/payouts', icon: 'wallet', label: 'Payouts to owners' },
     { href: '/events', icon: 'ticket', label: 'Events' },
     { href: '/brands', icon: 'star', label: 'Brands' },
     { href: '/users', icon: 'users', label: 'Users' },
@@ -30,7 +33,9 @@ function getVisibleNavItems(adminRole) {
         // when added.
         // Refunds too: approving one sends money, which the server limits to
         // admin and super_admin.
-        const hidden = new Set(['/users', '/audit-trail', '/refunds']);
+        // ID Checks: reviewing IDs is limited to admin and super_admin server-side.
+        // Payouts: earnings are limited to admin and super_admin server-side.
+        const hidden = new Set(['/users', '/audit-trail', '/refunds', '/id-checks', '/payouts']);
         return navItems.filter((item) => !hidden.has(item.href));
     }
     // 'admin' — currently sees everything in nav; admin role assignment is
@@ -151,6 +156,21 @@ export default function AdminDashboardLayout({ children, onLogout }) {
             'refund': (
                 <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                </svg>
+            ),
+            'calendar': (
+                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+            ),
+            'wallet': (
+                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7a2 2 0 012-2h13a1 1 0 011 1v2M3 7v11a2 2 0 002 2h14a1 1 0 001-1v-3M3 7h16a1 1 0 011 1v3m0 5h-4a2.5 2.5 0 010-5h4m0 5v-5" />
+                </svg>
+            ),
+            'idcard': (
+                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
                 </svg>
             ),
         };

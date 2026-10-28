@@ -310,6 +310,20 @@ describe('booking flow: request, owner accepts, then the guest pays', () => {
         expect(await Notification.exists({ user: owner, type: 'payment_success' })).toBeTruthy();
     });
 
+    it('the rest cannot be paid before the advance', async () => {
+        const { owner, guest, booking } = await setup();
+        await accept(owner, booking);
+        // Accepted and unpaid: the schedule already names the balance, but nothing
+        // is due on it until the advance has confirmed the booking.
+        await expect(bookingService.initiateBalancePayment(booking._id, guest)).rejects.toThrow('advance');
+        const after = await pay(booking, guest, 1000);
+        expect(after.booking.paymentStatus).toBe('paid');
+        // Past the guard now (it goes on to create the gateway order, which has
+        // no credentials in tests).
+        const err = await bookingService.initiateBalancePayment(booking._id, guest).catch((e: Error) => e);
+        expect(String(err?.message || '')).not.toMatch(/advance/);
+    });
+
     it('or pays in full, and nothing is left to pay', async () => {
         const { owner, guest, booking } = await setup();
         await accept(owner, booking);
@@ -482,7 +496,7 @@ describe('events and the venue calendar', () => {
         const ev = await Event.create({ organizer: org, venue: venue._id, name: 'Gig', description: 'd', maxAttendees: 10, status: 'approved',
             startDateTime: start, endDateTime: new Date(start.getTime() + 4 * 3600000) });
         await eventService.updateVenueAvailability(ev);
-        await eventService.createBookingForEvent(ev);
+        await eventService.holdVenueForEvent(ev);
         const held = await Venue.findById(venue._id).lean();
         expect(held.blockedDates).toHaveLength(1);
         expect(held.daySlots.filter((d: any) => d.isBooked)).toHaveLength(1);

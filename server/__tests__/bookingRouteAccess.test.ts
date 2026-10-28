@@ -126,6 +126,8 @@ describe('other per-booking routes', () => {
         const res = await request(app).get(`/bookings/venue/${venueId}`).set('Authorization', bearer(owner));
         expect(res.status).toBe(200);
         expect(res.body).toHaveLength(1);
+        // The owner's list names the venue rather than showing a bare id.
+        expect(typeof res.body[0].venue.name).toBe('string');
     });
 
     it('PUT /:id lets only the guest edit, and only the descriptive fields', async () => {

@@ -8,6 +8,7 @@ import { useParams, useRouter } from 'next/navigation';
 import VenueDashboardLayout from '@/components/venue-portal/VenueDashboardLayout';
 import { Button } from '@/components/ui';
 import SettlementSummary from '@/components/dashboard/SettlementSummary';
+import BlockDatesCalendar from '@/components/venue-portal/BlockDatesCalendar';
 import { venuesApi, uploadApi, bookingsApi, eventsApi, clearRequestCache } from '@/lib/api';
 import { openEditVenue } from '@/components/modals/CreateVenueLauncher';
 import { VENUE_SAVED } from '@/components/modals/CreateVenueModal';
@@ -94,10 +95,6 @@ export default function VenueManagePage() {
     const [newImageFiles, setNewImageFiles] = useState<File[]>([]);
     const [imagePreviews, setImagePreviews] = useState<string[]>([]);
 
-    const [calendarMonth, setCalendarMonth] = useState(new Date());
-    const [selectedDates, setSelectedDates] = useState<string[]>([]);
-    const [hoursForm, setHoursForm] = useState({ startTime: '09:00', endTime: '22:00', isAvailable: true });
-    const [hoveredDate, setHoveredDate] = useState<string | null>(null);
 
     // Booking state
     const [bookings, setBookings] = useState<Booking[]>([]);
@@ -317,79 +314,6 @@ export default function VenueManagePage() {
         }
     };
 
-    // Calendar helpers
-    const getCalendarDays = () => {
-        const year = calendarMonth.getFullYear();
-        const month = calendarMonth.getMonth();
-        const firstDay = new Date(year, month, 1);
-        const lastDay = new Date(year, month + 1, 0);
-        const startPadding = firstDay.getDay();
-        const days: (Date | null)[] = [];
-        for (let i = 0; i < startPadding; i++) days.push(null);
-        for (let d = 1; d <= lastDay.getDate(); d++) days.push(new Date(year, month, d));
-        return days;
-    };
-
-    const formatDateKey = (date: Date) => date.toISOString().split('T')[0];
-
-    const toggleDateSelection = (date: Date) => {
-        const key = formatDateKey(date);
-        setSelectedDates(prev => prev.includes(key) ? prev.filter(d => d !== key) : [...prev, key]);
-    };
-
-    const applyHoursToSelected = async () => {
-        if (!venue || selectedDates.length === 0) return;
-        setIsSaving(true);
-        try {
-            // Build updated blockedDates
-            const updatedBlockedDates = [...(venue.blockedDates || [])];
-
-            selectedDates.forEach(date => {
-                const existing = updatedBlockedDates.find(b => b.date === date);
-                const newSlot = { startTime: hoursForm.startTime, endTime: hoursForm.endTime, type: 'busy' as const };
-
-                if (hoursForm.isAvailable) {
-                    // If marking as available, remove this time slot if it exists
-                    if (existing) {
-                        existing.slots = existing.slots.filter(s =>
-                            !(s.startTime === hoursForm.startTime && s.endTime === hoursForm.endTime)
-                        );
-                        // Remove date entry if no slots left
-                        if (existing.slots.length === 0) {
-                            const idx = updatedBlockedDates.indexOf(existing);
-                            updatedBlockedDates.splice(idx, 1);
-                        }
-                    }
-                } else {
-                    // If marking as busy, add slot
-                    if (existing) {
-                        // Check if slot already exists
-                        const slotExists = existing.slots.some(s =>
-                            s.startTime === hoursForm.startTime && s.endTime === hoursForm.endTime
-                        );
-                        if (!slotExists) {
-                            existing.slots.push(newSlot);
-                        }
-                    } else {
-                        updatedBlockedDates.push({ date, slots: [newSlot] });
-                    }
-                }
-            });
-
-            await venuesApi.update(venue._id, { blockedDates: updatedBlockedDates });
-
-            setSelectedDates([]);
-            fetchVenue(venue._id);
-        } catch (err) {
-            setError('Failed to update availability');
-        } finally {
-            setIsSaving(false);
-        }
-    };
-
-    const prevMonth = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1));
-    const nextMonth = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1));
-
     const formatPrice = formatInr;
 
     // Format DateTime like "3 Jan 2026 14:00"
@@ -405,50 +329,6 @@ export default function VenueManagePage() {
         return `${day} ${month} ${year} ${hours}:${mins}`;
     };
 
-    // Get availability info for a specific date - returns all slots
-    const getDateAvailability = (date: Date) => {
-        const key = formatDateKey(date);
-        const dayOfWeek = date.getDay();
-        const blockedEntry = venue?.blockedDates?.find(b => b.date === key);
-        const weeklySlot = venue?.availability?.find(a => a.dayOfWeek === dayOfWeek);
-
-        // Default venue hours
-        const defaultStart = weeklySlot?.startTime || '09:00';
-        const defaultEnd = weeklySlot?.endTime || '22:00';
-
-        const slots: { startTime: string; endTime: string; type: 'busy' | 'booked' | 'available' }[] = [];
-
-        if (blockedEntry?.slots && blockedEntry.slots.length > 0) {
-            // Add blocked/booked slots
-            blockedEntry.slots.forEach(s => {
-                slots.push({ startTime: s.startTime, endTime: s.endTime, type: s.type });
-            });
-        }
-
-        // Determine overall color: green (all available), red (all blocked), orange (mixed)
-        let color = 'green';
-        if (slots.length > 0) {
-            const hasBooked = slots.some(s => s.type === 'booked');
-            const fullDayBlocked = slots.some(s => s.startTime === defaultStart && s.endTime === defaultEnd);
-            if (fullDayBlocked) {
-                color = 'red';
-            } else if (hasBooked || slots.length > 0) {
-                color = 'orange';
-            }
-        }
-
-        if (!weeklySlot?.isAvailable && weeklySlot) {
-            color = 'gray';
-        }
-
-        return {
-            slots,
-            defaultStart,
-            defaultEnd,
-            color,
-            isClosed: weeklySlot && !weeklySlot.isAvailable
-        };
-    };
 
     if (authLoading || isLoading) {
         return (
@@ -679,146 +559,8 @@ export default function VenueManagePage() {
                             <p className="text-gray-300 leading-relaxed whitespace-pre-line">{venue.description}</p>
                         </div>
 
-                        {/* Availability Calendar */}
-                        <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6 overflow-visible">
-                            <h2 className="text-xl font-semibold text-white mb-2">Availability Calendar</h2>
-                            <p className="text-gray-300 text-sm mb-4">
-                                {isEditMode ? 'Click dates to select, then set hours for all selected dates.' : 'View your venue availability.'}
-                            </p>
-
-                            {/* Month Navigation */}
-                            <div className="flex items-center justify-between mb-4">
-                                <button onClick={prevMonth} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white">
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                                    </svg>
-                                </button>
-                                <span className="text-white font-medium">
-                                    {calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                                </span>
-                                <button onClick={nextMonth} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white">
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                    </svg>
-                                </button>
-                            </div>
-
-                            {/* Week Headers */}
-                            <div className="grid grid-cols-7 gap-1 mb-1">
-                                {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
-                                    <div key={i} className="text-center text-xs text-gray-300 py-1">{d}</div>
-                                ))}
-                            </div>
-
-                            {/* Calendar Grid */}
-                            <div className="grid grid-cols-7 gap-1 relative">
-                                {getCalendarDays().map((date, i) => {
-                                    if (!date) return <div key={i} className="aspect-square" />;
-                                    const key = formatDateKey(date);
-                                    const isSelected = selectedDates.includes(key);
-                                    const isToday = date.toDateString() === new Date().toDateString();
-                                    const isPast = date < new Date(new Date().setHours(0, 0, 0, 0));
-                                    const blockedEntry = venue.blockedDates?.find(b => b.date === key);
-                                    const availability = getDateAvailability(date);
-                                    const isHovered = hoveredDate === key;
-
-                                    return (
-                                        <div key={i} className="relative">
-                                            <button
-                                                onClick={() => isEditMode && !isPast && toggleDateSelection(date)}
-                                                onMouseEnter={() => setHoveredDate(key)}
-                                                onMouseLeave={() => setHoveredDate(null)}
-                                                className={`w-full aspect-square rounded-lg text-sm font-medium transition-all ${isPast ? 'text-gray-600 cursor-not-allowed' :
-                                                    isSelected ? 'bg-violet-500 text-white ring-2 ring-violet-400 cursor-pointer' :
-                                                        availability.color === 'red' ? 'bg-red-500/30 text-red-400 border border-red-500/50 cursor-pointer' :
-                                                            availability.color === 'orange' ? 'bg-orange-500/30 text-orange-400 border border-orange-500/50 cursor-pointer' :
-                                                                availability.color === 'gray' ? 'bg-gray-500/30 text-gray-300 border border-gray-500/50 cursor-pointer' :
-                                                                    isToday ? 'bg-green-500/20 text-green-400 border border-green-500/30 cursor-pointer' :
-                                                                        isEditMode ? 'text-gray-300 hover:bg-white/10 cursor-pointer' :
-                                                                            'text-gray-300 hover:bg-white/5 cursor-default'
-                                                    }`}
-                                            >
-                                                {date.getDate()}
-                                            </button>
-                                            {/* Hover Tooltip */}
-                                            {isHovered && !isPast && (
-                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 pointer-events-none">
-                                                    <div className="px-3 py-2 rounded-lg text-xs shadow-xl border bg-gray-900/95 border-gray-700 text-white min-w-[140px]">
-                                                        <div className="font-semibold mb-1 text-gray-300">
-                                                            {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                                        </div>
-                                                        {availability.isClosed ? (
-                                                            <div className="flex items-center gap-1.5 text-gray-300">
-                                                                <span className="w-2 h-2 rounded-full bg-gray-500"></span>
-                                                                Closed
-                                                            </div>
-                                                        ) : availability.slots.length > 0 ? (
-                                                            <div className="space-y-1">
-                                                                {availability.slots.map((slot, idx) => (
-                                                                    <div key={idx} className="flex items-center gap-1.5">
-                                                                        <span className={`w-2 h-2 rounded-full ${slot.type === 'booked' ? 'bg-orange-500' : 'bg-red-500'}`}></span>
-                                                                        <span className={slot.type === 'booked' ? 'text-orange-400' : 'text-red-400'}>
-                                                                            {slot.type === 'booked' ? 'Booked' : 'Busy'}: {slot.startTime} - {slot.endTime}
-                                                                        </span>
-                                                                    </div>
-                                                                ))}
-                                                                <div className="flex items-center gap-1.5 text-green-400">
-                                                                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                                                    Available: Other hours
-                                                                </div>
-                                                            </div>
-                                                        ) : (
-                                                            <div className="flex items-center gap-1.5 text-green-400">
-                                                                <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                                                Available: {availability.defaultStart} - {availability.defaultEnd}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-gray-900/95" />
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                })}
-                            </div>
-
-                            {/* Selected Dates Hours Form */}
-                            {isEditMode && selectedDates.length > 0 && (
-                                <div className="mt-4 p-4 bg-violet-500/10 border border-violet-500/30 rounded-lg">
-                                    <p className="text-sm text-violet-300 mb-3">{selectedDates.length} date(s) selected</p>
-                                    <div className="flex items-center gap-2 mb-3">
-                                        <input
-                                            type="time"
-                                            value={hoursForm.startTime}
-                                            onChange={(e) => setHoursForm(prev => ({ ...prev, startTime: e.target.value }))}
-                                            className="flex-1 px-2 py-1.5 bg-black/40 border border-white/10 rounded text-white text-sm"
-                                        />
-                                        <span className="text-gray-300">to</span>
-                                        <input
-                                            type="time"
-                                            value={hoursForm.endTime}
-                                            onChange={(e) => setHoursForm(prev => ({ ...prev, endTime: e.target.value }))}
-                                            className="flex-1 px-2 py-1.5 bg-black/40 border border-white/10 rounded text-white text-sm"
-                                        />
-                                    </div>
-                                    <label className="flex items-center gap-2 mb-3">
-                                        <input
-                                            type="checkbox"
-                                            checked={hoursForm.isAvailable}
-                                            onChange={(e) => setHoursForm(prev => ({ ...prev, isAvailable: e.target.checked }))}
-                                            className="w-4 h-4 rounded"
-                                        />
-                                        <span className="text-sm text-gray-300">Available for booking</span>
-                                    </label>
-                                    <div className="flex gap-2">
-                                        <Button size="sm" variant="ghost" onClick={() => setSelectedDates([])}>Clear Selection</Button>
-                                        <Button size="sm" onClick={applyHoursToSelected} disabled={isSaving}>
-                                            {isSaving ? 'Applying...' : 'Apply to Selected'}
-                                        </Button>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
+                        {/* Owner blocks days booked outside FIRA. */}
+                        <BlockDatesCalendar venueId={venue._id} />
                         {/* Event Requests Card */}
                         <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
                             <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">

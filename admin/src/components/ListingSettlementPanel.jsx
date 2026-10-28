@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useReducer } from 'react';
+import { useCallback, useEffect, useReducer, useState } from 'react';
+import { Link } from 'react-router-dom';
 import adminApi from '../api/adminApi';
 import { getAdminRoleFromToken } from '../lib/adminRole';
 import { formatDateTime } from '../lib/formatDateTime';
@@ -424,8 +425,106 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
                 )}
             </section>
 
-            <RecordSettlementForm form={form} dispatch={dispatch} onSubmit={onRecord} isSuperAdmin={isSuperAdmin} />
+            {/* Event earnings go only to an organiser whose PAN is verified; the
+                server refuses the record otherwise. Shown before any transfer is
+                made, rather than as an error after it. */}
+            {data?.payoutCheck && data.payoutCheck.status !== 'verified' ? (
+                <PayoutBlocked check={data.payoutCheck} />
+            ) : (
+                <>
+                    <PayTo account={data?.payTo} kind={kind} />
+                    <RecordSettlementForm form={form} dispatch={dispatch} onSubmit={onRecord} isSuperAdmin={isSuperAdmin} />
+                </>
+            )}
         </div>
+    );
+}
+
+// Where the transfer goes: the account the listing chose, else the owner's
+// default. The full number is shown because this is what the admin types into
+// their bank; the list pages only ever show it masked.
+function PayTo({ account, kind }) {
+    const owner = kind === 'event' ? 'organiser' : 'venue owner';
+    if (!account) {
+        return (
+            <section className="rounded-xl border border-amber-500/30 bg-amber-500/[0.06] p-4 space-y-1">
+                <h3 className="text-sm font-semibold text-amber-300">No bank account to pay into</h3>
+                <p className="text-sm text-gray-300">
+                    The {owner} hasn&apos;t saved complete bank details. Ask them to add an account under Settings → Payout Accounts before you transfer.
+                </p>
+            </section>
+        );
+    }
+    const rows = [
+        ['Account name', account.accountName],
+        ['Account number', account.accountNumber],
+        ['IFSC', account.ifscCode],
+        ['Bank', account.bankName],
+    ];
+    return (
+        <section className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 sm:p-5">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+                <h3 className="text-base font-semibold text-white">Pay to</h3>
+                <span className="text-xs text-gray-400">
+                    {account.fromListing ? `The account chosen for this ${kind}` : `The ${owner}'s default account`}
+                </span>
+            </div>
+            <dl className="grid sm:grid-cols-2 gap-x-8 gap-y-2 text-sm">
+                {rows.map(([label, value]) => (
+                    <div key={label} className="flex items-baseline justify-between gap-3">
+                        <dt className="text-gray-400 shrink-0">{label}</dt>
+                        <dd className="flex items-center gap-2 min-w-0">
+                            <span className="text-gray-100 font-medium tabular-nums break-all text-right">{value}</span>
+                            <CopyButton value={value} label={label} />
+                        </dd>
+                    </div>
+                ))}
+            </dl>
+        </section>
+    );
+}
+
+function CopyButton({ value, label }) {
+    const [copied, setCopied] = useState(false);
+    const copy = async () => {
+        try {
+            await navigator.clipboard.writeText(String(value));
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch {
+            // Clipboard can be blocked (non-https, permissions); the value is on screen to select.
+        }
+    };
+    return (
+        <button
+            type="button"
+            onClick={copy}
+            aria-label={`Copy ${label}`}
+            className="shrink-0 text-xs px-2 py-0.5 rounded-md bg-white/[0.06] text-gray-300 hover:bg-white/[0.12] hover:text-white"
+        >
+            {copied ? 'Copied' : 'Copy'}
+        </button>
+    );
+}
+
+const PAN_BLOCK_TEXT = {
+    none: "The organiser hasn't added their PAN yet. They add it in Settings, or when they next create an event.",
+    pending: "The organiser's PAN is waiting for review.",
+    rejected: "The organiser's PAN was rejected. They need to upload it again from Settings.",
+};
+
+function PayoutBlocked({ check }) {
+    return (
+        <section className="rounded-xl border border-amber-500/30 bg-amber-500/[0.06] p-4 space-y-2">
+            <h3 className="text-sm font-semibold text-amber-300">Don&apos;t transfer yet: PAN not verified</h3>
+            <p className="text-sm text-gray-300">{PAN_BLOCK_TEXT[check.status] || PAN_BLOCK_TEXT.none}</p>
+            <p className="text-sm text-gray-400">Payouts can be recorded once the PAN is verified.</p>
+            {check.status === 'pending' && (
+                <Link to="/id-checks" className="inline-block text-sm text-violet-400 hover:text-violet-300">
+                    Review it in ID Checks →
+                </Link>
+            )}
+        </section>
     );
 }
 
@@ -495,10 +594,19 @@ export default function ListingSettlementPanel({ kind, listingId }) {
         }
     }, [kind, listingId, fetchSettlement]);
 
+    // The Payouts page links here as …#settlement; the panel loads after the
+    // page around it, so scroll once its figures are in.
+    const ready = view.status === 'ready' || view.status === 'empty';
+    useEffect(() => {
+        if (ready && window.location.hash === '#settlement') {
+            document.getElementById('settlement')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }, [ready]);
+
     if (isModerator) return null;
 
     return (
-        <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl overflow-hidden mt-8">
+        <div id="settlement" className="bg-white/[0.02] border border-white/[0.08] rounded-2xl overflow-hidden mt-8 scroll-mt-6">
             <div className="p-4 sm:p-6 border-b border-white/[0.05] flex justify-between items-center gap-4">
                 <h2 className="text-lg font-semibold text-white">Settlement</h2>
                 {/* Requirement 1.4 / 5.6: the state sits beside the figures it

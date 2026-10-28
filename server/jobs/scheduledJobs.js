@@ -431,7 +431,12 @@ async function expireUnpaidAcceptedBookings(now = new Date()) {
                 await venue.save({ validateModifiedOnly: true });
             }
             const venueName = booking.venue?.name || 'the venue';
-            await notificationService.createNotification({
+            // An event's venue booking: the event is cancelled with it, and the
+            // organiser is told about the event rather than a bare booking.
+            if (booking.event) {
+                await require('../services/eventService').onVenueBookingLapsed(booking);
+            }
+            if (!booking.event) await notificationService.createNotification({
                 userId: booking.user,
                 type: 'booking_cancelled',
                 title: 'Booking cancelled - not paid',
@@ -445,7 +450,9 @@ async function expireUnpaidAcceptedBookings(now = new Date()) {
                     userId: booking.venue.owner,
                     type: 'booking_cancelled',
                     title: 'Booking cancelled - not paid',
-                    message: `The guest did not pay for their booking at ${venueName} in time. It is cancelled and the date is free again.`,
+                    message: booking.event
+                        ? `The organiser did not pay for their event at ${venueName} in time. The event is cancelled and the date is free again.`
+                        : `The guest did not pay for their booking at ${venueName} in time. It is cancelled and the date is free again.`,
                     data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/venue-portal/bookings/${booking._id}` },
                     priority: 'medium',
                     channel: 'all'

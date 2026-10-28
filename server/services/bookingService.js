@@ -119,6 +119,15 @@ async function applyAdvancePaid(booking, payment, schedule) {
     // A paid booking holds its dates on the venue calendar (idempotent).
     await blockVenueCalendar(updated);
 
+    // The venue booking of an event: paying it is what lets the event go live.
+    if (updated.event) {
+        try {
+            await require('./eventService').onVenueBookingPaid(updated);
+        } catch (err) {
+            console.error(`Could not publish event ${updated.event} after its venue was paid:`, err.message);
+        }
+    }
+
     try {
         const Venue = require('../models/Venue');
         const notificationService = require('./notificationService');
@@ -163,6 +172,8 @@ async function applyBalancePaid(booking, payment) {
         {
             _id: booking._id,
             status: 'accepted',
+            // A balance only counts once the advance confirmed the booking.
+            paymentStatus: 'paid',
             'paymentSchedule.balanceStatus': 'pending',
             $or: [{ 'paymentSchedule.balanceDueAt': null }, { 'paymentSchedule.balanceDueAt': { $gt: new Date() } }],
         },
@@ -239,6 +250,8 @@ const bookingService = {
     async getVenueBookings(venueId) {
         const bookings = await Booking.find({ venue: venueId })
             .populate('user', 'name email phone')
+            // The owner's booking lists show which venue each row is for.
+            .populate('venue', 'name images')
             .sort({ bookingDate: -1 })
             .lean();
         return bookings;
@@ -248,7 +261,11 @@ const bookingService = {
     async getBookingById(id) {
         const booking = await Booking.findById(id)
             .populate('user', 'name email phone')
-            .populate('venue', 'name address images pricing');
+            // platformFeePercentage: the booking page shows the same fee + GST the
+            // checkout will charge, before the guest opens it.
+            .populate('venue', 'name address images pricing platformFeePercentage')
+            // The event this venue booking is for, so its page can say so.
+            .populate('event', 'name status');
         if (!booking) {
             throw new Error('Booking not found');
         }
@@ -267,10 +284,17 @@ const bookingService = {
         // deleted venue could still be booked through the API.
         const { isVenueBookable } = require('../utils/venueAvailability');
         const target = require('mongoose').isValidObjectId(data.venue)
-            ? await Venue.findById(data.venue).select('status isActive isDeleted').lean()
+            ? await Venue.findById(data.venue).select('status isActive isDeleted owner').lean()
             : null;
         if (!isVenueBookable(target)) {
             throw new Error('This venue is not available for booking');
+        }
+
+        // An owner booking their own venue would pay themselves (plus fees), and
+        // as the guest they could not then accept it. Their own dates are
+        // blocked from the venue's availability instead.
+        if (target.owner && String(target.owner) === String(data.user)) {
+            throw new Error('This is your own venue. To keep dates free, block them from your venue dashboard instead of booking.');
         }
 
         // Requests cost nothing and hold their dates while the owner decides, so
@@ -696,7 +720,8 @@ const bookingService = {
         // whole total. Route it through the single money source (calculateBilling)
         // so it is charged and recorded with a full breakdown: subtotal, qty 1.
         // Fail closed — if billing throws, we abort before any Razorpay order.
-        const schedule = upfrontSchedule(booking, plan === 'full' ? 'full' : 'advance');
+        // An event's venue is paid in full up front: the event goes live on it.
+        const schedule = upfrontSchedule(booking, plan === 'full' || booking.event ? 'full' : 'advance');
         const chargeSubtotal = roundMoney(schedule.depositAmount);
         const feePct = booking.venue?.platformFeePercentage ?? 5; // config, not hardcoded
         const billing = paymentService.calculateBilling(chargeSubtotal, 1, feePct);
@@ -812,6 +837,11 @@ const bookingService = {
         // The rest is paid once the venue has accepted the request.
         if (booking.status !== 'accepted') {
             throw new Error('The venue has not accepted this booking yet');
+        }
+        // ...and once the advance has confirmed it. The schedule names the balance
+        // from the moment the request is made, so it alone does not say it is due.
+        if (booking.paymentStatus !== 'paid') {
+            throw new Error('Pay the advance first - the rest is due after that');
         }
 
         // Charge exactly the balance, routed through the single money source so it

@@ -139,8 +139,22 @@ const sign = (orderId, payId) => crypto.createHmac('sha256', RZP_SECRET).update(
         check('pending venue not publicly listed', !JSON.stringify(pubBefore.data).includes('Grand Hall'));
 
         const admin = await seedUser('admin', { role: 'admin', roles: ['admin'], adminRole: 'super_admin' });
+
+        // A venue is approved only once an admin has checked its owner's ID.
+        const noId = await api('PUT', `/admin/venues/${venueId}/status`, { token: admin.token, body: { status: 'approved' } });
+        check('venue approval refused before the owner ID is verified', noId.status === 400 && /government ID/.test(noId.data.error), JSON.stringify(noId.data));
+        const idDoc = 'https://res.cloudinary.com/demo/image/upload/v1/fira/gov-ids/e2e-owner.jpg';
+        const sub = await api('PUT', '/users/me/identity/gov-id', { token: owner.token, body: { govIdType: 'aadhar', govIdNumber: '123412341234', govIdDocument: idDoc } });
+        check('owner submits government ID -> pending', sub.status === 200 && sub.data.govId.status === 'pending', JSON.stringify(sub.data));
+        const idQueue = await api('GET', '/admin/identity-checks', { token: admin.token });
+        check('admin sees it in ID checks', idQueue.status === 200 && idQueue.data.users.some(u => String(u._id) === owner.id), JSON.stringify(idQueue.data).slice(0, 200));
+        const ver = await api('PUT', `/admin/users/${owner.id}/identity/gov-id/review`, { token: admin.token, body: { action: 'verify' } });
+        check('admin verifies the owner ID', ver.status === 200 && ver.data.govId.status === 'verified', JSON.stringify(ver.data));
+
         const appr = await api('PUT', `/admin/venues/${venueId}/status`, { token: admin.token, body: { status: 'approved' } });
         check('admin approves venue', appr.status === 200, JSON.stringify(appr.data).slice(0, 200));
+        const self = await api('POST', '/bookings', { token: owner.token, body: { venue: venueId, bookingDate: '2030-01-10', startTime: '10:00', endTime: '14:00', purpose: 'Own', expectedGuests: 20 } });
+        check('owner cannot book their own venue', self.status === 400 && /your own venue/.test(JSON.stringify(self.data)), JSON.stringify(self.data));
         const pubAfter = await api('GET', '/venues?city=Hyderabad');
         check('approved venue publicly listed', JSON.stringify(pubAfter.data).includes('Grand Hall'), JSON.stringify(pubAfter.data).slice(0, 200));
 
@@ -221,7 +235,8 @@ const sign = (orderId, payId) => crypto.createHmac('sha256', RZP_SECRET).update(
 
         // ================= Event lifecycle =================
         const org = await seedUser('organizer');
-        const start = new Date(Date.now() + 40 * 86400000); start.setUTCHours(14, 0, 0, 0);
+        // Daytime in any Indian/European/US time zone, so it is one calendar day.
+        const start = new Date(Date.now() + 40 * 86400000); start.setUTCHours(7, 0, 0, 0);
         const end = new Date(start.getTime() + 5 * 3600000);
         const ce = await api('POST', '/events', { token: org.token, body: {
             name: 'Neon Night', description: 'Party', venue: venueId, startDateTime: start.toISOString(), endDateTime: end.toISOString(),
@@ -236,7 +251,22 @@ const sign = (orderId, payId) => crypto.createHmac('sha256', RZP_SECRET).update(
         const ap = await api('GET', '/events/admin-pending', { token: admin.token });
         check('event appears in admin queue', JSON.stringify(ap.data).includes('Neon Night'), JSON.stringify(ap.data).slice(0, 200));
         const aa = await api('POST', `/events/${eventId}/admin-approve`, { token: admin.token, body: { status: 'approved' } });
-        check('admin approves -> event approved', aa.status === 200 && aa.data.status === 'approved', JSON.stringify(aa.data).slice(0, 200));
+        // Approved by both, but not live until the organiser pays for the venue.
+        check('admin approves -> still waiting for the venue payment', aa.status === 200 && aa.data.status === 'pending', JSON.stringify(aa.data).slice(0, 200));
+        const notLive = await api('GET', '/events?eventType=public');
+        check('unpaid event not publicly listed', !JSON.stringify(notLive.data).includes('Neon Night'));
+        const orgBookings = await api('GET', '/bookings', { token: org.token });
+        const venueBooking = [].concat(orgBookings.data && (orgBookings.data.bookings || orgBookings.data) || [])
+            .find(b => String(b.event && (b.event._id || b.event)) === String(eventId));
+        check('organiser has the venue booking to pay, full price', venueBooking && venueBooking.status === 'accepted'
+            && venueBooking.paymentStatus === 'pending' && venueBooking.totalAmount === 10000, JSON.stringify(venueBooking).slice(0, 300));
+        const ivp = await api('POST', `/bookings/${venueBooking && venueBooking._id}/initiate-payment`, { token: org.token, body: { plan: 'advance' } });
+        check('event venue charged in full even when an advance is asked for (Rs 10,590)', ivp.status === 200 && ivp.data.amount === 1059000, `amount(paise)=${ivp.data && ivp.data.amount}`);
+        const vvp = await api('POST', `/bookings/${venueBooking && venueBooking._id}/verify-payment`, { token: org.token, body: {
+            gatewayOrderId: ivp.data.gatewayOrderId, gatewayPaymentId: 'pay_venue', gatewaySignature: sign(ivp.data.gatewayOrderId, 'pay_venue') } });
+        check('venue paid -> event approved', vvp.status === 200 && vvp.data.booking.paymentStatus === 'paid', JSON.stringify(vvp.data).slice(0, 200));
+        const live = await api('GET', `/events/${eventId}`);
+        check('event live once the venue is paid', live.data && (live.data.status || (live.data.event && live.data.event.status)) === 'approved', JSON.stringify(live.data).slice(0, 200));
         const list = await api('GET', '/events?eventType=public');
         check('approved event publicly listed', JSON.stringify(list.data).includes('Neon Night'));
 

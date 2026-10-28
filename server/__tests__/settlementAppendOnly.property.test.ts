@@ -371,6 +371,8 @@ describe('Property 9 — the ledger is append-only', () => {
             'checkOverSettlement',
             'getListingSettlement',
             'getOwnerSettlement',
+            'getPayTo',
+            'getPayoutQueue',
             'recordEntry',
             'recordReversal',
             'toAdminRow',

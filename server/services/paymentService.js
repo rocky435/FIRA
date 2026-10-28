@@ -391,6 +391,11 @@ const paymentService = {
         if (!Number.isFinite(typed) || typed <= 0) {
             throw new Error('Payout amount must be a positive number');
         }
+        // Ticket earnings go only to an organiser whose PAN an admin has verified -
+        // the same rule as recording an event settlement.
+        if (type === 'event_tickets' && !(await require('./identityService').isVerified(recipientId, 'pan'))) {
+            throw new Error("The organiser's PAN is not verified yet. Verify it in ID Checks before paying out.");
+        }
         const netAmount = roundMoney(typed);
 
         // Bank details are authoritative from the owner, not the caller. Fail
