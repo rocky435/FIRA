@@ -111,6 +111,22 @@ The two code files here end in `.dart.txt` so this repo, which isn't a Flutter p
 | App start while already signed in | `PushNotifications.instance.registerDevice();` (already in `main_example.dart`) |
 | Logout, **before** calling `/auth/logout` | `await PushNotifications.instance.unregisterDevice();` |
 
+**Or send the device with sign-in instead.** The auth endpoints also accept it
+in the body, and save it into the same device list:
+
+| Endpoint | Add to the body |
+|---|---|
+| `POST /api/auth/login` | `"player_id": "<FCM token>", "device_type": "android"` or `"ios"` |
+| `POST /api/auth/verify-otp` (the last step of sign-up, where the user is signed in) | the same two fields |
+| `POST /api/auth/logout` | `"player_id": "<FCM token>"`, so this phone stops getting notifications |
+
+- `player_id` is the **FCM token** from `await FirebaseMessaging.instance.getToken()`, not a OneSignal ID. FIRA doesn't use OneSignal.
+- `device_type` is `Platform.isIOS ? 'ios' : 'android'`.
+- `/auth/register` doesn't link a device. The account isn't confirmed until the email code is entered, so send the token with `verify-otp`.
+- The login and verify-otp responses include `deviceSaved: true | false`. A bad token never blocks sign-in.
+- When the FCM token refreshes (`onTokenRefresh`), still call `POST /api/notifications/fcm/register` with `{ token, platform, previousToken }`. The code file already does this.
+- Logout without `player_id` clears nothing (the website logs out the same way). Always send it from the app.
+
 **Don't send cookies to the API from the app.** With cookies, the server's
 website CSRF check applies and the requests fail with 403. Plain `http`, or
 `dio` without a cookie manager, is fine.

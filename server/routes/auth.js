@@ -4,11 +4,38 @@ const router = express.Router();
 const authService = require('../services/authService');
 const auth = require('../middleware/auth');
 const { registerLimiter, otpLimiter, otpPerEmailLimiter, loginLimiter } = require('../middleware/rateLimiters');
+const fcmService = require('../services/fcmService');
 
 /**
  * @typedef {import('../middleware/types').AuthenticatedRequest} AuthenticatedRequest
  * @typedef {import('express').Response} Response
  */
+
+/**
+ * The mobile app's device, sent with sign-in as `player_id` (the device's FCM
+ * token) and `device_type` ('android' | 'ios'). Saved into the user's list of
+ * app devices (fcmService) rather than onto the user, so a phone and a tablet
+ * both get notifications - the same as POST /notifications/fcm/register.
+ *
+ * Only on login and verify-otp, never on register: a sign-up is not proven
+ * until its email code is entered, and linking a device then would let someone
+ * who signs up with another person's email receive that person's notifications
+ * once they verify it.
+ *
+ * Best-effort: a missing or malformed token never fails the sign-in.
+ */
+async function rememberAppDevice(userId, body) {
+    const token = body && (body.player_id ?? body.playerId);
+    if (!userId || !token) return false;
+    const type = String(body.device_type ?? body.deviceType ?? '').toLowerCase();
+    try {
+        await fcmService.registerToken(userId, { token, platform: type === 'ios' || type === 'android' ? type : undefined });
+        return true;
+    } catch (err) {
+        console.warn('Could not save the app device at sign-in:', err.message);
+        return false;
+    }
+}
 
 // POST /api/auth/register - Register new user
 router.post('/register', registerLimiter, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
@@ -109,7 +136,8 @@ router.post('/verify-otp', otpLimiter, /** @param {AuthenticatedRequest} req @pa
         }
 
         const result = await authService.verifyOTP({ email, code });
-        res.json(result);
+        const deviceSaved = await rememberAppDevice(result.user && result.user._id, req.body);
+        res.json({ ...result, deviceSaved });
     } catch (error) {
         res.status(400).json({ error: error.message });
     }
@@ -136,15 +164,27 @@ router.post('/login', loginLimiter, /** @param {AuthenticatedRequest} req @param
     try {
         const { email, password } = req.body;
         const result = await authService.login({ email, password });
-        res.json(result);
+        const deviceSaved = await rememberAppDevice(result.user && result.user._id, req.body);
+        res.json({ ...result, deviceSaved });
     } catch (error) {
         res.status(401).json({ error: error.message });
     }
 });
 
 // POST /api/auth/logout - Logout user (adds token to blocklist)
+// The app sends `player_id` (its FCM token) so this phone stops getting the
+// user's notifications; their other devices keep theirs. Nothing is cleared
+// without it: the website logs out here too, and signing out of the browser
+// must not silence the user's phone.
 router.post('/logout', auth, /** @param {AuthenticatedRequest} req @param {Response} res */ async (req, res) => {
     try {
+        const playerId = req.body && (req.body.player_id ?? req.body.playerId);
+        try {
+            if (playerId) await fcmService.removeToken(req.user._id, String(playerId));
+        } catch (err) {
+            console.warn('Could not clear app devices at logout:', err.message);
+        }
+
         const { blockToken } = require('../services/tokenBlocklist');
         const { blocked, error } = await blockToken(req.token);
 

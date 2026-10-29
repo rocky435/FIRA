@@ -26,10 +26,13 @@ async function authenticate(req) {
         return { status: 401, error: 'Authentication required. No token provided.' };
     }
 
-    // Redis blocklist check — fail closed with 503 if Redis is down.
-    // ponytail: if Redis hasn't been initialized at all (no REDIS_HOST configured),
-    // skip the check so the server still works without Redis in dev.
-    if (process.env.REDIS_HOST) {
+    // Redis blocklist check. With REDIS_HOST configured it fails closed (503)
+    // when Redis is down. Without it, Redis still runs on the default
+    // 127.0.0.1 - production does exactly that - and logout writes the
+    // blocklist there, so the check must run whenever Redis is connected:
+    // gating it on REDIS_HOST alone let a logged-out token keep working until
+    // it expired. Only with neither (dev without Redis) is it skipped.
+    if (process.env.REDIS_HOST || isRedisAvailable()) {
         if (!isRedisAvailable()) {
             return { status: 503, error: 'Authentication service temporarily unavailable. Please try again shortly.' };
         }
