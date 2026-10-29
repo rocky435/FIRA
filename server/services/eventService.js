@@ -890,7 +890,7 @@ const eventService = {
         // Notify organizer
         await Notification.create({
             user: event.organizer,
-            title: status === 'approved' ? 'Venue Approved Your Event' : 'Venue Rejected Your Event',
+            title: status === 'approved' ? 'The venue approved your event' : 'The venue declined your event',
             message: status !== 'approved'
                 ? `The venue has rejected your event "${event.name}". Reason: ${rejectionReason || 'Not specified'}`
                 : unpaid
@@ -948,7 +948,7 @@ const eventService = {
         // Notify organizer
         await Notification.create({
             user: event.organizer,
-            title: status === 'approved' ? 'Event Approved by Admin' : 'Event Rejected by Admin',
+            title: status === 'approved' ? 'Your event was approved' : 'Your event was not approved',
             message: status !== 'approved'
                 ? `Your event "${event.name}" was rejected by admin. Reason: ${rejectionReason || 'Not specified'}`
                 : live
@@ -983,7 +983,7 @@ const eventService = {
                     brandProfile._id,
                     'brand_new_event',
                     {
-                        title: `${brandProfile.name} New Event`,
+                        title: `New event from ${brandProfile.name}`,
                         message: `${brandProfile.name} just announced "${populatedEvent.name}"! Get your tickets now.`,
                         referenceId: populatedEvent._id,
                         referenceModel: 'Event',
@@ -1000,7 +1000,7 @@ const eventService = {
                             }
                         }
                     },
-                    true // send email
+                    false // app + browser push only: an email to every follower costs mail-provider quota
                 );
                 console.log(`✅ Notified ${brandProfile.name}'s followers about new event:`, result);
             } else {

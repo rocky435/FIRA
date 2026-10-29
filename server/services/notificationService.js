@@ -212,8 +212,10 @@ const notificationService = {
         return { notified: totalNotified };
     },
 
-    // Notify all followers of a brand
-    async notifyBrandFollowers(brandId, type, notificationData, sendEmail = true) {
+    // Notify all followers of a brand: in the app's notification list and by
+    // push (browser + mobile app). Email is opt-in per call and off by default:
+    // one email per follower per post would exhaust the mail provider's limits.
+    async notifyBrandFollowers(brandId, type, notificationData, sendEmail = false) {
         const User = require('../models/User');
         const BrandProfile = require('../models/BrandProfile');
         const emailService = require('./emailService');

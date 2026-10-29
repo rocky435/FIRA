@@ -1,725 +1,461 @@
 /**
  * Email Templates for FIRA
- * Branded email templates with black dominant theme
+ *
+ * Every email shares one design (layout() below): the black page, the violet
+ * "FIRA / Let's Celebrate" header, a dark card body and the same footer. Each
+ * template only supplies its content, so the look cannot drift between emails
+ * again - the reminder and cancellation emails had their own orange headers,
+ * and several emails were plain unstyled HTML.
+ *
+ * Styles are inline and the structure is tables: Gmail, Outlook and Apple Mail
+ * drop or ignore much of a <style> block, so anything that matters is inline.
+ * Anything a user typed (names, venue and event names, posts) goes through esc().
  */
 
 const { formatInr } = require('./formatInr');
 
-const emailTemplates = {
-  /**
-   * OTP Verification Email Template
-   * @param {string} name - User's name
-   * @param {string} otp - 6-digit OTP code
-   * @returns {string} - HTML email template
-   */
-  otpVerification(name, otp) {
-    return `
+const VIOLET = '#8b5cf6';
+const GRADIENT = 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)';
+const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+
+const clientUrl = (path = '') => `${process.env.CLIENT_URL || 'http://localhost:3000'}${path}`;
+const supportEmail = () => process.env.SUPPORT_EMAIL || 'support@fira.com';
+
+/** Escape text for HTML. Apostrophes are left alone: harmless in text, and names use them. */
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+const enIN = (d, opts) => new Date(d).toLocaleString('en-IN', opts);
+const longDate = (d) => enIN(d, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const dateTime = (d) => enIN(d, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+const timeOnly = (d) => enIN(d, { hour: 'numeric', minute: '2-digit' });
+
+function venueNameOf(event) {
+  return event.venue?.name || event.customVenue?.name || event.customVenue?.address || 'Venue to be announced';
+}
+
+// ---------------------------------------------------------------- building blocks
+
+function paragraph(html, { muted = true, center = false, size = 16 } = {}) {
+  return `<p style="margin: 0 0 18px; font-size: ${size}px; line-height: 1.7; color: ${muted ? '#a0a0a0' : '#ffffff'};${center ? ' text-align: center;' : ''}">${html}</p>`;
+}
+
+function button(label, url) {
+  return `
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin: 28px auto 8px;">
+    <tr><td style="border-radius: 8px; background: ${VIOLET}; background-image: ${GRADIENT};">
+      <a href="${url}" style="display: inline-block; padding: 14px 36px; font-family: ${FONT}; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 8px;">${esc(label)}</a>
+    </td></tr>
+  </table>`;
+}
+
+/** A dark card of label/value rows, optionally under an image and a title. */
+function detailsCard(rows, { image, title } = {}) {
+  const body = rows
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([label, value, strong]) => `
+      <tr>
+        <td style="padding: 6px 0; font-size: 14px; color: #888888; vertical-align: top;">${esc(label)}</td>
+        <td style="padding: 6px 0 6px 16px; font-size: ${strong ? 18 : 14}px; ${strong ? `font-weight: 700; color: ${VIOLET};` : 'color: #ffffff;'} text-align: right; vertical-align: top;">${value}</td>
+      </tr>`).join('');
+  return `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background: #1a1a1a; border: 1px solid #333333; border-radius: 12px; margin: 8px 0 24px; overflow: hidden;">
+    ${image ? `<tr><td><img src="${esc(image)}" alt="" width="100%" style="display: block; width: 100%; max-height: 220px; object-fit: cover; border-radius: 12px 12px 0 0;"></td></tr>` : ''}
+    <tr><td style="padding: 18px 20px;">
+      ${title ? `<div style="font-size: 20px; font-weight: 700; color: #ffffff; margin-bottom: 8px;">${esc(title)}</div>` : ''}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${body}</table>
+    </td></tr>
+  </table>`;
+}
+
+/** The highlighted code box (sign-up and password reset). Never wraps on a phone. */
+function codeBox(code, note) {
+  return `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 8px 0 24px;">
+    <tr><td style="background: rgba(139, 92, 246, 0.1); border: 2px solid rgba(139, 92, 246, 0.3); border-radius: 12px; padding: 26px 12px; text-align: center;">
+      <div style="font-size: 13px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Your code</div>
+      <div style="font-family: 'Courier New', monospace; font-size: 34px; font-weight: 700; letter-spacing: 6px; color: ${VIOLET}; white-space: nowrap;">${esc(code)}</div>
+      ${note ? `<div style="font-size: 14px; color: #ef4444; margin-top: 12px;">${esc(note)}</div>` : ''}
+    </td></tr>
+  </table>`;
+}
+
+/** A note box with a coloured edge: violet for tips, amber for warnings. */
+function noteBox(lines, { tone = 'info', title } = {}) {
+  const edge = tone === 'warn' ? '#f59e0b' : '#6366f1';
+  const bg = tone === 'warn' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(99, 102, 241, 0.1)';
+  return `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 8px 0 24px;">
+    <tr><td style="background: ${bg}; border-left: 4px solid ${edge}; border-radius: 8px; padding: 16px 18px;">
+      ${title ? `<div style="font-size: 14px; font-weight: 700; color: #ffffff; margin-bottom: 6px;">${title}</div>` : ''}
+      ${lines.map(l => `<div style="font-size: 14px; line-height: 1.6; color: #c0c0c0; margin: 4px 0;">${l}</div>`).join('')}
+    </td></tr>
+  </table>`;
+}
+
+/** The ticket stub: id, QR code and admit count. */
+function ticketStub({ ticketId, qrSrc, tier, quantity }) {
+  return `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background: #ffffff; border-radius: 12px; margin: 8px 0 24px;">
+    <tr><td style="padding: 22px 20px; text-align: center; color: #000000;">
+      <div style="font-size: 12px; color: #666666; text-transform: uppercase; letter-spacing: 1px;">Ticket ID</div>
+      <div style="font-family: 'Courier New', monospace; font-size: 18px; font-weight: 700; margin: 6px 0 16px;">${esc(ticketId)}</div>
+      ${qrSrc ? `<img src="${qrSrc}" alt="Ticket QR code" width="180" height="180" style="display: block; width: 180px; height: 180px; margin: 0 auto;">
+      <div style="margin-top: 12px; font-size: 14px; color: #666666;">Scan this code at the entrance</div>` : ''}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 18px; border-top: 1px dashed #cccccc;">
+        <tr>
+          <td style="padding-top: 14px; text-align: left;">
+            <div style="font-size: 12px; color: #666666;">Tier</div>
+            <div style="font-weight: 700; text-transform: capitalize;">${esc(tier)}</div>
+          </td>
+          <td style="padding-top: 14px; text-align: right;">
+            <div style="font-size: 12px; color: #666666;">Admit</div>
+            <div style="font-weight: 700;">${esc(quantity)} ${Number(quantity) === 1 ? 'person' : 'people'}</div>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>`;
+}
+
+/**
+ * The one FIRA email design. `heading` is the big line under the header,
+ * `body` the content blocks, `cta` an optional { label, url } button.
+ */
+function layout({ title, preheader = '', heading, body, cta }) {
+  const year = new Date().getFullYear();
+  return `
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Verify Your Email - FIRA</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background-color: #000000;
-      color: #ffffff;
-      line-height: 1.6;
-    }
-    .container {
-      max-width: 600px;
-      margin: 0 auto;
-      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-      border-radius: 16px;
-      overflow: hidden;
-    }
-    .header {
-      background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
-      padding: 40px 30px;
-      text-align: center;
-      position: relative;
-      overflow: hidden;
-    }
-    .header::before {
-      content: '';
-      position: absolute;
-      top: -50%;
-      left: -50%;
-      width: 200%;
-      height: 200%;
-      background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
-      animation: pulse 3s ease-in-out infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { transform: scale(1); opacity: 0.5; }
-      50% { transform: scale(1.1); opacity: 0.8; }
-    }
-    .logo {
-      font-size: 32px;
-      font-weight: bold;
-      color: #ffffff;
-      position: relative;
-      z-index: 1;
-      letter-spacing: 2px;
-    }
-    .tagline {
-      font-size: 14px;
-      color: rgba(255, 255, 255, 0.9);
-      margin-top: 8px;
-      position: relative;
-      z-index: 1;
-    }
-    .content {
-      padding: 40px 30px;
-    }
-    .greeting {
-      font-size: 24px;
-      font-weight: 600;
-      color: #ffffff;
-      margin-bottom: 20px;
-    }
-    .message {
-      font-size: 16px;
-      color: #a0a0a0;
-      margin-bottom: 30px;
-      line-height: 1.8;
-    }
-    .otp-container {
-      background: rgba(139, 92, 246, 0.1);
-      border: 2px solid rgba(139, 92, 246, 0.3);
-      border-radius: 12px;
-      padding: 30px;
-      text-align: center;
-      margin: 30px 0;
-    }
-    .otp-label {
-      font-size: 14px;
-      color: #a0a0a0;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 15px;
-    }
-    .otp-code {
-      font-size: 48px;
-      font-weight: bold;
-      color: #8b5cf6;
-      letter-spacing: 12px;
-      font-family: 'Courier New', monospace;
-      text-align: center;
-      margin: 10px 0;
-    }
-    .expiry-notice {
-      font-size: 14px;
-      color: #ef4444;
-      margin-top: 15px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-    .warning-icon {
-      width: 16px;
-      height: 16px;
-    }
-    .info-box {
-      background: rgba(99, 102, 241, 0.1);
-      border-left: 4px solid #6366f1;
-      padding: 20px;
-      margin: 25px 0;
-      border-radius: 8px;
-    }
-    .info-box p {
-      font-size: 14px;
-      color: #c0c0c0;
-      margin: 8px 0;
-    }
-    .footer {
-      background: #0a0a0a;
-      padding: 30px;
-      text-align: center;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
-    }
-    .footer-text {
-      font-size: 13px;
-      color: #666666;
-      margin: 5px 0;
-    }
-    .footer-link {
-      color: #8b5cf6;
-      text-decoration: none;
-    }
-    .footer-link:hover {
-      text-decoration: underline;
-    }
-    .social-links {
-      margin-top: 20px;
-    }
-    .social-links a {
-      display: inline-block;
-      margin: 0 10px;
-      color: #8b5cf6;
-      text-decoration: none;
-      font-size: 12px;
-    }
-    @media only screen and (max-width: 600px) {
-      .container {
-        border-radius: 0;
-      }
-      .content {
-        padding: 30px 20px;
-      }
-      .otp-code {
-        font-size: 36px;
-        letter-spacing: 8px;
-      }
-    }
-  </style>
+  <meta name="color-scheme" content="dark">
+  <meta name="supported-color-schemes" content="dark">
+  <title>${esc(title)}</title>
 </head>
-<body>
-  <div style="padding: 20px; background-color: #000000;">
-    <div class="container">
-      <!-- Header -->
-      <div class="header">
-        <div class="logo">FIRA</div>
-        <div class="tagline">Let's Celebrate</div>
-      </div>
-
-      <!-- Content -->
-      <div class="content">
-        <div class="greeting">Hey ${name}! 👋</div>
-        
-        <div class="message">
-          Welcome to FIRA! We're excited to have you join our community of event enthusiasts and venue owners.
-          <br><br>
-          To complete your registration and start exploring amazing venues and events, please verify your email address using the code below:
-        </div>
-
-        <!-- OTP Box -->
-        <div class="otp-container">
-          <div class="otp-label">Your Verification Code</div>
-          <div class="otp-code">${otp}</div>
-          <div class="expiry-notice">
-            <svg class="warning-icon" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
-            </svg>
-            This code expires in 10 minutes
-          </div>
-        </div>
-
-        <!-- Info Box -->
-        <div class="info-box">
-          <p><strong>🔒 Security Tips:</strong></p>
-          <p>• Never share this code with anyone</p>
-          <p>• FIRA will never ask for your code via phone or email</p>
-          <p>• If you didn't request this code, please ignore this email</p>
-        </div>
-
-        <div class="message">
-          Once verified, you'll be able to:
-          <br>
-          ✨ Discover and book amazing venues<br>
-          🎉 Browse upcoming events<br>
-          🎫 Purchase tickets seamlessly<br>
-          ${name.includes('venue') || name.includes('owner') ? '🏢 List and manage your venues<br>' : ''}
-        </div>
-      </div>
-
-      <!-- Footer -->
-      <div class="footer">
-        <p class="footer-text">
-          Need help? Contact us at <a href="mailto:support@fira.com" class="footer-link">support@fira.com</a>
-        </p>
-        <p class="footer-text" style="margin-top: 15px;">
-          © ${new Date().getFullYear()} FIRA - Let's Celebrate. All rights reserved.
-        </p>
-        <div class="social-links">
-          <a href="#">Instagram</a> • 
-          <a href="#">Twitter</a> • 
-          <a href="#">Facebook</a>
-        </div>
-      </div>
-    </div>
-  </div>
+<body style="margin: 0; padding: 0; background-color: #000000; font-family: ${FONT}; color: #ffffff;">
+  <div style="display: none; max-height: 0; overflow: hidden; opacity: 0;">${esc(preheader)}</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #000000;">
+    <tr><td align="center" style="padding: 20px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; background: #0a0a0a; border-radius: 16px; overflow: hidden;">
+        <tr><td style="background: ${VIOLET}; background-image: ${GRADIENT}; padding: 34px 24px; text-align: center;">
+          <div style="font-size: 30px; font-weight: 800; letter-spacing: 3px; color: #ffffff;">FIRA</div>
+          <div style="font-size: 14px; color: rgba(255, 255, 255, 0.9); margin-top: 6px;">Let's Celebrate</div>
+        </td></tr>
+        <tr><td style="padding: 32px 28px 24px;">
+          ${heading ? `<h1 style="margin: 0 0 18px; font-size: 24px; line-height: 1.3; font-weight: 700; color: #ffffff;">${heading}</h1>` : ''}
+          ${body}
+          ${cta ? button(cta.label, cta.url) : ''}
+        </td></tr>
+        <tr><td style="background: #050505; padding: 24px; text-align: center; border-top: 1px solid #1f1f1f;">
+          <div style="font-size: 13px; color: #777777; margin-bottom: 8px;">Need help? Contact us at <a href="mailto:${supportEmail()}" style="color: ${VIOLET}; text-decoration: none;">${supportEmail()}</a></div>
+          <div style="font-size: 12px; color: #555555;">© ${year} FIRA - Let's Celebrate. All rights reserved.</div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
 </body>
-</html>
-    `.trim();
+</html>`.trim();
+}
+
+const hey = (name) => paragraph(`Hey ${esc(name || 'there')},`, { muted: false, size: 17 });
+
+// ---------------------------------------------------------------- the emails
+
+const emailTemplates = {
+  esc,
+  layout,
+
+  /** Sign-up verification code. */
+  otpVerification(name, otp) {
+    return layout({
+      title: 'Verify your email - FIRA',
+      preheader: `${otp} is your FIRA verification code`,
+      heading: `Hey ${esc(name || 'there')}! 👋`,
+      body: [
+        paragraph("Welcome to FIRA! We're excited to have you join our community of event lovers and venue owners."),
+        paragraph('To finish signing up, enter this code in the app:'),
+        codeBox(otp, 'This code expires in 10 minutes'),
+        noteBox([
+          '• Never share this code with anyone',
+          '• FIRA will never ask for your code by phone or email',
+          "• If you didn't request this code, you can ignore this email",
+        ], { title: '🔒 Security tips' }),
+        paragraph("Once verified, you'll be able to:<br>✨ Discover and book venues<br>🎉 Browse upcoming events<br>🎫 Buy tickets in seconds"),
+      ].join(''),
+    });
   },
 
-  /**
-   * Welcome Email Template (sent after successful verification)
-   * @param {string} name - User's name
-   * @param {string} role - User's role (user or venue_owner)
-   * @returns {string} - HTML email template
-   */
+  /** Password reset code. */
+  passwordReset(name, otp) {
+    return layout({
+      title: 'Reset your password - FIRA',
+      preheader: `${otp} is your FIRA password reset code`,
+      heading: 'Reset your password',
+      body: [
+        hey(name),
+        paragraph('We received a request to reset the password on your FIRA account. Enter this code to choose a new one:'),
+        codeBox(otp, 'This code expires in 10 minutes'),
+        noteBox(["If you didn't ask to reset your password, ignore this email - your password stays the same."]),
+      ].join(''),
+    });
+  },
+
+  /** After the email is verified. */
   welcome(name, role) {
     const isVenueOwner = role === 'venue_owner';
+    return layout({
+      title: 'Welcome to FIRA',
+      preheader: "Your email is verified. Let's celebrate!",
+      heading: 'Welcome to FIRA! 🎉',
+      body: [
+        hey(name),
+        paragraph("Your email is verified - you're now part of the FIRA community."),
+        paragraph(isVenueOwner
+          ? 'As a venue owner, you can now list your spaces and take bookings from guests and event organisers.'
+          : 'Start exploring venues and events near you!'),
+      ].join(''),
+      cta: { label: 'Go to dashboard', url: clientUrl(isVenueOwner ? '/venue-portal/dashboard' : '/dashboard') },
+    });
+  },
 
-    return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Welcome to FIRA</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000;">
-  <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); padding: 40px; text-align: center; border-radius: 16px 16px 0 0;">
-      <h1 style="color: #ffffff; font-size: 32px; margin: 0;">Welcome to FIRA! 🎉</h1>
-      <p style="color: rgba(255,255,255,0.9); margin-top: 10px;">Let's Celebrate</p>
-    </div>
-    
-    <div style="background: #1a1a1a; padding: 40px; border-radius: 0 0 16px 16px;">
-      <p style="color: #ffffff; font-size: 18px; margin-bottom: 20px;">Hey ${name}!</p>
-      
-      <p style="color: #a0a0a0; line-height: 1.8; margin-bottom: 20px;">
-        Your email has been successfully verified! You're now part of the FIRA community.
-      </p>
-      
-      ${isVenueOwner ? `
-      <p style="color: #a0a0a0; line-height: 1.8; margin-bottom: 20px;">
-        As a venue owner, you can now start listing your spaces and connecting with event organizers.
-      </p>
-      ` : `
-      <p style="color: #a0a0a0; line-height: 1.8; margin-bottom: 20px;">
-        Start exploring amazing venues and events in your area!
-      </p>
-      `}
-      
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard" 
-           style="display: inline-block; background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: #ffffff; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: 600;">
-          Go to Dashboard
-        </a>
-      </div>
-      
-      <p style="color: #666666; font-size: 13px; text-align: center; margin-top: 30px;">
-        © ${new Date().getFullYear()} FIRA. All rights reserved.
-      </p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
+  /** Password changed. */
+  passwordChanged(name) {
+    return layout({
+      title: 'Your password was changed - FIRA',
+      preheader: 'Your FIRA password was just changed',
+      heading: 'Your password was changed',
+      body: [
+        hey(name),
+        paragraph('The password on your FIRA account was just changed.'),
+        noteBox([`If this wasn't you, reset your password straight away and contact us at ${supportEmail()}.`], { tone: 'warn' }),
+      ].join(''),
+    });
+  },
+
+  /** Payout bank details changed: the signal of a takeover trying to redirect earnings. */
+  payoutAccountChanged(name, change) {
+    return layout({
+      title: 'Your payout account was changed - FIRA',
+      preheader: 'The bank account your earnings go to was changed',
+      heading: 'Your payout account was changed',
+      body: [
+        hey(name),
+        paragraph(`The bank account your FIRA earnings are paid to was just changed: <strong style="color: #ffffff;">${esc(change)}</strong>.`),
+        noteBox(["If you didn't make this change, change your password now and contact us immediately - someone may be trying to redirect your earnings."], { tone: 'warn' }),
+      ].join(''),
+      cta: { label: 'Review payout accounts', url: clientUrl('/dashboard/settings') },
+    });
   },
 
   /**
-   * Ticket Confirmation Email Template
-   * @param {string} userName - User's name
-   * @param {object} event - Event details (name, startDateTime, venue/customVenue, images)
-   * @param {object} ticket - Ticket details (ticketId, qrCode, ticketType, quantity, price)
-   * @returns {string} - HTML email template
+   * Ticket confirmation. `qrSrc` is where the QR image is read from: emailService
+   * attaches it and passes 'cid:...', because most mail apps (Gmail among them)
+   * block data: images - the QR showed as an empty box.
    */
-  ticketConfirmation(userName, event, ticket) {
-    // The schema stores startDateTime, not date/startTime. `event.date` stays as a
-    // fallback only to match brandNewEvent's style for legacy callers.
+  ticketConfirmation(userName, event, ticket, { qrSrc } = {}) {
+    // The schema stores startDateTime, not date/startTime.
     const startsAt = new Date(event.startDateTime || event.date);
-    const formattedDate = startsAt.toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+    const formattedDate = startsAt.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const formattedTime = startsAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return layout({
+      title: `Your ticket for ${event.name} - FIRA`,
+      preheader: `You're going to ${event.name} on ${formattedDate}`,
+      heading: "You're going! 🎉",
+      body: [
+        paragraph(`Hey ${esc(userName || 'there')}, your ticket is confirmed. Get ready for an amazing experience!`),
+        detailsCard([
+          ['Date', formattedDate],
+          ['Time', formattedTime],
+          ['Venue', esc(venueNameOf(event))],
+          ['Tier', `<span style="text-transform: capitalize;">${esc(ticket.ticketType)}</span>`],
+        ], { image: event.images && event.images[0], title: event.name }),
+        ticketStub({ ticketId: ticket.ticketId, qrSrc: qrSrc || ticket.qrCode, tier: ticket.ticketType, quantity: ticket.quantity }),
+        paragraph('Keep this email, or open your ticket any time from your dashboard.', { center: true, size: 13 }),
+      ].join(''),
+      cta: { label: 'View in Dashboard', url: clientUrl('/dashboard/tickets') },
     });
-    const formattedTime = startsAt.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit'
-    });
-    // An event either points at a Venue or carries a customVenue the organiser
-    // typed. Either can be absent, and `venue` may be an unpopulated ObjectId.
-    const venueName = event.venue?.name || event.customVenue?.name || event.customVenue?.address || 'Venue to be announced';
-
-    return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Your Ticket for ${event.name} - FIRA</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff;">
-  <div style="max-width: 600px; margin: 0 auto; background: #0a0a0a; border-radius: 16px; overflow: hidden;">
-    <!-- Header -->
-    <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); padding: 30px; text-align: center;">
-      <h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">FIRA</h1>
-      <p style="margin: 5px 0 0; opacity: 0.9; font-size: 14px;">Let's Celebrate</p>
-    </div>
-
-    <!-- Content -->
-    <div style="padding: 30px;">
-      <h2 style="margin: 0 0 20px; font-size: 24px; text-align: center;">You're Going! 🎉</h2>
-      <p style="color: #a0a0a0; text-align: center; margin-bottom: 30px;">
-        Hey ${userName}, your booking is confirmed. Get ready for an amazing experience!
-      </p>
-
-      <!-- Event Card -->
-      <div style="background: #1a1a1a; border-radius: 12px; border: 1px solid #333; overflow: hidden; margin-bottom: 30px;">
-        ${event.images && event.images[0] ? `<img src="${event.images[0]}" alt="${event.name}" style="width: 100%; height: 200px; object-fit: cover; display: block;">` : ''}
-        <div style="padding: 20px;">
-          <h3 style="margin: 0 0 10px; font-size: 20px; color: #fff;">${event.name}</h3>
-          
-          <table style="width: 100%; border-collapse: collapse;">
-            <tr>
-              <td style="padding: 5px 0; color: #888; font-size: 14px;">Date</td>
-              <td style="padding: 5px 0; color: #fff; text-align: right; font-size: 14px;">${formattedDate}</td>
-            </tr>
-            <tr>
-              <td style="padding: 5px 0; color: #888; font-size: 14px;">Time</td>
-              <td style="padding: 5px 0; color: #fff; text-align: right; font-size: 14px;">${formattedTime}</td>
-            </tr>
-            <tr>
-              <td style="padding: 5px 0; color: #888; font-size: 14px;">Venue</td>
-              <td style="padding: 5px 0; color: #fff; text-align: right; font-size: 14px;">${venueName}</td>
-            </tr>
-            <tr>
-              <td style="padding: 5px 0; color: #888; font-size: 14px;">Tier</td>
-              <td style="padding: 5px 0; color: #fff; text-align: right; font-size: 14px; text-transform: capitalize;">${ticket.ticketType}</td>
-            </tr>
-          </table>
-        </div>
-      </div>
-
-      <!-- Ticket Details -->
-      <div style="background: #ffffff; border-radius: 12px; color: #000; padding: 20px; text-align: center; margin-bottom: 30px;">
-        <div style="font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 1px;">Ticket ID</div>
-        <div style="font-family: monospace; font-size: 18px; font-weight: bold; margin: 5px 0 15px;">${ticket.ticketId}</div>
-        
-        <!-- QR Code Placeholder (Standard QRCode generated via backend is usually attached as CID or simple img tag if public) -->
-        <!-- Ideally we attach the QR code as an image with CID. For now, assuming provided qrCode is a data url or we use text fallback if complex -->
-        <img src="${ticket.qrCode}" alt="Ticket QR Code" style="width: 180px; height: 180px; display: block; margin: 0 auto;">
-        
-        <div style="margin-top: 15px; font-size: 14px; color: #666;">
-          Scan this code at the entrance
-        </div>
-        
-        <div style="margin-top: 20px; padding-top: 20px; border-top: 1px dashed #ccc; display: flex; justify-content: space-between;">
-           <div style="text-align: left;">
-              <div style="font-size: 12px; color: #666;">Tier</div>
-              <div style="font-weight: bold; text-transform: capitalize;">${ticket.ticketType}</div>
-           </div>
-           <div style="text-align: right;">
-              <div style="font-size: 12px; color: #666;">Admit</div>
-              <div style="font-weight: bold;">${ticket.quantity} Person(s)</div>
-           </div>
-        </div>
-      </div>
-
-      <p style="text-align: center; color: #666; font-size: 13px;">
-        Please save this email or download your ticket from the dashboard.
-      </p>
-
-      <div style="text-align: center; margin-top: 30px;">
-        <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard" 
-           style="display: inline-block; background: #8b5cf6; color: #ffffff; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px;">
-           View in Dashboard
-        </a>
-      </div>
-    </div>
-
-    <!-- Footer -->
-    <div style="background: #000; padding: 20px; text-align: center; border-top: 1px solid #222;">
-      <p style="color: #444; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} FIRA. All rights reserved.</p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
   },
 
-  /**
-   * Brand New Event Notification Template
-   * @param {string} userName - User's name
-   * @param {string} brandName - Brand name
-   * @param {object} event - Event details
-   * @returns {string} - HTML email template
-   */
-  brandNewEvent(userName, brandName, event) {
-    const formattedDate = new Date(event.date || event.startDateTime).toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
-
-    return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>New Event from ${brandName} - FIRA</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff;">
-  <div style="max-width: 600px; margin: 0 auto; background: #0a0a0a; border-radius: 16px; overflow: hidden;">
-    <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); padding: 30px; text-align: center;">
-      <h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">FIRA</h1>
-      <p style="margin: 5px 0 0; opacity: 0.9; font-size: 14px;">Let's Celebrate</p>
-    </div>
-    <div style="padding: 30px;">
-      <h2 style="margin: 0 0 20px; font-size: 24px; text-align: center;">🎉 New Event Alert!</h2>
-      <p style="color: #a0a0a0; text-align: center; margin-bottom: 30px;">
-        Hey ${userName}, <strong style="color: #8b5cf6;">${brandName}</strong> just announced a new event!
-      </p>
-      <div style="background: #1a1a1a; border-radius: 12px; border: 1px solid #333; overflow: hidden; margin-bottom: 30px;">
-        ${event.images?.[0] ? `<img src="${event.images[0]}" alt="${event.name}" style="width: 100%; height: 200px; object-fit: cover; display: block;">` : ''}
-        <div style="padding: 20px;">
-          <h3 style="margin: 0 0 10px; font-size: 20px; color: #fff;">${event.name}</h3>
-          <p style="color: #ccc; margin: 5px 0;">📅 ${formattedDate}</p>
-          ${event.venue?.name ? `<p style="color: #888; font-size: 14px;">📍 ${event.venue.name}</p>` : ''}
-          ${event.ticketPrice > 0 ? `<p style="color: #22c55e; font-weight: bold;">₹${event.ticketPrice}</p>` : '<p style="color: #22c55e; font-weight: bold;">FREE</p>'}
-        </div>
-      </div>
-      <div style="text-align: center;">
-        <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/events/${event._id}" 
-           style="display: inline-block; background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: #ffffff; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: 600;">
-          Get Tickets Now
-        </a>
-      </div>
-    </div>
-    <div style="background: #000; padding: 20px; text-align: center; border-top: 1px solid #222;">
-      <p style="color: #444; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} FIRA. All rights reserved.</p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
-  },
-
-  /**
-   * Brand New Post Notification Template
-   * @param {string} userName - User's name
-   * @param {string} brandName - Brand name
-   * @param {object} post - Post details
-   * @returns {string} - HTML email template
-   */
-  brandNewPost(userName, brandName, post) {
-    return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>New Post from ${brandName} - FIRA</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff;">
-  <div style="max-width: 600px; margin: 0 auto; background: #0a0a0a; border-radius: 16px; overflow: hidden;">
-    <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); padding: 30px; text-align: center;">
-      <h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">FIRA</h1>
-      <p style="margin: 5px 0 0; opacity: 0.9; font-size: 14px;">Let's Celebrate</p>
-    </div>
-    <div style="padding: 30px;">
-      <h2 style="margin: 0 0 20px; font-size: 24px; text-align: center;">📢 New Update!</h2>
-      <p style="color: #a0a0a0; text-align: center; margin-bottom: 30px;">
-        Hey ${userName}, <strong style="color: #8b5cf6;">${brandName}</strong> just shared something new!
-      </p>
-      <div style="background: #1a1a1a; border-radius: 12px; border: 1px solid #333; padding: 20px; margin-bottom: 30px;">
-        <p style="color: #fff; line-height: 1.6; margin: 0;">${post.content?.substring(0, 200)}${post.content?.length > 200 ? '...' : ''}</p>
-        ${post.images?.[0] ? `<img src="${post.images[0]}" alt="Post image" style="width: 100%; border-radius: 8px; margin-top: 15px;">` : ''}
-      </div>
-      <div style="text-align: center;">
-        <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/brands/${post.brandId}" 
-           style="display: inline-block; background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: #ffffff; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: 600;">
-          View Full Post
-        </a>
-      </div>
-    </div>
-    <div style="background: #000; padding: 20px; text-align: center; border-top: 1px solid #222;">
-      <p style="color: #444; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} FIRA. All rights reserved.</p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
-  },
-
-  /**
-   * Event Reminder Template (1 hour before)
-   * @param {string} userName - User's name
-   * @param {object} event - Event details
-   * @param {object} ticket - Ticket details
-   * @returns {string} - HTML email template
-   */
+  /** One hour before the event. */
   eventReminder(userName, event, ticket) {
-    return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Event Starting Soon! - FIRA</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff;">
-  <div style="max-width: 600px; margin: 0 auto; background: #0a0a0a; border-radius: 16px; overflow: hidden;">
-    <div style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 30px; text-align: center;">
-      <h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">⏰ REMINDER</h1>
-      <p style="margin: 10px 0 0; font-size: 18px; font-weight: bold;">Starting in 1 Hour!</p>
-    </div>
-    <div style="padding: 30px;">
-      <p style="color: #a0a0a0; text-align: center; margin-bottom: 30px;">
-        Hey ${userName}, don't forget - your event is about to start!
-      </p>
-      <div style="background: #1a1a1a; border-radius: 12px; border: 1px solid #333; overflow: hidden; margin-bottom: 30px;">
-        ${event.images?.[0] ? `<img src="${event.images[0]}" alt="${event.name}" style="width: 100%; height: 200px; object-fit: cover; display: block;">` : ''}
-        <div style="padding: 20px;">
-          <h3 style="margin: 0 0 10px; font-size: 20px; color: #fff;">${event.name}</h3>
-          <p style="color: #f59e0b; font-weight: bold; margin: 10px 0;">🕐 Starting at ${event.startTime || 'soon'}</p>
-          ${event.venue?.name ? `<p style="color: #888; font-size: 14px;">📍 ${event.venue.name}</p>` : ''}
-          ${event.venue?.address?.street ? `<p style="color: #666; font-size: 12px;">${event.venue.address.street}, ${event.venue.address.city}</p>` : ''}
-        </div>
-      </div>
-      <div style="background: #ffffff; border-radius: 12px; color: #000; padding: 20px; text-align: center; margin-bottom: 30px;">
-        <div style="font-size: 12px; color: #666; text-transform: uppercase;">Your Ticket</div>
-        <div style="font-family: monospace; font-size: 18px; font-weight: bold; margin: 5px 0;">${ticket.ticketId}</div>
-        <p style="font-size: 14px; color: #666; margin-top: 10px;">Admit ${ticket.quantity} person(s)</p>
-      </div>
-      <div style="text-align: center;">
-        <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/tickets" 
-           style="display: inline-block; background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: #ffffff; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: 600;">
-          View My Ticket
-        </a>
-      </div>
-    </div>
-    <div style="background: #000; padding: 20px; text-align: center; border-top: 1px solid #222;">
-      <p style="color: #444; font-size: 12px; margin: 0;">Have a great time! 🎉</p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
-  },
-
-  /**
-   * Balance Payment Reminder Template (venue booking balance due)
-   * @param {string} name - Customer's name
-   * @param {object} details - { venueName, daysLeft, balanceAmount, balanceDueAt, bookingId }
-   * @returns {string} - HTML email template
-   */
-  balanceReminder(name, { venueName, daysLeft, balanceAmount, balanceDueAt }) {
-    const dueDate = new Date(balanceDueAt).toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+    const startsAt = event.startDateTime ? new Date(event.startDateTime) : null;
+    const address = [event.venue?.address?.street, event.venue?.address?.city].filter(Boolean).join(', ');
+    return layout({
+      title: `${event.name} starts in 1 hour - FIRA`,
+      preheader: `${event.name} starts in 1 hour`,
+      heading: '⏰ Starting in 1 hour',
+      body: [
+        paragraph(`Hey ${esc(userName || 'there')}, don't forget - your event is about to start!`),
+        detailsCard([
+          ['Starts', startsAt ? timeOnly(startsAt) : 'Very soon'],
+          ['Venue', esc(venueNameOf(event))],
+          ['Address', esc(address)],
+        ], { image: event.images?.[0], title: event.name }),
+        ticketStub({ ticketId: ticket.ticketId, tier: ticket.ticketType || 'General', quantity: ticket.quantity }),
+        paragraph('Have a great time! 🎉', { center: true }),
+      ].join(''),
+      cta: { label: 'View my ticket', url: clientUrl('/dashboard/tickets') },
     });
-    const dayLabel = daysLeft === 1 ? 'day' : 'days';
-
-    return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Balance Payment Due - FIRA</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff;">
-  <div style="max-width: 600px; margin: 0 auto; background: #0a0a0a; border-radius: 16px; overflow: hidden;">
-    <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); padding: 30px; text-align: center;">
-      <h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">⏳ Balance Due</h1>
-      <p style="margin: 10px 0 0; font-size: 16px; font-weight: bold;">${daysLeft} ${dayLabel} left to pay</p>
-    </div>
-    <div style="padding: 30px;">
-      <p style="color: #a0a0a0; text-align: center; margin-bottom: 30px;">
-        Hey ${name}, this is a friendly reminder to pay the remaining balance for your booking at <strong style="color: #8b5cf6;">${venueName}</strong>.
-      </p>
-      <div style="background: #1a1a1a; border-radius: 12px; border: 1px solid #333; padding: 20px; margin-bottom: 30px;">
-        <table style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <td style="padding: 8px 0; color: #888; font-size: 14px;">Venue</td>
-            <td style="padding: 8px 0; color: #fff; text-align: right; font-size: 14px;">${venueName}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #888; font-size: 14px;">Balance due</td>
-            <td style="padding: 8px 0; color: #8b5cf6; text-align: right; font-size: 18px; font-weight: bold;">${formatInr(balanceAmount)}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #888; font-size: 14px;">Days remaining</td>
-            <td style="padding: 8px 0; color: #fff; text-align: right; font-size: 14px;">${daysLeft} ${dayLabel}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #888; font-size: 14px;">Pay by</td>
-            <td style="padding: 8px 0; color: #fff; text-align: right; font-size: 14px;">${dueDate}</td>
-          </tr>
-        </table>
-      </div>
-      <p style="color: #a0a0a0; text-align: center; font-size: 14px; margin-bottom: 25px;">
-        If the balance isn't paid by the deadline, your booking will be automatically cancelled and the deposit forfeited.
-      </p>
-      <div style="text-align: center;">
-        <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/bookings" 
-           style="display: inline-block; background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: #ffffff; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: 600;">
-          Pay Now
-        </a>
-      </div>
-    </div>
-    <div style="background: #000; padding: 20px; text-align: center; border-top: 1px solid #222;">
-      <p style="color: #444; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} FIRA. All rights reserved.</p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
   },
 
-  /**
-   * Balance Forfeit Template (booking auto-cancelled, deposit forfeited)
-   * @param {string} name - Customer's name
-   * @param {object} details - { venueName, depositAmount, bookingId }
-   * @returns {string} - HTML email template
-   */
+  /** A brand the user follows announced an event. */
+  brandNewEvent(userName, brandName, event) {
+    const price = Number(event.ticketPrice) > 0 ? formatInr(event.ticketPrice) : 'Free';
+    return layout({
+      title: `New event from ${brandName} - FIRA`,
+      preheader: `${brandName} just announced ${event.name}`,
+      heading: '🎉 New event',
+      body: [
+        paragraph(`Hey ${esc(userName || 'there')}, <strong style="color: ${VIOLET};">${esc(brandName)}</strong> just announced a new event!`),
+        detailsCard([
+          ['Date', longDate(event.startDateTime || event.date)],
+          ['Venue', esc(event.venue?.name)],
+          ['Tickets', price, true],
+        ], { image: event.images?.[0], title: event.name }),
+      ].join(''),
+      cta: { label: 'Get tickets', url: clientUrl(`/events/${event._id}`) },
+    });
+  },
+
+  /** A brand the user follows posted an update. */
+  brandNewPost(userName, brandName, post) {
+    const text = String(post.content || '');
+    return layout({
+      title: `New post from ${brandName} - FIRA`,
+      preheader: `${brandName} shared an update`,
+      heading: '📢 New update',
+      body: [
+        paragraph(`Hey ${esc(userName || 'there')}, <strong style="color: ${VIOLET};">${esc(brandName)}</strong> just shared something new!`),
+        noteBox([
+          esc(text.slice(0, 200)) + (text.length > 200 ? '…' : ''),
+          post.images?.[0] ? `<img src="${esc(post.images[0])}" alt="" width="100%" style="display: block; width: 100%; border-radius: 8px; margin-top: 10px;">` : '',
+        ]),
+      ].join(''),
+      cta: { label: 'View post', url: clientUrl(`/brands/${post.brandId}`) },
+    });
+  },
+
+  /** To the venue owner: someone asked to book their venue. */
+  venueBookingNotification(ownerName, venue, booking, booker) {
+    return layout({
+      title: `New booking request for ${venue.name} - FIRA`,
+      preheader: `${booker.name} wants to book ${venue.name}`,
+      heading: 'New booking request 🎉',
+      body: [
+        hey(ownerName),
+        paragraph(`<strong style="color: #ffffff;">${esc(booker.name)}</strong> wants to book <strong style="color: ${VIOLET};">${esc(venue.name)}</strong>.`),
+        detailsCard([
+          ['Date', booking.date ? longDate(booking.date) : ''],
+          ['Time', booking.startTime && booking.endTime ? `${esc(booking.startTime)} - ${esc(booking.endTime)}` : ''],
+          ['Guests', booking.guestCount ? esc(booking.guestCount) : ''],
+          ['Guest', esc(booker.name)],
+          ['Total', booking.totalPrice ? formatInr(booking.totalPrice) : '', true],
+        ]),
+        paragraph("Accept or decline it in your venue portal. Once you accept, the guest pays to confirm; if they don't, the dates are freed."),
+      ].join(''),
+      cta: { label: 'Review request', url: clientUrl('/venue-portal/bookings') },
+    });
+  },
+
+  /** To the venue owner: an organiser wants to hold an event at their venue. */
+  eventRequestNotification(ownerName, venue, event, organizer) {
+    const start = event.startDateTime ? new Date(event.startDateTime) : null;
+    const end = event.endDateTime ? new Date(event.endDateTime) : null;
+    return layout({
+      title: `New event request for ${venue.name} - FIRA`,
+      preheader: `${organizer.name} wants to host ${event.name} at ${venue.name}`,
+      heading: 'New event request 🎉',
+      body: [
+        hey(ownerName),
+        paragraph(`<strong style="color: #ffffff;">${esc(organizer.name)}</strong> wants to host an event at <strong style="color: ${VIOLET};">${esc(venue.name)}</strong>.`),
+        detailsCard([
+          ['Starts', start ? dateTime(start) : ''],
+          ['Ends', end ? dateTime(end) : ''],
+          ['Category', esc(event.category)],
+          ['Expected guests', event.maxAttendees ? esc(event.maxAttendees) : ''],
+          ['Organiser', esc(organizer.name)],
+        ], { title: event.name }),
+        paragraph('If you approve, the organiser pays your venue price in full before the event goes live.'),
+      ].join(''),
+      cta: { label: 'Review request', url: clientUrl('/venue-portal/events') },
+    });
+  },
+
+  /** A short booking update to the guest: accepted - pay to confirm, booking tomorrow, and the like. */
+  bookingUpdate(name, { heading, lines = [], link, linkText = 'View booking' }) {
+    return layout({
+      title: `${heading} - FIRA`,
+      preheader: lines[0] || heading,
+      heading: esc(heading),
+      body: [hey(name), ...lines.map(line => paragraph(esc(line)))].join(''),
+      cta: link ? { label: linkText, url: link } : undefined,
+    });
+  },
+
+  /** Balance reminder for an installment booking. */
+  balanceReminder(name, { venueName, daysLeft, balanceAmount, balanceDueAt, bookingId }) {
+    const dayLabel = daysLeft === 1 ? 'day' : 'days';
+    return layout({
+      title: 'Balance payment due - FIRA',
+      preheader: `${formatInr(balanceAmount)} due in ${daysLeft} ${dayLabel} for ${venueName}`,
+      heading: `⏳ ${esc(daysLeft)} ${dayLabel} left to pay`,
+      body: [
+        hey(name),
+        paragraph(`A friendly reminder to pay the rest for your booking at <strong style="color: ${VIOLET};">${esc(venueName)}</strong>.`),
+        detailsCard([
+          ['Venue', esc(venueName)],
+          ['Balance due', formatInr(balanceAmount), true],
+          ['Pay by', longDate(balanceDueAt)],
+        ]),
+        noteBox(["If the balance isn't paid by then, the booking is cancelled automatically and the advance is not refunded."], { tone: 'warn' }),
+      ].join(''),
+      cta: { label: 'Pay now', url: clientUrl(bookingId ? `/dashboard/bookings/${bookingId}` : '/dashboard/bookings') },
+    });
+  },
+
+  /** Final notice, 2 days before: pay the balance or cancel. */
+  balanceFinalNotice(name, { venueName, balanceAmount, balanceDueAt, bookingId }) {
+    const due = dateTime(balanceDueAt);
+    return layout({
+      title: 'Final notice: pay or cancel - FIRA',
+      preheader: `Pay ${formatInr(balanceAmount)} by ${due} to keep your booking`,
+      heading: 'Your booking needs action',
+      body: [
+        hey(name),
+        paragraph(`The remaining <strong style="color: #ffffff;">${formatInr(balanceAmount)}</strong> for your booking at <strong style="color: ${VIOLET};">${esc(venueName)}</strong> is still unpaid.`),
+        detailsCard([
+          ['Venue', esc(venueName)],
+          ['Balance due', formatInr(balanceAmount), true],
+          ['Pay by', due],
+        ]),
+        paragraph("If you can't make it, cancel before then - you get back what the venue's cancellation policy allows."),
+        noteBox([`If it's neither paid nor cancelled by ${due}, the booking is cancelled automatically and the advance is not refunded.`], { tone: 'warn' }),
+      ].join(''),
+      cta: { label: 'Pay or cancel', url: clientUrl(`/dashboard/bookings/${bookingId}`) },
+    });
+  },
+
+  /** The balance was not paid: booking cancelled, advance kept. */
   balanceForfeit(name, { venueName, depositAmount }) {
-    return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Booking Cancelled - FIRA</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff;">
-  <div style="max-width: 600px; margin: 0 auto; background: #0a0a0a; border-radius: 16px; overflow: hidden;">
-    <div style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 30px; text-align: center;">
-      <h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">Booking Cancelled</h1>
-      <p style="margin: 10px 0 0; font-size: 16px; font-weight: bold;">Balance not paid by the deadline</p>
-    </div>
-    <div style="padding: 30px;">
-      <p style="color: #a0a0a0; text-align: center; margin-bottom: 30px;">
-        Hey ${name}, your booking at <strong style="color: #8b5cf6;">${venueName}</strong> has been automatically cancelled because the remaining balance was not paid by the deadline.
-      </p>
-      <div style="background: #1a1a1a; border-radius: 12px; border: 1px solid #333; padding: 20px; margin-bottom: 30px;">
-        <table style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <td style="padding: 8px 0; color: #888; font-size: 14px;">Venue</td>
-            <td style="padding: 8px 0; color: #fff; text-align: right; font-size: 14px;">${venueName}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #888; font-size: 14px;">Deposit forfeited</td>
-            <td style="padding: 8px 0; color: #ef4444; text-align: right; font-size: 18px; font-weight: bold;">${formatInr(depositAmount)}</td>
-          </tr>
-        </table>
-      </div>
-      <p style="color: #a0a0a0; text-align: center; font-size: 14px; margin-bottom: 25px;">
-        As per the payment schedule, the 10% deposit is non-refundable when the balance isn't paid on time. The venue's date has been released for other customers.
-      </p>
-      <div style="text-align: center;">
-        <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/venues" 
-           style="display: inline-block; background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: #ffffff; padding: 15px 40px; text-decoration: none; border-radius: 8px; font-weight: 600;">
-          Browse Venues
-        </a>
-      </div>
-    </div>
-    <div style="background: #000; padding: 20px; text-align: center; border-top: 1px solid #222;">
-      <p style="color: #444; font-size: 12px; margin: 0;">© ${new Date().getFullYear()} FIRA. All rights reserved.</p>
-    </div>
-  </div>
-</body>
-</html>
-    `.trim();
-  }
+    return layout({
+      title: 'Booking cancelled - FIRA',
+      preheader: `Your booking at ${venueName} was cancelled`,
+      heading: 'Your booking was cancelled',
+      body: [
+        hey(name),
+        paragraph(`Your booking at <strong style="color: ${VIOLET};">${esc(venueName)}</strong> was cancelled automatically because the rest of the payment wasn't made by the deadline.`),
+        detailsCard([
+          ['Venue', esc(venueName)],
+          ['Advance kept', `<span style="color: #ef4444;">${formatInr(depositAmount)}</span>`],
+        ]),
+        paragraph("Under the payment schedule, the 10% advance isn't refunded when the balance is missed. The date is now open for other guests."),
+      ].join(''),
+      cta: { label: 'Browse venues', url: clientUrl('/venues') },
+    });
+  },
 };
 
 module.exports = emailTemplates;

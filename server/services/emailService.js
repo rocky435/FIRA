@@ -161,18 +161,19 @@ class EmailService {
         return false;
       }
 
+      // The QR goes as an inline attachment the HTML points at (cid:). Most mail
+      // apps block data: images, so the code showed as an empty box.
+      const match = /^data:(image\/[a-z]+);base64,(.+)$/i.exec(String(ticket.qrCode || ''));
+      const qr = match
+        ? { filename: `${ticket.ticketId || 'ticket'}-qr.png`, content: match[2], encoding: 'base64', contentType: match[1], cid: `ticket-qr-${ticket.ticketId || 'code'}@fira` }
+        : null;
+
       const mailOptions = {
         from: `"${process.env.SMTP_FROM_NAME || 'Fira Tickets'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
         to: email,
         subject: `Your Ticket for ${event.name} 🎟️`,
-        html: emailTemplates.ticketConfirmation(name, event, ticket),
-        // attachments: [
-        //   {
-        //     filename: 'ticket-qr.png',
-        //     content: ticket.qrCode.split('base64,')[1],
-        //     encoding: 'base64'
-        //   }
-        // ]
+        html: emailTemplates.ticketConfirmation(name, event, ticket, { qrSrc: qr ? `cid:${qr.cid}` : undefined }),
+        attachments: qr ? [qr] : [],
       };
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -201,21 +202,7 @@ class EmailService {
         from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
         to: email,
         subject: `${otp} - Reset your FIRA password`,
-        html: emailTemplates.passwordReset ? emailTemplates.passwordReset(name, otp) : `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #8b5cf6;">Reset Your Password</h2>
-            <p>Hey ${name || 'there'},</p>
-            <p>We received a request to reset your FIRA account password.</p>
-            <p>Your password reset code is:</p>
-            <div style="text-align: center; margin: 30px 0;">
-              <span style="font-size: 36px; letter-spacing: 8px; font-weight: bold; color: #8b5cf6; background: #f3f4f6; padding: 15px 30px; border-radius: 10px;">${otp}</span>
-            </div>
-            <p>This code expires in 10 minutes.</p>
-            <p>If you didn't request this, you can safely ignore this email.</p>
-            <br>
-            <p>- FIRA Team</p>
-          </div>
-        `,
+        html: emailTemplates.passwordReset(name, otp),
         text: `Hey ${name}!\n\nYour FIRA password reset code is: ${otp}\n\nThis code expires in 10 minutes.\n\nIf you didn't request this, please ignore this email.\n\n- FIRA Team`
       };
 
@@ -249,16 +236,7 @@ class EmailService {
         from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
         to: email,
         subject: 'Your FIRA payout account was changed',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #8b5cf6;">Payout Account Changed</h2>
-            <p>Hey ${name || 'there'},</p>
-            <p>The bank account your FIRA earnings are paid to was just changed: <strong>${change}</strong>.</p>
-            <p>If you didn't make this change, change your password and contact us immediately.</p>
-            <br>
-            <p>- FIRA Team</p>
-          </div>
-        `,
+        html: emailTemplates.payoutAccountChanged(name, change),
         text: `Hey ${name || 'there'}!\n\nThe bank account your FIRA earnings are paid to was just changed: ${change}.\n\nIf you didn't make this change, change your password and contact us immediately.\n\n- FIRA Team`
       };
 
@@ -280,16 +258,7 @@ class EmailService {
         from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
         to: email,
         subject: 'Your FIRA password was changed',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #8b5cf6;">Password Changed Successfully</h2>
-            <p>Hey ${name || 'there'},</p>
-            <p>Your FIRA account password was successfully changed.</p>
-            <p>If you didn't make this change, please contact us immediately.</p>
-            <br>
-            <p>- FIRA Team</p>
-          </div>
-        `,
+        html: emailTemplates.passwordChanged(name),
         text: `Hey ${name}!\n\nYour FIRA account password was successfully changed.\n\nIf you didn't make this change, please contact us immediately.\n\n- FIRA Team`
       };
 
@@ -323,7 +292,7 @@ class EmailService {
         to: email,
         subject: `New Booking Request for ${venue.name} 🎉`,
         html: emailTemplates.venueBookingNotification(ownerName, venue, booking, booker),
-        text: `Hey ${ownerName}!\n\nGreat news! Someone wants to book your venue ${venue.name}.\n\nBooking Details:\n- Date: ${new Date(booking.date).toLocaleDateString()}\n- Guests: ${booking.guestCount || 'Not specified'}\n- Total: ₹${booking.totalPrice || 'TBD'}\n\nFrom: ${booker.name} (${booker.email})\n\nLog in to your dashboard to respond: ${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/requests\n\n- FIRA Team`
+        text: `Hey ${ownerName}!\n\nGreat news! Someone wants to book your venue ${venue.name}.\n\nBooking Details:\n- Date: ${new Date(booking.date).toLocaleDateString()}\n- Guests: ${booking.guestCount || 'Not specified'}\n- Total: ₹${booking.totalPrice || 'TBD'}\n\nFrom: ${booker.name} (${booker.email})\n\nAccept or decline it in your venue portal: ${process.env.CLIENT_URL || 'http://localhost:3000'}/venue-portal/bookings\n\n- FIRA Team`
       };
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -356,7 +325,7 @@ class EmailService {
         to: email,
         subject: `New Event Request for ${venue.name} 🎉`,
         html: emailTemplates.eventRequestNotification(ownerName, venue, event, organizer),
-        text: `Hey ${ownerName}!\n\nSomeone wants to host an event at your venue ${venue.name}.\n\nEvent: ${event.name}\nDate: ${new Date(event.date).toLocaleDateString()}\nTime: ${event.startTime} - ${event.endTime}\n\nOrganizer: ${organizer.name} (${organizer.email})\n\nLog in to your dashboard to respond: ${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/requests\n\n- FIRA Team`
+        text: `Hey ${ownerName}!\n\n${organizer.name} wants to host an event at your venue ${venue.name}.\n\nEvent: ${event.name}\nStarts: ${new Date(event.startDateTime).toLocaleString('en-IN')}\nEnds: ${new Date(event.endDateTime).toLocaleString('en-IN')}\n\nIf you approve, the organiser pays your venue price in full before the event goes live.\n\nReview it in your venue portal: ${process.env.CLIENT_URL || 'http://localhost:3000'}/venue-portal/events\n\n- FIRA Team`
       };
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -471,19 +440,7 @@ class EmailService {
         from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
         to,
         subject: `Final notice: pay ₹${balanceAmount} or cancel your booking at ${venueName}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #8b5cf6;">Your booking needs action</h2>
-            <p>Hey ${name || 'there'},</p>
-            <p>The remaining <strong>₹${balanceAmount}</strong> for your booking at <strong>${venueName}</strong> is still unpaid.</p>
-            <p><strong>Pay it by ${due}</strong> to keep your booking.</p>
-            <p>If you can't make it, cancel the booking before then - you will get back what the venue's cancellation policy allows.</p>
-            <p>If it is neither paid nor cancelled by ${due}, the booking is cancelled automatically and the deposit is not refunded.</p>
-            <p><a href="${link}" style="color: #8b5cf6;">Pay or cancel now</a></p>
-            <br>
-            <p>- FIRA Team</p>
-          </div>
-        `,
+        html: emailTemplates.balanceFinalNotice(name, details),
         text: `Hey ${name || 'there'}!\n\nThe remaining ₹${balanceAmount} for your booking at ${venueName} is still unpaid.\nPay it by ${due} to keep your booking, or cancel before then to get back what the venue's cancellation policy allows.\nIf it is neither paid nor cancelled by ${due}, the booking is cancelled automatically and the deposit is not refunded.\n\n${link}\n\n- FIRA Team`
       };
       await this.transporter.sendMail(mailOptions);
@@ -504,22 +461,12 @@ class EmailService {
       if (!this.transporter || !to) {
         return false;
       }
-      const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
       const link = `${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/bookings/${bookingId}`;
       const mailOptions = {
         from: `"${process.env.SMTP_FROM_NAME || 'Fira - Let\'s Celebrate'}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
         to,
         subject,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #8b5cf6;">${esc(heading)}</h2>
-            <p>Hey ${esc(name || 'there')},</p>
-            ${lines.map(line => `<p>${esc(line)}</p>`).join('\n            ')}
-            <p><a href="${link}" style="color: #8b5cf6;">${esc(linkText)}</a></p>
-            <br>
-            <p>- FIRA Team</p>
-          </div>
-        `,
+        html: emailTemplates.bookingUpdate(name, { heading, lines, link, linkText }),
         text: `Hey ${name || 'there'}!\n\n${lines.join('\n\n')}\n\n${link}\n\n- FIRA Team`
       };
       await this.transporter.sendMail(mailOptions);

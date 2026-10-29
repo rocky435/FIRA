@@ -126,7 +126,8 @@ website CSRF check applies and the requests fail with 403. Plain `http`, or
 | `/events/<id>` | event page |
 | `/dashboard/events/<id>` | organiser's event dashboard |
 | `/dashboard/tickets` | my tickets |
-| `/dashboard/requests`, `/dashboard/enquiries` | requests and enquiries |
+| `/venue-portal/events` | owner's event requests |
+| `/messages` | enquiries and replies (they are conversations) |
 | `/brands/<id>`, `/creators/<id>` | brand or creator page |
 | `/notifications` | anything else |
 

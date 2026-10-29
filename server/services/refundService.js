@@ -161,7 +161,7 @@ const refundService = {
         notificationService.createNotification({
                     userId: ticket.user._id || ticket.user,
                     type: 'refund',
-                    title: 'Event Cancelled - Refund Requested',
+                    title: 'Event cancelled - refund requested',
                     message: `The event "${event.name}" has been cancelled. A refund of ₹${refund.amount} has been requested and will be sent once approved.`,
                     data: { eventId, refundId: refund._id, amount: refund.amount },
                     priority: 'high'
@@ -261,7 +261,7 @@ const refundService = {
         notificationService.createNotification({
             userId,
             type: 'ticket_cancelled',
-            title: 'Ticket Cancelled',
+            title: 'Ticket cancelled',
             message: refund 
                 ? `Your ticket for "${ticket.event.name}" has been cancelled. A refund of ₹${refund.amount} (${refundEligibility.policy}) has been requested and will be sent once approved.`
                 : `Your ticket for "${ticket.event.name}" has been cancelled. ${refundEligibility.policy}`,
@@ -440,7 +440,7 @@ const refundService = {
             notificationService.createNotification({
                 userId: refund.user,
                 type: 'refund_update',
-                title: refund.status === 'completed' ? 'Refund Approved' : 'Refund Rejected',
+                title: refund.status === 'completed' ? 'Refund sent' : 'Refund not approved',
                 message: refund.status === 'completed'
                     ? `Your refund of ₹${refund.amount} has been sent.${reference ? ` Reference: ${reference}.` : ''}`
                     : `Your refund request has been rejected. Reason: ${notes}`,

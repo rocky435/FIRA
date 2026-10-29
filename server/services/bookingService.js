@@ -520,7 +520,7 @@ const bookingService = {
                 data: {
                     referenceId: booking._id,
                     referenceModel: 'Booking',
-                    actionUrl: '/dashboard/requests',
+                    actionUrl: `/venue-portal/bookings/${booking._id}`,
                     extra: { venueName: venue.name, bookingDate: data.bookingDate }
                 },
                 priority: 'high',

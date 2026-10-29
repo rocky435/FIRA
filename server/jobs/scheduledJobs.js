@@ -76,7 +76,7 @@ async function sendEventReminders() {
         const notifications = tickets.map(ticket => ({
             user: ticket.user._id,
             type: 'event_reminder_1h',
-            title: 'Event Starting Soon!',
+            title: 'Your event starts in 1 hour',
             message: `${eventMap.get(ticket.event.toString()).name} starts in 1 hour! Don't forget your ticket.`,
             data: {
                 referenceId: ticket.event,
@@ -527,7 +527,7 @@ async function enforceBalanceDeadlines() {
                 await notificationService.createNotification({
                     userId: claimed.user?._id || claimed.user,
                     type: 'booking_forfeited',
-                    title: 'Booking cancelled — deposit forfeited',
+                    title: 'Booking cancelled - deposit forfeited',
                     message: `Your booking was cancelled and your ₹${depositAmount} deposit forfeited because the remaining balance was not paid by the deadline.`,
                     data: {
                         referenceId: claimed._id,

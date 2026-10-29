@@ -39,7 +39,7 @@ const postService = {
                         }
                     }
                 },
-                true // send email
+                false // app + browser push only: an email to every follower costs mail-provider quota
             );
             console.log(`✅ Notified ${brand.name}'s followers about new post`);
         } catch (notifErr) {

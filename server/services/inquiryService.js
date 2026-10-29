@@ -171,7 +171,7 @@ const inquiryService = {
             await notificationService.createNotification({
                 userId: ownerId,
                 type: 'system',
-                title: `New inquiry for ${referenceName}`,
+                title: `New enquiry for ${referenceName}`,
                 message: `${senderName} sent an inquiry about your ${referenceType}: "${referenceName}"`,
                 data: {
                     referenceId: inquiry._id,
@@ -282,7 +282,7 @@ const inquiryService = {
                     data: {
                         referenceId: updated._id,
                         referenceModel: 'Inquiry',
-                        actionUrl: '/dashboard/enquiries'
+                        actionUrl: '/messages'
                     },
                     channel: 'all'
                 });

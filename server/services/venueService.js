@@ -565,7 +565,7 @@ const venueService = {
             type: 'booking_cancelled',
             title: 'Booking cancelled',
             message: `A booking at ${venue.name} on ${when} was cancelled by the guest. The date is free again.`,
-            data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: '/dashboard/requests' },
+            data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/venue-portal/bookings/${booking._id}` },
             priority: 'medium'
         }).catch(err => console.error('booking_cancelled owner notification failed:', err.message));
 
