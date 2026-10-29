@@ -37,43 +37,12 @@ module.exports = {
             max_restarts: 10,
             min_uptime: '10s',
             kill_timeout: 30000
-        },
-
-        // Admin Dashboard - Fork Mode (static SPA built to admin/dist)
-        //
-        // ponytail: was `vite preview`, which Vite documents as a local preview of
-        // a production build and explicitly not a production server. `serve -s` is
-        // purpose-built for static SPAs and does history-API fallback, so deep links
-        // like /events/123 resolve to index.html instead of 404ing on refresh.
-        //
-        // Invoked through `npm run start` rather than a direct path into
-        // node_modules: this is an npm workspaces repo, so `serve` hoists to the
-        // ROOT node_modules on some installs and stays in admin/node_modules on
-        // others. npm resolves the bin either way; a hardcoded path silently breaks
-        // on whichever layout it did not assume.
-        {
-            name: 'fira-admin',
-            script: 'npm',
-            args: 'run start',
-            interpreter: 'none',
-            instances: 1,
-            exec_mode: 'fork',
-            cwd: './admin',
-            env: {
-                NODE_ENV: 'production'
-            },
-            env_production: {
-                NODE_ENV: 'production'
-            },
-            watch: false,
-            max_memory_restart: '512M',
-            error_file: './logs/admin-error.log',
-            out_file: './logs/admin-out.log',
-            log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-            autorestart: true,
-            max_restarts: 10,
-            min_uptime: '10s'
         }
+
+        // ponytail: `fira-admin` (`serve -s` on :3001) removed. The admin is a static
+        // build; deploy.sh copies admin/dist to /var/www/fira-admin and nginx serves
+        // it directly (docs/nginx-admin.conf) - no Node process to crash or hold
+        // memory, and nginx already does the SPA fallback (try_files ... /index.html).
 
         // ponytail: `fira-client` (Next.js on :3000) removed. The client is deployed
         // to AWS Amplify (see build.sh) — running it here too booted a second, stale

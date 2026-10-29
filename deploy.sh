@@ -47,6 +47,20 @@ else
 fi
 echo ""
 
+# Step 2b: Publish the admin dashboard. It is static files (admin/dist), so
+# nginx serves them straight from /var/www/fira-admin (docs/nginx-admin.conf).
+# Copied rather than served in place: nginx cannot read /home/ubuntu.
+echo "========================================="
+echo "📦 Step 2b: Publishing Admin Dashboard"
+echo "========================================="
+if sudo mkdir -p /var/www/fira-admin && sudo rsync -a --delete admin/dist/ /var/www/fira-admin/; then
+    echo -e "${GREEN}✅ Admin published to /var/www/fira-admin${NC}"
+else
+    echo -e "${RED}❌ Admin publish failed${NC}"
+    exit 1
+fi
+echo ""
+
 # Step 3: Restart PM2 apps
 echo "========================================="
 echo "🔄 Step 3: Restarting PM2 Applications"
@@ -82,5 +96,5 @@ echo ""
 echo "📝 To view logs:"
 echo "   pm2 logs              # All logs"
 echo "   pm2 logs -f           # Follow logs"
-echo "   pm2 logs fira-backend # Backend only"
+echo "   pm2 logs fira-api     # Backend only"
 echo ""
