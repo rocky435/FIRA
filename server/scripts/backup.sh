@@ -3,39 +3,60 @@
 # FIRA Database Backup Script
 #
 # Usage:
-#   Manual:   MONGODB_URI="mongodb://..." ./backup.sh
-#   Via cron: 0 2 * * * MONGODB_URI="mongodb://..." /path/to/backup.sh >> /var/log/fira-backup.log 2>&1
+#   Manual:   ./backup.sh
+#   Via cron: 0 2 * * * /home/ubuntu/Fira/server/scripts/backup.sh >> /home/ubuntu/backups/backup.log 2>&1
 #
-# Environment:
-#   MONGODB_URI     — required, full MongoDB connection string
-#   BACKUP_DIR      — optional, defaults to /backups/fira
-#   RETENTION_DAYS  — optional, defaults to 30
+# Environment (all optional):
+#   MONGODB_URI     — connection string; read from server/.env when not set,
+#                     so a changed DB password is picked up automatically
+#   BACKUP_DIR      — defaults to ~/backups/fira
+#   RETENTION_DAYS  — defaults to 14
+#   BACKUP_PING_URL — pinged after a good backup (e.g. a free healthchecks.io
+#                     check), so a backup that stops running raises an alert
 #
 # The script:
-#   1. Runs mongodump to a date-stamped directory
-#   2. Removes backups older than RETENTION_DAYS
-#   3. Exits non-zero on failure (suitable for alerting via cron MAILTO)
+#   1. Runs mongodump (gzipped) into a temp dir, then renames it to the date,
+#      so a failed run never leaves a half-written backup behind
+#   2. Removes backups older than RETENTION_DAYS (only after a good backup)
+#   3. Exits non-zero on failure
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-BACKUP_DIR="${BACKUP_DIR:-/backups/fira}"
-RETENTION_DAYS="${RETENTION_DAYS:-30}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../.env"
+BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/fira}"
+RETENTION_DAYS="${RETENTION_DAYS:-14}"
 DATE=$(date +%Y-%m-%d)
 TARGET="${BACKUP_DIR}/${DATE}"
+TMP="${BACKUP_DIR}/.partial-${DATE}"
+
+if [ -z "${MONGODB_URI:-}" ] && [ -f "${ENV_FILE}" ]; then
+  MONGODB_URI=$(grep -E '^MONGODB_URI=' "${ENV_FILE}" | tail -1 | cut -d= -f2- \
+    | sed -e 's/\r$//' -e 's/^["'\'']//' -e 's/["'\'']$//')
+fi
 
 if [ -z "${MONGODB_URI:-}" ]; then
-  echo "[ERROR] MONGODB_URI is not set. Aborting." >&2
+  echo "[ERROR] MONGODB_URI is not set and not found in ${ENV_FILE}. Aborting." >&2
   exit 1
 fi
 
 echo "[$(date -Iseconds)] Starting backup → ${TARGET}"
 
-mkdir -p "${TARGET}"
+mkdir -p "${BACKUP_DIR}"
+rm -rf "${TMP}"
+trap 'rm -rf "${TMP}"' EXIT
 
-mongodump --uri="${MONGODB_URI}" --out="${TARGET}" --quiet
+mongodump --uri="${MONGODB_URI}" --gzip --out="${TMP}" --quiet
 
-echo "[$(date -Iseconds)] Backup complete. Pruning backups older than ${RETENTION_DAYS} days..."
+rm -rf "${TARGET}"
+mv "${TMP}" "${TARGET}"
 
-find "${BACKUP_DIR}" -maxdepth 1 -type d -mtime +${RETENTION_DAYS} -exec rm -rf {} +
+echo "[$(date -Iseconds)] Backup complete ($(du -sh "${TARGET}" | cut -f1)). Pruning backups older than ${RETENTION_DAYS} days..."
+
+find "${BACKUP_DIR}" -mindepth 1 -maxdepth 1 -type d -name '20*' -mtime +"${RETENTION_DAYS}" -exec rm -rf {} +
+
+if [ -n "${BACKUP_PING_URL:-}" ]; then
+  curl -fsS -m 10 --retry 3 "${BACKUP_PING_URL}" > /dev/null || echo "[WARN] Could not ping ${BACKUP_PING_URL}" >&2
+fi
 
 echo "[$(date -Iseconds)] Done."
