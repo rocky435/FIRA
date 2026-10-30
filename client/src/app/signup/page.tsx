@@ -110,8 +110,7 @@ function SignUpContent() {
         e.preventDefault();
         setError('');
 
-        // Codes are 6 digits; 4 is still accepted so a code issued before the
-        // switch keeps working.
+        // Codes are 4 digits.
         if (otp.length < 4) {
             fail('Please enter the verification code from your email');
             return;
@@ -359,7 +358,7 @@ function SignUpContent() {
                                             Enter verification code
                                         </label>
                                         <OTPInput
-                                            length={6}
+                                            length={4}
                                             value={otp}
                                             onChange={setOtp}
                                             disabled={isLoading}

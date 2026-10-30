@@ -75,7 +75,7 @@ function codeBox(code, note) {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 8px 0 24px;">
     <tr><td style="background: rgba(139, 92, 246, 0.1); border: 2px solid rgba(139, 92, 246, 0.3); border-radius: 12px; padding: 26px 12px; text-align: center;">
       <div style="font-size: 13px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Your code</div>
-      <div style="font-family: 'Courier New', monospace; font-size: 34px; font-weight: 700; letter-spacing: 6px; color: ${VIOLET}; white-space: nowrap;">${esc(code)}</div>
+      <div class="otp-code" style="font-family: 'Courier New', monospace; font-size: 40px; font-weight: 700; letter-spacing: 10px; color: ${VIOLET}; white-space: nowrap;">${esc(code)}</div>
       ${note ? `<div style="font-size: 14px; color: #ef4444; margin-top: 12px;">${esc(note)}</div>` : ''}
     </td></tr>
   </table>`;

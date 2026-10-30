@@ -204,7 +204,7 @@ export default function ForgotPasswordPage() {
                                         Enter verification code
                                     </label>
                                     <OTPInput
-                                        length={6}
+                                        length={4}
                                         value={formData.otp}
                                         onChange={(value) => setFormData({ ...formData, otp: value })}
                                         disabled={isLoading}

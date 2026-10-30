@@ -81,9 +81,9 @@ dark body, one button, and the same footer with the support address
 
 | Email | Sent to | When |
 |---|---|---|
-| *123456* is your FIRA verification code | New user | Signing up |
+| *1234* is your FIRA verification code | New user | Signing up |
 | Welcome to FIRA! 🎉 | New user | Email verified |
-| *123456* - Reset your FIRA password | User | Forgot password |
+| *1234* - Reset your FIRA password | User | Forgot password |
 | Your FIRA password was changed | User | Password changed |
 | Your FIRA payout account was changed | Owner / organiser | Bank details changed |
 | Your Ticket for *event* 🎟️ (with the QR code to scan at the door) | Buyer | Ticket bought |

@@ -105,25 +105,25 @@ describe('password change and reset sign out other sessions', () => {
 });
 
 describe('OTP codes', () => {
-    it('are 6 digits', () => {
-        for (let i = 0; i < 200; i++) {
-            expect(authService.generateOTP()).toMatch(/^\d{6}$/);
+    it('are 4 digits, leading zeros included', () => {
+        for (let i = 0; i < 500; i++) {
+            expect(authService.generateOTP()).toMatch(/^\d{4}$/);
         }
     });
 
-    it('allow at most 5 guesses even when the guesses arrive in parallel', async () => {
+    it('allow at most 3 guesses even when the guesses arrive in parallel', async () => {
         const user = await makeUser();
-        await OTP.create({ email: user.email, code: '654321', type: 'password_reset', expiresAt: new Date(Date.now() + 600000) });
+        await OTP.create({ email: user.email, code: '6543', type: 'password_reset', expiresAt: new Date(Date.now() + 600000) });
 
         const guesses = Array.from({ length: 20 }, (_, i) =>
-            authService.verifyResetOTP({ email: user.email, code: String(100000 + i) }).then(() => 'ok', (e: Error) => e.message));
+            authService.verifyResetOTP({ email: user.email, code: String(1000 + i) }).then(() => 'ok', (e: Error) => e.message));
         const results = await Promise.all(guesses);
 
         const counted = results.filter(r => r.startsWith('Invalid reset code')).length;
-        expect(counted).toBeLessThanOrEqual(5);
+        expect(counted).toBeLessThanOrEqual(3);
         expect(results.every(r => r !== 'ok')).toBe(true);
 
         // Even the right code is refused once the guesses are spent.
-        await expect(authService.verifyResetOTP({ email: user.email, code: '654321' })).rejects.toThrow();
+        await expect(authService.verifyResetOTP({ email: user.email, code: '6543' })).rejects.toThrow();
     });
 });

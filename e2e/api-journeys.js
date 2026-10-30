@@ -54,7 +54,7 @@ const sign = (orderId, payId) => crypto.createHmac('sha256', RZP_SECRET).update(
             const m = mails[i];
             if (String(m.to).includes(email)) {
                 const body = String(m.html || m.text || '');
-                const code = body.match(/otp-code[^>]*>\s*(\d{4,6})/) || body.match(/(?<![#\w])(\d{6})(?!\w)/);
+                const code = body.match(/otp-code[^>]*>\s*(\d{4})\s*</);
                 if (code) return code[1];
             }
         }
@@ -93,7 +93,7 @@ const sign = (orderId, payId) => crypto.createHmac('sha256', RZP_SECRET).update(
         const r1 = await api('POST', '/auth/register', { body: { name: 'Riya', email: 'riya@e2e.test', password: PASS, city: 'Hyderabad' } });
         check('signup returns 201', r1.status === 201, JSON.stringify(r1.data));
         const otp = lastCodeFor('riya@e2e.test');
-        check('signup email carries a 6-digit code', otp && otp.length === 6, `code=${otp}`);
+        check('signup email carries a 4-digit code', otp && /^\d{4}$/.test(otp), `code=${otp}`);
         const badLogin = await api('POST', '/auth/login', { body: { email: 'riya@e2e.test', password: PASS } });
         check('login before verifying email is refused', badLogin.status === 401 && /EMAIL_NOT_VERIFIED/.test(JSON.stringify(badLogin.data)), JSON.stringify(badLogin.data));
         const v = await api('POST', '/auth/verify-otp', { body: { email: 'riya@e2e.test', code: otp } });

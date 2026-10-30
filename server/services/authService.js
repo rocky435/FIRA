@@ -8,7 +8,10 @@ const bankDetailsValidator = require('../utils/bankDetailsValidator');
 const { withRole } = require('../utils/roleUtils');
 const crypto = require('crypto');
 
-const MAX_OTP_ATTEMPTS = 5;
+// Codes are 4 digits (10,000 possibilities), so each code gets only 3 guesses;
+// with at most 6 codes per email a day (otpPerEmailLimiter) and a 10-minute
+// expiry, that caps an attacker at 18 guesses a day against one account.
+const MAX_OTP_ATTEMPTS = 3;
 
 /**
  * Spend one guess on an OTP record, atomically, before the code is compared.
@@ -41,11 +44,12 @@ const authService = {
     issueToken,
 
     /**
-     * Generate a random 6-digit OTP from a cryptographic source. It was 4 digits
-     * from Math.random, which made the password-reset code guessable.
+     * Generate a random 4-digit OTP (0000-9999) from a cryptographic source.
+     * The old 4-digit code came from Math.random, which made it predictable;
+     * a crypto source plus the 3-guess limit above is what keeps 4 digits safe.
      */
     generateOTP() {
-        return crypto.randomInt(100000, 1000000).toString();
+        return crypto.randomInt(0, 10000).toString().padStart(4, '0');
     },
 
     /**
