@@ -1,197 +1,160 @@
-import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import {
+    Building2, Ticket, Star, IdCard, Undo2, Users, ArrowRight, CircleCheck, Ban,
+} from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn, SlideUp } from '../components/animations';
+import { getAdminRoleFromToken } from '../lib/adminRole';
+import { useRemote } from '../lib/useRemote';
+import { formatInr } from '../lib/formatInr';
+import { PageHeader } from '../components/ui/PageHeader';
+import { StatCard } from '../components/ui/StatCard';
+import { Card } from '../components/ui/Card';
+import { ErrorState, Skeleton } from '../components/ui/States';
+
+const num = (n) => Number(n || 0).toLocaleString('en-IN');
+
+// What can be waiting for an admin, and where to go to deal with it. `hideFor`
+// mirrors the nav: moderators cannot act on refunds or ID checks.
+const QUEUES = [
+    { key: 'pendingVenues', label: 'Venues waiting for approval', to: '/venues?status=pending', icon: Building2 },
+    { key: 'pendingEvents', label: 'Events waiting for approval', to: '/events?tab=pending', icon: Ticket },
+    { key: 'pendingBrands', label: 'Brands waiting for approval', to: '/brands?status=pending', icon: Star },
+    { key: 'pendingIdChecks', label: 'ID documents to review', to: '/id-checks', icon: IdCard, hideFor: ['moderator'] },
+    { key: 'pendingRefunds', label: 'Refunds to pay', to: '/refunds', icon: Undo2, hideFor: ['moderator'] },
+];
+
+function DashboardSkeleton() {
+    return (
+        <div className="space-y-6" role="status" aria-label="Loading dashboard">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-[118px] rounded-2xl" />)}
+            </div>
+            <div className="grid gap-6 lg:grid-cols-5">
+                <Skeleton className="h-72 rounded-2xl lg:col-span-3" />
+                <Skeleton className="h-72 rounded-2xl lg:col-span-2" />
+            </div>
+        </div>
+    );
+}
+
+const loadStats = () => adminApi.getStats();
 
 export default function Dashboard() {
-    const [stats, setStats] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
+    // Never fabricate figures on failure (an old fallback showed ₹4,50,000
+    // revenue on a fresh, empty platform): an error shows the error, not numbers.
+    const { data: stats, loading, error, reload } = useRemote(loadStats);
+    const adminRole = getAdminRoleFromToken();
 
-    useEffect(() => {
-        const fetchStats = async () => {
-            try {
-                const data = await adminApi.getStats();
-                setStats(data);
-            } catch (err) {
-                console.error(err);
-                // Never fabricate figures on failure. The old fallback showed
-                // ₹4,50,000 revenue / 1,250 tickets on a fresh, empty platform
-                // because these mock values rendered whenever getStats() threw.
-                // Zeros + a surfaced error tell the truth: nothing loaded.
-                setError(err?.message || 'Failed to load dashboard stats');
-                setStats(null);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchStats();
-    }, []);
-
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('en-IN', {
-            style: 'currency',
-            currency: 'INR',
-            maximumFractionDigits: 0,
-        }).format(amount);
-    };
-
-    if (loading) {
-        return (
-            <div className="min-h-screen flex items-center justify-center">
-                <div className="animate-spin w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full" />
-            </div>
-        );
-    }
-
-    const statCards = [
-        {
-            label: 'Pending Venues',
-            value: stats?.pendingVenues || 0,
-            icon: (
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                </svg>
-            ),
-            color: 'orange'
-        },
-        {
-            label: 'Pending Events',
-            value: stats?.pendingEvents || 0,
-            icon: (
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
-                </svg>
-            ),
-            color: 'yellow'
-        },
-        {
-            label: 'Pending Brands',
-            value: stats?.pendingBrands || 0,
-            icon: (
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                </svg>
-            ),
-            color: 'pink'
-        },
-        {
-            label: 'Total Users',
-            value: (stats?.totalUsers || 0).toLocaleString(),
-            icon: (
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-            ),
-            color: 'violet'
-        }
-    ];
-
-    const getColorClass = (color) => {
-        const colors = {
-            orange: 'text-orange-400 bg-orange-500/10',
-            yellow: 'text-yellow-400 bg-yellow-500/10',
-            pink: 'text-pink-400 bg-pink-500/10',
-            violet: 'text-violet-400 bg-violet-500/10',
-            green: 'text-green-400 bg-green-500/10',
-            blue: 'text-blue-400 bg-blue-500/10',
-        };
-        return colors[color] || colors.violet;
-    };
+    const queues = QUEUES.filter((q) => !(q.hideFor || []).includes(adminRole));
+    const waiting = queues.filter((q) => (stats?.[q.key] || 0) > 0);
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
-            {/* Header */}
-            <SlideUp>
-                <div className="mb-8">
-                    <h1 className="text-3xl font-bold text-white mb-2">Dashboard</h1>
-                    <p className="text-gray-300">Overview of platform activity and pending approvals</p>
-                </div>
-            </SlideUp>
+            <PageHeader title="Dashboard" description="What needs your attention, and how the platform is doing." />
 
-            {error && (
-                <div className="mb-6 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                    Could not load dashboard stats. Figures below may be incomplete.
+            {error ? (
+                <Card>
+                    <ErrorState title="Couldn't load the dashboard" message={error} onRetry={reload} />
+                </Card>
+            ) : loading || !stats ? (
+                <DashboardSkeleton />
+            ) : (
+                <div className="space-y-6 animate-fade-in">
+                    {/* Headline numbers - each opens the list behind it */}
+                    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+                        <StatCard label="Pending venues" value={num(stats.pendingVenues)} icon={Building2} accent="amber" to="/venues?status=pending" hint="Waiting for approval" />
+                        <StatCard label="Pending events" value={num(stats.pendingEvents)} icon={Ticket} accent="amber" to="/events?tab=pending" hint="Waiting for approval" />
+                        <StatCard label="Pending brands" value={num(stats.pendingBrands)} icon={Star} accent="pink" to="/brands?status=pending" hint="Waiting for approval" />
+                        <StatCard label="Total users" value={num(stats.totalUsers)} icon={Users} accent="violet" to={adminRole === 'moderator' ? undefined : '/users'} hint={`${num(stats.blockedUsers)} blocked`} />
+                    </div>
+
+                    <div className="grid gap-6 lg:grid-cols-5">
+                        {/* Work queue */}
+                        <Card
+                            className="lg:col-span-3"
+                            title="Needs attention"
+                            description={waiting.length ? `${waiting.length} ${waiting.length === 1 ? 'queue has' : 'queues have'} work waiting` : 'Nothing is waiting'}
+                            padded={false}
+                        >
+                            {waiting.length === 0 ? (
+                                <div className="flex items-center gap-3 px-5 pb-6 pt-1 text-sm text-gray-300">
+                                    <CircleCheck className="h-5 w-5 text-green-400" aria-hidden="true" />
+                                    All caught up. New approvals, ID checks and refunds will show up here.
+                                </div>
+                            ) : (
+                                <ul className="divide-y divide-line border-t border-line">
+                                    {queues.map((q) => {
+                                        const count = stats?.[q.key] || 0;
+                                        const Icon = q.icon;
+                                        return (
+                                            <li key={q.key}>
+                                                <Link
+                                                    to={q.to}
+                                                    className="group flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-hover"
+                                                >
+                                                    <Icon className="h-[18px] w-[18px] shrink-0 text-gray-400" aria-hidden="true" />
+                                                    <span className={count ? 'flex-1 text-sm text-white' : 'flex-1 text-sm text-gray-500'}>{q.label}</span>
+                                                    <span className={count
+                                                        ? 'rounded-full bg-amber-400/15 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-300'
+                                                        : 'text-xs tabular-nums text-gray-600'}>
+                                                        {num(count)}
+                                                    </span>
+                                                    <ArrowRight className="h-4 w-4 text-gray-600 transition-transform group-hover:translate-x-0.5 group-hover:text-white" aria-hidden="true" />
+                                                </Link>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            )}
+                        </Card>
+
+                        {/* Revenue */}
+                        <Card className="lg:col-span-2" title="Platform revenue" description="Ticket sales and paid venue bookings">
+                            <div className="text-3xl font-semibold tabular-nums text-white">{formatInr(stats.totalRevenue || 0)}</div>
+                            <dl className="mt-5 grid grid-cols-2 gap-3">
+                                <div className="rounded-xl border border-line bg-surface-raised p-3.5">
+                                    <dt className="text-xs text-gray-400">Tickets</dt>
+                                    <dd className="mt-1 text-base font-semibold tabular-nums text-white">{formatInr(stats.ticketRevenue || 0)}</dd>
+                                    <dd className="mt-0.5 text-xs text-gray-500">{num(stats.totalTickets)} sold</dd>
+                                </div>
+                                <div className="rounded-xl border border-line bg-surface-raised p-3.5">
+                                    <dt className="text-xs text-gray-400">Venue bookings</dt>
+                                    <dd className="mt-1 text-base font-semibold tabular-nums text-white">{formatInr(stats.venueRevenue || 0)}</dd>
+                                    <dd className="mt-0.5 text-xs text-gray-500">received so far</dd>
+                                </div>
+                            </dl>
+                        </Card>
+                    </div>
+
+                    {/* Platform totals */}
+                    <Card title="Platform totals" padded={false}>
+                        <dl className="grid grid-cols-2 divide-line border-t border-line sm:grid-cols-4 sm:divide-x">
+                            {[
+                                { label: 'Venues', value: stats.totalVenues, to: '/venues' },
+                                { label: 'Events', value: stats.totalEvents, to: '/events' },
+                                { label: 'Brands', value: stats.totalBrands, to: '/brands' },
+                                { label: 'Tickets sold', value: stats.totalTickets },
+                            ].map((t) => (
+                                <div key={t.label} className="px-5 py-4">
+                                    <dt className="text-xs text-gray-400">{t.label}</dt>
+                                    <dd className="mt-1 text-xl font-semibold tabular-nums text-white">
+                                        {t.to ? <Link to={t.to} className="hover:text-violet-300">{num(t.value)}</Link> : num(t.value)}
+                                    </dd>
+                                </div>
+                            ))}
+                        </dl>
+                        {stats.blockedUsers > 0 && (
+                            <div className="flex items-center gap-2 border-t border-line px-5 py-3 text-sm text-red-300">
+                                <Ban className="h-4 w-4" aria-hidden="true" />
+                                {num(stats.blockedUsers)} blocked {stats.blockedUsers === 1 ? 'account' : 'accounts'}
+                                {adminRole !== 'moderator' && (
+                                    <Link to="/users?status=blocked" className="ml-auto text-xs text-gray-400 hover:text-white">View</Link>
+                                )}
+                            </div>
+                        )}
+                    </Card>
                 </div>
             )}
-
-            {/* Stats Grid */}
-            <FadeIn delay={0.1}>
-                <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-4 mb-8">
-                    {statCards.map((stat, i) => (
-                        <div key={i} className="bg-white/[0.02] backdrop-blur-sm border border-white/[0.08] rounded-2xl p-5 hover:bg-white/[0.04] hover:border-white/[0.12] transition-all duration-300 group cursor-pointer">
-                            <div className={`w-12 h-12 rounded-xl mb-4 flex items-center justify-center group-hover:scale-105 transition-transform ${getColorClass(stat.color)}`}>
-                                {stat.icon}
-                            </div>
-                            <div className="text-2xl font-bold text-white mb-1">{stat.value}</div>
-                            <div className="text-sm text-gray-300">{stat.label}</div>
-                        </div>
-                    ))}
-                </div>
-            </FadeIn>
-
-            <div className="grid lg:grid-cols-2 gap-6">
-                {/* Revenue Card */}
-                <FadeIn delay={0.2}>
-                    <div className="bg-gradient-to-br from-violet-500/10 to-pink-500/10 backdrop-blur-sm border border-violet-500/20 rounded-2xl p-6 h-full group hover:border-violet-500/30 transition-all">
-                        <div className="flex items-center justify-between mb-6">
-                            <div>
-                                <h2 className="text-lg font-semibold text-white mb-1">Platform Revenue</h2>
-                                <p className="text-sm text-gray-300">Total earnings from ticket sales &amp; venue bookings</p>
-                            </div>
-                            <div className="w-10 h-10 rounded-full bg-violet-500/20 flex items-center justify-center text-violet-400">
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                            </div>
-                        </div>
-
-                        <div className="text-4xl font-bold text-white mb-8">
-                            {formatCurrency(stats?.totalRevenue || 0)}
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="bg-black/20 rounded-xl p-4 border border-white/5">
-                                <div className="text-sm text-gray-300 mb-1">Ticket Revenue</div>
-                                <div className="text-xl font-bold text-white">{formatCurrency(stats?.ticketRevenue || 0)}</div>
-                                <div className="text-xs text-gray-400 mt-1">{(stats?.totalTickets || 0).toLocaleString()} tickets</div>
-                            </div>
-                            <div className="bg-black/20 rounded-xl p-4 border border-white/5">
-                                <div className="text-sm text-gray-300 mb-1">Venue Revenue</div>
-                                <div className="text-xl font-bold text-white">{formatCurrency(stats?.venueRevenue || 0)}</div>
-                                <div className="text-xs text-gray-400 mt-1">from bookings</div>
-                            </div>
-                        </div>
-                    </div>
-                </FadeIn>
-
-                {/* Platform Overview */}
-                <FadeIn delay={0.3}>
-                    <div className="bg-white/[0.02] backdrop-blur-sm border border-white/[0.08] rounded-2xl p-6 h-full">
-                        <h2 className="text-lg font-semibold text-white mb-6">Platform Overview</h2>
-                        <div className="space-y-4">
-                            <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/[0.05]">
-                                <span className="text-gray-300">Total Venues</span>
-                                <span className="font-bold text-white">{stats?.totalVenues || 0}</span>
-                            </div>
-                            <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/[0.05]">
-                                <span className="text-gray-300">Total Events</span>
-                                <span className="font-bold text-white">{stats?.totalEvents || 0}</span>
-                            </div>
-                            <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/[0.05]">
-                                <span className="text-gray-300">Total Brands</span>
-                                <span className="font-bold text-white">{stats?.totalBrands || 0}</span>
-                            </div>
-                            <div className="flex items-center justify-between p-4 rounded-xl bg-red-500/[0.05] border border-red-500/20">
-                                <span className="text-red-300">Blocked Users</span>
-                                <span className="font-bold text-red-400">{stats?.blockedUsers || 0}</span>
-                            </div>
-                        </div>
-                    </div>
-                </FadeIn>
-            </div>
         </div>
     );
 }

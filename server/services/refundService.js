@@ -3,6 +3,10 @@ const Payment = require('../models/Payment');
 const Ticket = require('../models/Ticket');
 const Event = require('../models/Event');
 const Booking = require('../models/Booking');
+// Populated by name below (refund customer/reviewer, booking venue); required so
+// the models are registered however this service is loaded.
+require('../models/User');
+require('../models/Venue');
 const notificationService = require('./notificationService');
 const { roundMoney } = require('../utils/money');
 
@@ -353,22 +357,119 @@ const refundService = {
      * @param {object} query - { page, limit, status }
      * @returns {object} - Paginated refunds
      */
+    /**
+     * Everything that explains a refund, for the admin deciding it: what the
+     * money paid for (the venue booking, or the tickets and their event), why
+     * that was cancelled, and the customer's refund history. Batched - a few
+     * queries per page, not per refund. Read-only; amounts are not recomputed.
+     *
+     * A payment belongs to a booking either as its first charge (`payment`) or
+     * as the balance instalment; tickets carry their payment directly.
+     */
+    async attachRefundContext(refunds) {
+        if (!refunds.length) return refunds;
+        const paymentIds = refunds.map(r => r.payment?._id || r.payment).filter(Boolean);
+        const userIds = [...new Set(refunds.map(r => String(r.user?._id || r.user)).filter(Boolean))];
+        const mongoose = require('mongoose');
+
+        const [bookings, tickets, refundCounts] = await Promise.all([
+            Booking.find({ $or: [{ payment: { $in: paymentIds } }, { 'paymentSchedule.balancePayment': { $in: paymentIds } }] })
+                .select('venue event bookingType bookingDate endDate startTime endTime purpose expectedGuests status cancellationReason rejectionReason totalAmount paymentStatus payment paymentSchedule.type paymentSchedule.depositAmount paymentSchedule.balanceAmount paymentSchedule.balanceStatus paymentSchedule.balancePayment createdAt')
+                .populate('venue', 'name address.city cancellationPolicy')
+                .populate('event', 'name startDateTime status')
+                .lean(),
+            Ticket.find({ payment: { $in: paymentIds } })
+                .select('ticketId ticketType quantity price status isUsed usedAt payment event purchaseDate')
+                .populate({ path: 'event', select: 'name startDateTime endDateTime status organizer', populate: { path: 'organizer', select: 'name email' } })
+                .lean(),
+            Refund.aggregate([
+                { $match: { user: { $in: userIds.filter(id => mongoose.isValidObjectId(id)).map(id => new mongoose.Types.ObjectId(id)) } } },
+                { $group: { _id: '$user', total: { $sum: 1 }, refunded: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } } } },
+            ]),
+        ]);
+
+        const bookingByPayment = new Map();
+        for (const b of bookings) {
+            if (b.payment) bookingByPayment.set(String(b.payment), { booking: b, charge: 'first payment' });
+            if (b.paymentSchedule?.balancePayment) bookingByPayment.set(String(b.paymentSchedule.balancePayment), { booking: b, charge: 'balance payment' });
+        }
+        const ticketsByPayment = new Map();
+        for (const t of tickets) {
+            const key = String(t.payment);
+            if (!ticketsByPayment.has(key)) ticketsByPayment.set(key, []);
+            ticketsByPayment.get(key).push(t);
+        }
+        const countsByUser = new Map(refundCounts.map(c => [String(c._id), c]));
+
+        return refunds.map(r => {
+            const key = String(r.payment?._id || r.payment);
+            const linked = bookingByPayment.get(key);
+            const paidTickets = ticketsByPayment.get(key) || [];
+            const counts = countsByUser.get(String(r.user?._id || r.user));
+            const context = {
+                customerRefunds: counts ? { total: counts.total, refunded: counts.refunded } : { total: 1, refunded: 0 },
+            };
+            if (linked) {
+                const b = linked.booking;
+                context.booking = {
+                    _id: b._id,
+                    charge: linked.charge,
+                    venue: b.venue ? { _id: b.venue._id, name: b.venue.name, city: b.venue.address?.city, cancellationPolicy: b.venue.cancellationPolicy } : null,
+                    event: b.event ? { _id: b.event._id, name: b.event.name, startDateTime: b.event.startDateTime, status: b.event.status } : null,
+                    bookingType: b.bookingType,
+                    bookingDate: b.bookingDate,
+                    endDate: b.endDate,
+                    startTime: b.startTime,
+                    endTime: b.endTime,
+                    purpose: b.purpose,
+                    expectedGuests: b.expectedGuests,
+                    status: b.status,
+                    cancellationReason: b.cancellationReason,
+                    rejectionReason: b.rejectionReason,
+                    totalAmount: b.totalAmount,
+                    paymentStatus: b.paymentStatus,
+                    paymentSchedule: b.paymentSchedule ? {
+                        type: b.paymentSchedule.type,
+                        depositAmount: b.paymentSchedule.depositAmount,
+                        balanceAmount: b.paymentSchedule.balanceAmount,
+                        balanceStatus: b.paymentSchedule.balanceStatus,
+                    } : null,
+                    createdAt: b.createdAt,
+                };
+            }
+            if (paidTickets.length) {
+                const ev = paidTickets[0].event;
+                context.tickets = paidTickets.map(t => ({
+                    _id: t._id, ticketId: t.ticketId, ticketType: t.ticketType, quantity: t.quantity,
+                    price: t.price, status: t.status, isUsed: t.isUsed, usedAt: t.usedAt, purchaseDate: t.purchaseDate,
+                }));
+                context.event = ev ? {
+                    _id: ev._id, name: ev.name, startDateTime: ev.startDateTime, endDateTime: ev.endDateTime, status: ev.status,
+                    organizer: ev.organizer ? { _id: ev.organizer._id, name: ev.organizer.name, email: ev.organizer.email } : null,
+                } : null;
+            }
+            return { ...r, context };
+        });
+    },
+
     async getAllRefunds(query = {}) {
         const { page = 1, limit = 10, status } = query;
         const filter = {};
         if (status) filter.status = status;
 
         const refunds = await Refund.find(filter)
-            .populate('user', 'name email')
+            .populate('user', 'name email phone')
             .populate('payment')
+            .populate('reviewedBy', 'name email')
             .limit(limit * 1)
             .skip((page - 1) * limit)
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 })
+            .lean();
 
         const total = await Refund.countDocuments(filter);
 
         return {
-            refunds,
+            refunds: await refundService.attachRefundContext(refunds),
             totalPages: Math.ceil(total / limit),
             currentPage: page,
             total

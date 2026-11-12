@@ -214,9 +214,23 @@ router.put('/events/:id/status', async (req, res) => {
             return res.status(400).json({ error: 'Invalid status' });
         }
         const event = await adminService.updateEventStatus(req.params.id, status, req.user._id);
+        // A blocked event must leave the public lists now, not when the cache expires.
+        await invalidateCache('events');
         res.json(event);
     } catch (error) {
         res.status(400).json({ error: error.message });
+    }
+});
+
+// Lift a block. Admin staff only (this router); organisers have no way to
+// unblock their own event and are told to contact FIRA when it is blocked.
+router.post('/events/:id/unblock', async (req, res) => {
+    try {
+        const event = await adminService.unblockEvent(req.params.id, req.user._id);
+        await invalidateCache('events');
+        res.json(event);
+    } catch (error) {
+        res.status(error.message === 'Event not found' ? 404 : 400).json({ error: error.message });
     }
 });
 

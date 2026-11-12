@@ -1,11 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { ClipboardList } from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn } from '../components/animations';
-import { Select } from '../components/ui/Select';
 import Dropdown from '../components/ui/Dropdown';
 import { Pagination } from '../components/ui/Pagination';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Card } from '../components/ui/Card';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import { Table, THead, Th, TBody, Td } from '../components/ui/Table';
+import { Button } from '../components/ui/Button';
+import { EmptyState, ErrorState, TableSkeleton } from '../components/ui/States';
 import { formatInr } from '../lib/formatInr';
+import { formatDateTime } from '../lib/formatDateTime';
+import { useListParams } from '../lib/useListParams';
+import { useRemote } from '../lib/useRemote';
+import { humanize } from '../lib/statusStyles';
 
 const ITEMS_PER_PAGE = 20;
 
@@ -34,25 +43,13 @@ const ACTION_OPTIONS = [
     { value: 'update', label: 'Other change' },
 ];
 
-/**
+/*
  * Absolute time plus a relative one.
  *
  * "2 hours ago" is what answers "is this recent?" at a glance, but on its own it is
- * useless for reconciling against anything, so both are shown - the exact stamp as
- * the value and the relative one underneath.
+ * useless for reconciling against anything, so both are shown - the exact stamp
+ * (formatDateTime) as the value and the relative one underneath.
  */
-const formatTimestamp = (ts) => {
-    if (!ts) return 'N/A';
-    const dt = new Date(ts);
-    if (isNaN(dt.getTime())) return 'Invalid Date';
-    const day = dt.getDate();
-    const month = dt.toLocaleString('en-US', { month: 'short' });
-    const year = dt.getFullYear();
-    const hours = dt.getHours().toString().padStart(2, '0');
-    const mins = dt.getMinutes().toString().padStart(2, '0');
-    return `${day} ${month} ${year} ${hours}:${mins}`;
-};
-
 const formatRelative = (ts) => {
     const dt = new Date(ts);
     if (!ts || isNaN(dt.getTime())) return '';
@@ -67,23 +64,6 @@ const formatRelative = (ts) => {
     const months = Math.round(days / 30);
     if (months < 12) return `${months}mo ago`;
     return `${Math.round(months / 12)}y ago`;
-};
-
-const getActionColor = (action) => {
-    switch (action) {
-        case 'approve': return 'bg-green-500/20 text-green-400 border-green-500/30';
-        case 'reject': return 'bg-red-500/20 text-red-400 border-red-500/30';
-        case 'block': return 'bg-red-700/20 text-red-300 border-red-700/30';
-        case 'unblock': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
-        case 'feature': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-        case 'unfeature': return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-        case 'sale': return 'bg-sky-500/20 text-sky-300 border-sky-500/30';
-        case 'settle': return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
-        case 'reverse': return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
-        case 'delete': return 'bg-red-900/30 text-red-300 border-red-900/40';
-        case 'update': return 'bg-violet-500/20 text-violet-300 border-violet-500/30';
-        default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-    }
 };
 
 /** Where an entry's subject can be opened in the dashboard, if anywhere. */
@@ -106,6 +86,9 @@ const describeValue = (v) => {
  * previous state had been. The from/to now recorded on every entry is the part that
  * makes the trail reviewable rather than merely present.
  */
+// Stored field names, as the admin reads them.
+const FIELD_LABEL = { adminApproval: 'Admin approval', isFeatured: 'Featured', status: 'Status' };
+
 function ChangeDetail({ log }) {
     const meta = log.metadata || {};
     const hasTransition = meta.field && (meta.from !== undefined || meta.to !== undefined);
@@ -118,222 +101,172 @@ function ChangeDetail({ log }) {
 
     return (
         <div className="min-w-0">
-            <div className="text-sm text-white truncate">
+            <div className="truncate text-sm text-white">
                 {meta.name || meta.listingName || <span className="text-gray-500">Unnamed {log.entityType}</span>}
             </div>
             {isSettlement && (
-                <div className="text-xs mt-0.5 flex items-center gap-1.5 flex-wrap">
+                <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs">
                     <span className={log.action === 'reverse' ? 'text-amber-300' : 'text-emerald-300'}>
                         {formatInr(meta.settledAmount)}
                     </span>
                     {meta.settlementReference && (
-                        <span className="font-mono text-gray-400 truncate">{meta.settlementReference}</span>
+                        <span className="truncate font-mono text-gray-400">{meta.settlementReference}</span>
                     )}
                 </div>
             )}
             {isSale && (
-                <div className="text-xs mt-0.5 flex items-center gap-1.5 flex-wrap">
+                <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs">
                     <span className="text-sky-300">{formatInr(meta.amountPaid)}</span>
                     <span className="text-gray-400">{meta.quantity} × {meta.tier}</span>
-                    {meta.ticketId && <span className="font-mono text-gray-500 truncate">{meta.ticketId}</span>}
+                    {meta.ticketId && <span className="truncate font-mono text-gray-500">{meta.ticketId}</span>}
                 </div>
             )}
             {hasTransition && (
-                <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
-                    <span className="text-gray-500">{meta.field}</span>
+                <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-gray-400">
+                    <span className="text-gray-500">{FIELD_LABEL[meta.field] || meta.field}</span>
                     <span className="line-through">{describeValue(meta.from)}</span>
                     <span aria-hidden="true">→</span>
                     <span className="text-gray-200">{describeValue(meta.to)}</span>
                 </div>
             )}
+            {/* Event approvals: the reason sent to the organiser, or whether it went live. */}
+            {typeof meta.reason === 'string' && meta.reason && (
+                <div className="mt-0.5 text-xs text-gray-400">Reason: <span className="text-gray-200">{meta.reason}</span></div>
+            )}
+            {log.entityType === 'event' && log.action === 'approve' && typeof meta.wentLive === 'boolean' && (
+                <div className="mt-0.5 text-xs text-gray-400">
+                    {meta.wentLive ? 'Went live' : 'Waiting for the venue to approve or be paid'}
+                </div>
+            )}
             {meta.badgeChanged && (
-                <div className="text-xs text-violet-300 mt-0.5">
+                <div className="mt-0.5 text-xs text-violet-300">
                     Verified badge {meta.to === 'approved' ? 'granted' : 'removed'}
                 </div>
             )}
             {meta.email && !hasTransition && (
-                <div className="text-xs text-gray-400 mt-0.5 truncate">{meta.email}</div>
+                <div className="mt-0.5 truncate text-xs text-gray-400">{meta.email}</div>
             )}
         </div>
     );
 }
 
 export default function AuditTrail() {
-    const [logs, setLogs] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [currentPage, setCurrentPage] = useState(1);
-    const [totalPages, setTotalPages] = useState(1);
-    const [total, setTotal] = useState(0);
-    const [entityTypeFilter, setEntityTypeFilter] = useState('');
-    const [actionFilter, setActionFilter] = useState('');
-
-    useEffect(() => {
-        fetchAuditTrail();
-    }, [currentPage, entityTypeFilter, actionFilter]);
-
-    const fetchAuditTrail = async () => {
-        try {
-            setLoading(true);
-            const params = { page: currentPage, limit: ITEMS_PER_PAGE };
-            if (entityTypeFilter) params.entityType = entityTypeFilter;
-            if (actionFilter) params.action = actionFilter;
-            const data = await adminApi.getAuditTrail(params);
-            setLogs(data.entries || data.logs || []);
-            setTotalPages(data.pages || data.totalPages || 1);
-            setTotal(data.total || 0);
-        } catch (err) {
-            console.error('Failed to fetch audit trail:', err);
-            setLogs([]);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleFilterChange = (setter) => (e) => {
-        setter(e.target.value);
-        setCurrentPage(1);
-    };
+    // Filters and page live in the URL, so Back and refresh keep your place.
+    const { params, set } = useListParams({ entity: '', action: '', page: 1 });
+    const load = useCallback(() => {
+        const query = { page: params.page, limit: ITEMS_PER_PAGE };
+        if (params.entity) query.entityType = params.entity;
+        if (params.action) query.action = params.action;
+        return adminApi.getAuditTrail(query);
+    }, [params.page, params.entity, params.action]);
+    const { data, loading, refreshing, error, reload } = useRemote(load);
+    const logs = data?.entries || data?.logs || [];
+    const totalPages = data?.pages || data?.totalPages || 1;
+    const total = data?.total || 0;
+    const currentPage = params.page;
 
     // The trail is permanent: entries cannot be deleted or cleared from here or
     // the API, so it stays a reliable record of every admin action.
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
-            <FadeIn>
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-                    <div>
-                        <h1 className="text-3xl font-bold text-white mb-2">Audit Trail</h1>
-                        <div className="flex items-center gap-2 text-gray-300">
-                            <span>Admin actions and ticket sales</span>
-                            <span className="w-1 h-1 rounded-full bg-gray-600"></span>
-                            <span>{total} total entries</span>
-                            {/* Kept from the old pager, which showed this beside its
-                                arrows. The shared Pagination matches the other admin
-                                lists and does not, so it moves up here rather than
-                                being lost. */}
-                            {totalPages > 1 && (
-                                <>
-                                    <span className="w-1 h-1 rounded-full bg-gray-600"></span>
-                                    <span>Page {currentPage} of {totalPages}</span>
-                                </>
-                            )}
-                        </div>
-                    </div>
-                </div>
+            <PageHeader
+                title="Audit Trail"
+                // "Page X of Y" also sits beside the pager; it stays up here too so it
+                // is visible without scrolling to the bottom of a long page.
+                description={totalPages > 1 ? `Admin actions and ticket sales · Page ${currentPage} of ${totalPages}` : 'Admin actions and ticket sales'}
+                count={loading ? null : total}
+            />
 
-                {/* Filters. Fixed-width on desktop so two short dropdowns don't stretch
-                    the full page width; full-width stacked below sm. */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:max-w-xl gap-3 mb-6">
-                    <Dropdown
-                        value={entityTypeFilter}
-                        onChange={handleFilterChange(setEntityTypeFilter)}
-                        options={ENTITY_TYPE_OPTIONS}
-                        label="Entity Type"
+            {/* Filters. Fixed-width on desktop so two short dropdowns don't stretch
+                the full page width; full-width stacked below sm. */}
+            <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:max-w-xl">
+                <Dropdown
+                    value={params.entity}
+                    onChange={(e) => set({ entity: e.target.value })}
+                    options={ENTITY_TYPE_OPTIONS}
+                    label="Entity type"
+                />
+                <Dropdown
+                    value={params.action}
+                    onChange={(e) => set({ action: e.target.value })}
+                    options={ACTION_OPTIONS}
+                    label="Action"
+                />
+            </div>
+
+            <Card padded={false} aria-busy={loading || refreshing || undefined} className={`overflow-hidden transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
+                {error ? (
+                    <ErrorState title="Couldn't load the audit trail" message={error} onRetry={reload} />
+                ) : loading ? (
+                    <TableSkeleton rows={8} columns={4} />
+                ) : logs.length === 0 ? (
+                    <EmptyState
+                        icon={ClipboardList}
+                        title={params.entity || params.action ? 'No entries match these filters' : 'No audit entries yet'}
+                        // The pager hides itself at a single page, so a stale page
+                        // number would otherwise leave an empty table with no way back.
+                        action={totalPages <= 1 && currentPage > 1 ? (
+                            <Button size="sm" variant="secondary" onClick={() => set({ page: 1 })}>Back to first page</Button>
+                        ) : undefined}
                     />
-                    <Dropdown
-                        value={actionFilter}
-                        onChange={handleFilterChange(setActionFilter)}
-                        options={ACTION_OPTIONS}
-                        label="Action"
-                    />
-                </div>
+                ) : (
+                    <Table label="Audit trail">
+                        <THead>
+                            <Th>Action</Th>
+                            <Th>What changed</Th>
+                            <Th>By</Th>
+                            <Th>When</Th>
+                        </THead>
+                        <TBody>
+                            {logs.map((log) => (
+                                <tr key={log._id} className="align-top">
+                                    <Td className="whitespace-nowrap align-top">
+                                        <StatusBadge value={log.action}>{humanize(log.action)}</StatusBadge>
+                                        <div className="mt-1 text-xs capitalize text-gray-400">{log.entityType}</div>
+                                    </Td>
+                                    <Td className="max-w-xs align-top">
+                                        <ChangeDetail log={log} />
+                                        {/* Last 8 characters, not all 24. The full id made every
+                                            row the same width as its longest column and pushed the
+                                            timestamp off screen; the tail is enough to tell two
+                                            entries apart, and the link is the way through. */}
+                                        {ENTITY_PATH[log.entityType] && log.action !== 'delete' ? (
+                                            <Link
+                                                to={`${ENTITY_PATH[log.entityType]}/${log.entityId}`}
+                                                title={String(log.entityId)}
+                                                className="mt-1 inline-block font-mono text-xs text-violet-300 hover:text-violet-200"
+                                            >
+                                                …{shortId(log.entityId)}
+                                            </Link>
+                                        ) : (
+                                            <span className="mt-1 inline-block font-mono text-xs text-gray-500" title={String(log.entityId)}>
+                                                …{shortId(log.entityId)}
+                                            </span>
+                                        )}
+                                    </Td>
+                                    <Td className="align-top">
+                                        <div className="text-sm text-white">{log.adminUser?.name || 'Unknown'}</div>
+                                        {log.adminUser?.email && (
+                                            <div className="mt-0.5 text-xs text-gray-400">{log.adminUser.email}</div>
+                                        )}
+                                    </Td>
+                                    <Td className="whitespace-nowrap align-top">
+                                        <div className="text-sm text-gray-300">{formatDateTime(log.timestamp)}</div>
+                                        <div className="mt-0.5 text-xs text-gray-500">{formatRelative(log.timestamp)}</div>
+                                    </Td>
+                                </tr>
+                            ))}
+                        </TBody>
+                    </Table>
+                )}
 
-                {/* Table */}
-                <div className="bg-white/[0.02] backdrop-blur-sm border border-white/[0.08] rounded-2xl overflow-hidden">
-                    {loading ? (
-                        <div className="p-12 text-center text-gray-300">Loading audit trail...</div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left">
-                                <thead className="bg-white/[0.02] border-b border-white/[0.05]">
-                                    <tr>
-                                        <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Action</th>
-                                        <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">What changed</th>
-                                        <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">By</th>
-                                        <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">When</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-white/[0.05]">
-                                    {logs.length === 0 ? (
-                                        <tr>
-                                            <td colSpan="4" className="px-6 py-12 text-center">
-                                                <div className="flex flex-col items-center gap-2">
-                                                    <span className="text-2xl">📋</span>
-                                                    <span className="text-gray-300">No audit logs found</span>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ) : logs.map((log) => (
-                                        <tr key={log._id} className="hover:bg-white/[0.02] transition-colors align-top">
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${getActionColor(log.action)}`}>
-                                                    {log.action}
-                                                </span>
-                                                <div className="text-xs text-gray-400 mt-1 capitalize">{log.entityType}</div>
-                                            </td>
-                                            <td className="px-6 py-4 max-w-xs">
-                                                <ChangeDetail log={log} />
-                                                {/* Last 8 characters, not all 24. The full id made every
-                                                    row the same width as its longest column and pushed the
-                                                    timestamp off screen; the tail is enough to tell two
-                                                    entries apart, and the link is the way through. */}
-                                                {ENTITY_PATH[log.entityType] && log.action !== 'delete' ? (
-                                                    <Link
-                                                        to={`${ENTITY_PATH[log.entityType]}/${log.entityId}`}
-                                                        title={String(log.entityId)}
-                                                        className="text-xs font-mono text-violet-400 hover:text-violet-300 mt-1 inline-block"
-                                                    >
-                                                        …{shortId(log.entityId)}
-                                                    </Link>
-                                                ) : (
-                                                    <span className="text-xs font-mono text-gray-500 mt-1 inline-block" title={String(log.entityId)}>
-                                                        …{shortId(log.entityId)}
-                                                    </span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="text-white text-sm">{log.adminUser?.name || 'Unknown'}</div>
-                                                {log.adminUser?.email && (
-                                                    <div className="text-xs text-gray-400 mt-0.5">{log.adminUser.email}</div>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-gray-300 text-sm">{formatTimestamp(log.timestamp)}</div>
-                                                <div className="text-xs text-gray-500 mt-0.5">{formatRelative(log.timestamp)}</div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-
-                    {/* Numbered pages, not just Previous/Next.
-                        The other admin lists all have numbered pages; this one had two
-                        arrows, so the only way to reach an entry from last month was to
-                        click Next through every page in between - on the one screen whose
-                        whole purpose is looking back. */}
-                    <Pagination
-                        currentPage={currentPage}
-                        totalPages={totalPages}
-                        onChange={setCurrentPage}
-                    />
-
-                    {/* The pager hides itself at a single page, so a stale page number
-                        would otherwise leave an empty table with no way back. */}
-                    {totalPages <= 1 && currentPage > 1 && (
-                        <div className="p-4 border-t border-white/[0.05] flex justify-center">
-                            <button
-                                type="button"
-                                onClick={() => setCurrentPage(1)}
-                                className="px-3 py-1 rounded-lg bg-white/5 text-gray-400 hover:text-white"
-                            >
-                                Back to first page
-                            </button>
-                        </div>
-                    )}
-                </div>
-            </FadeIn>
+                {/* Numbered pages, not just Previous/Next: this is the one screen
+                    whose whole purpose is looking back. */}
+                {!loading && !error && (
+                    <Pagination currentPage={currentPage} totalPages={totalPages} onChange={(page) => set({ page })} />
+                )}
+            </Card>
         </div>
     );
 }

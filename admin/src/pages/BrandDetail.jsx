@@ -1,261 +1,246 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import {
+    CalendarDays, IndianRupee, Users as UsersIcon, Eye, Check, X, Ban, RotateCcw, Trash2, BadgeCheck, ExternalLink, ChevronRight,
+} from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn } from '../components/animations';
+import { formatInr } from '../lib/formatInr';
+import { useRemote } from '../lib/useRemote';
+import { humanize } from '../lib/statusStyles';
+import { brandActions, brandAvailable, useConfirmedAction } from '../lib/listingActions';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Card } from '../components/ui/Card';
+import { StatCard } from '../components/ui/StatCard';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import { InfoList } from '../components/ui/InfoList';
+import { Button } from '../components/ui/Button';
+import { EmptyState, ErrorState, PageSkeleton } from '../components/ui/States';
+
+const formatDate = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+// Creators save either a full URL or just a handle. The old page linked
+// Instagram to "#", so the link went nowhere.
+const SOCIAL = [
+    { key: 'instagram', label: 'Instagram', base: 'https://instagram.com/' },
+    { key: 'twitter', label: 'X / Twitter', base: 'https://x.com/' },
+    { key: 'facebook', label: 'Facebook', base: 'https://facebook.com/' },
+    { key: 'youtube', label: 'YouTube', base: 'https://youtube.com/@' },
+    { key: 'spotify', label: 'Spotify', base: null },
+    { key: 'website', label: 'Website', base: null },
+];
+function socialHref(value, base) {
+    const v = String(value).trim();
+    if (/^https?:\/\//i.test(v)) return v;
+    if (!base) return `https://${v.replace(/^\/+/, '')}`;
+    return base + v.replace(/^@/, '');
+}
+
+// The page carries the creator's whole event history; the first few show by default.
+const EVENTS_PREVIEW = 10;
 
 export default function BrandDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const [brand, setBrand] = useState(null);
-    const [events, setEvents] = useState([]);
-    const [stats, setStats] = useState({});
-    const [loading, setLoading] = useState(true);
-    const [deleting, setDeleting] = useState(false);
+    const runAction = useConfirmedAction();
+    const loadBrand = useCallback(() => adminApi.getBrandById(id), [id]);
+    const { data: brand, loading, refreshing, error, reload } = useRemote(loadBrand);
+    const [showAllEvents, setShowAllEvents] = useState(false);
 
-    // Hard delete: removes the profile and resets the owner's verified badge so
-    // they can apply again. Irreversible, so the confirm spells that out.
-    const handleDelete = async () => {
-        if (!brand) return;
-        const owner = brand.user?.name || 'its owner';
-        if (!window.confirm(
-            `Delete "${brand.name}"?\n\nThis permanently removes the creator profile and its posts, and resets ${owner}'s verified badge so they can create a new profile. This cannot be undone.`
-        )) return;
-        try {
-            setDeleting(true);
-            await adminApi.deleteBrand(id);
-            navigate('/brands');
-        } catch (err) {
-            console.error('Failed to delete creator:', err);
-            alert(err.message || 'Failed to delete creator');
-            setDeleting(false);
-        }
-    };
-
-    useEffect(() => {
-        fetchBrand();
-    }, [id]);
-
-    const fetchBrand = async () => {
-        try {
-            setLoading(true);
-            const data = await adminApi.getBrandById(id);
-            setBrand(data);
-            setEvents(data.events || []);
-            setStats(data.stats || {});
-        } catch (err) {
-            console.error('Failed to fetch brand:', err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('en-IN', {
-            style: 'currency',
-            currency: 'INR',
-            maximumFractionDigits: 0,
-        }).format(amount || 0);
-    };
-
-    if (loading) {
-        return <div className="p-12 text-center text-gray-300">Loading brand details...</div>;
-    }
-
-    if (!brand) {
+    if (loading && !error) return <PageSkeleton />;
+    if (brand && brand._id !== id && !error) return <PageSkeleton />;
+    if (error || !brand) {
         return (
-            <div className="p-12 text-center text-gray-300">
-                <p>Brand not found</p>
-                <Link to="/brands" className="text-violet-400 hover:text-violet-300 mt-4 inline-block">← Back to Brands</Link>
+            <div className="p-4 sm:p-6 lg:p-8">
+                <PageHeader title="Creator" backTo="/brands" backLabel="Back to creators" />
+                <Card>
+                    <ErrorState title={error ? "Couldn't load this creator" : 'Creator not found'} message={error || 'It may have been deleted.'} onRetry={error ? reload : undefined} />
+                </Card>
             </div>
         );
     }
 
+    const stats = brand.stats || {};
+    const events = brand.events || [];
+    const owner = brand.user || {};
+    const badge = owner.verificationBadge && owner.verificationBadge !== 'none' ? owner.verificationBadge : null;
+    const actions = brandActions(brand);
+    const available = brandAvailable(brand);
+    const act = async (key) => {
+        if (await runAction(actions[key])) {
+            if (key === 'remove') navigate('/brands');
+            else reload();
+        }
+    };
+    const socials = SOCIAL.filter((s) => brand.socialLinks?.[s.key]);
+    const cities = [...new Set([brand.primaryCity, ...(brand.cities || [])].filter(Boolean))];
+
     return (
-        <div className="p-4 sm:p-6 lg:p-8">
-            <FadeIn>
-                {/* Header — pl on mobile so the fixed hamburger (top-4 left-4)
-                    doesn't overlap the Back link / title. */}
-                <div className="flex flex-col gap-6 mb-8 pl-12 lg:pl-0">
-                    <Link to="/brands" className="text-gray-400 hover:text-white flex items-center gap-2 transition-colors w-fit">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M19 12H5M12 19l-7-7 7-7" />
-                        </svg>
-                        Back to Creators
-                    </Link>
-
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                        <div className="flex items-center gap-4">
-                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 flex items-center justify-center text-2xl font-bold text-white border border-white/10">
-                                {brand.name?.charAt(0) || 'B'}
-                            </div>
-                            <div>
-                                <h1 className="text-3xl font-bold text-white mb-1">{brand.name}</h1>
-                                <p className="text-gray-300 flex items-center gap-2">
-                                    <span>{brand.type}</span>
-                                    <span className="w-1 h-1 rounded-full bg-gray-600"></span>
-                                    <span>{(brand.stats?.followers || 0).toLocaleString()} followers</span>
-                                </p>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${brand.status === 'approved' ? 'bg-green-500/20 text-green-400 border-green-500/30' :
-                                brand.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' :
-                                    brand.status === 'rejected' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
-                                        'bg-gray-500/20 text-gray-400 border-gray-500/30'
-                                }`}>
-                                {brand.status || 'approved'}
-                            </span>
-                            <button
-                                onClick={handleDelete}
-                                disabled={deleting}
-                                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors text-sm font-medium disabled:opacity-50"
-                                title="Delete creator profile"
-                            >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                                {deleting ? 'Deleting...' : 'Delete'}
-                            </button>
-                        </div>
-                    </div>
+        <div className={`p-4 sm:p-6 lg:p-8 transition-opacity ${refreshing ? 'opacity-70' : ''}`}>
+            {brand.coverPhoto && (
+                <div className="mb-6 overflow-hidden rounded-2xl border border-line">
+                    <img src={brand.coverPhoto} alt={`${brand.name} cover`} loading="lazy" className="h-40 w-full object-cover sm:h-52" />
                 </div>
-
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-blue-500/10 text-blue-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <rect x="3" y="4" width="18" height="18" rx="2" />
-                                    <path d="M16 2v4M8 2v4M3 10h18" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Events Hosted</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{stats.eventsHosted || brand.stats?.events || 0}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-green-500/10 text-green-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Total Revenue</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{formatCurrency(stats.totalRevenue)}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
-                                    <circle cx="9" cy="7" r="4" />
-                                    <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Followers</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{(brand.stats?.followers || 0).toLocaleString()}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-yellow-500/10 text-yellow-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <circle cx="12" cy="12" r="10" />
-                                    <path d="M12 6v6l4 2" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Profile Views</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{(brand.stats?.views || 0).toLocaleString()}</div>
-                    </div>
+            )}
+            <PageHeader
+                title={(
+                    <span className="flex items-center gap-3">
+                        <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/[0.06] text-lg font-semibold text-white">
+                            {brand.profilePhoto
+                                ? <img src={brand.profilePhoto} alt="" className="h-full w-full object-cover" />
+                                : (brand.name?.charAt(0) || 'C').toUpperCase()}
+                        </span>
+                        <span className="min-w-0">{brand.name}</span>
+                    </span>
+                )}
+                backTo="/brands"
+                backLabel="Back to creators"
+                actions={(
+                    <>
+                        {available.approve && <Button variant="success" onClick={() => act('approve')} leftIcon={<Check className="h-4 w-4" aria-hidden="true" />}>Approve</Button>}
+                        {available.reject && <Button variant="secondary" onClick={() => act('reject')} leftIcon={<X className="h-4 w-4" aria-hidden="true" />}>Reject</Button>}
+                        {available.block && <Button variant="secondary" onClick={() => act('block')} leftIcon={<Ban className="h-4 w-4" aria-hidden="true" />}>Block</Button>}
+                        {available.unblock && <Button variant="secondary" onClick={() => act('unblock')} leftIcon={<RotateCcw className="h-4 w-4" aria-hidden="true" />}>Unblock</Button>}
+                        <Button variant="danger" onClick={() => act('remove')} leftIcon={<Trash2 className="h-4 w-4" aria-hidden="true" />}>Delete</Button>
+                    </>
+                )}
+            >
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <StatusBadge value={brand.status || 'pending'} />
+                    {brand.type && <StatusBadge tone="neutral">{humanize(brand.type)}</StatusBadge>}
+                    {owner.isVerified && <StatusBadge tone="accent" icon={BadgeCheck}>{badge ? `Verified ${humanize(badge)}` : 'Verified'}</StatusBadge>}
+                    {brand.isActive === false && <StatusBadge tone="neutral">Inactive</StatusBadge>}
                 </div>
+            </PageHeader>
 
-                {/* Brand Info */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    <div className="lg:col-span-2 space-y-8">
-                        <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                            <h2 className="text-lg font-semibold text-white mb-4">Creator Information</h2>
-                            {brand.bio && <p className="text-gray-300 leading-relaxed mb-6">{brand.bio}</p>}
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+                {/* Full history from the server: hosted = live or completed, the hint counts everything. */}
+                <StatCard
+                    label="Events hosted"
+                    value={(stats.eventsHosted ?? events.length).toLocaleString('en-IN')}
+                    icon={CalendarDays}
+                    accent="blue"
+                    hint={`${(stats.totalEvents ?? events.length).toLocaleString('en-IN')} created in total`}
+                />
+                <StatCard label="Ticket sales" value={formatInr(stats.totalRevenue || 0)} icon={IndianRupee} accent="green" hint="All events, full price before discounts" />
+                <StatCard label="Followers" value={(stats.followers || 0).toLocaleString('en-IN')} icon={UsersIcon} accent="violet" />
+                <StatCard label="Profile views" value={(stats.views || 0).toLocaleString('en-IN')} icon={Eye} accent="amber" />
+            </div>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 pt-6 border-t border-white/[0.05]">
-                                <div>
-                                    <div className="text-xs text-gray-300 mb-1">Owner</div>
-                                    <div className="text-white font-medium">{brand.user?.name || 'N/A'}</div>
-                                </div>
-                                <div className="min-w-0">
-                                    <div className="text-xs text-gray-300 mb-1">Email</div>
-                                    <div className="text-white break-words">{brand.user?.email || 'N/A'}</div>
-                                </div>
-                                <div className="min-w-0">
-                                    <div className="text-xs text-gray-300 mb-1">Phone</div>
-                                    <div className="text-white break-words">{brand.user?.phone || 'N/A'}</div>
-                                </div>
-                            </div>
+            <div className="mt-6 grid gap-6 lg:grid-cols-3">
+                <div className="space-y-6 lg:col-span-2">
+                    <Card title="About">
+                        <InfoList
+                            items={[
+                                { label: 'Bio', value: brand.bio, wide: true },
+                                { label: 'Type', value: brand.type ? humanize(brand.type) : null },
+                                { label: 'Cities', value: cities.length ? cities.join(', ') : null },
+                                { label: 'Address', value: brand.address, wide: true },
+                                { label: 'Applied', value: formatDate(brand.createdAt) },
+                                {
+                                    label: 'Links',
+                                    wide: true,
+                                    value: socials.length ? (
+                                        <span className="flex flex-wrap gap-x-4 gap-y-1">
+                                            {socials.map((s) => (
+                                                <a key={s.key} href={socialHref(brand.socialLinks[s.key], s.base)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-violet-300 hover:text-violet-200">
+                                                    {s.label} <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                                                </a>
+                                            ))}
+                                        </span>
+                                    ) : null,
+                                },
+                            ]}
+                        />
+                        {!brand.bio && socials.length === 0 && cities.length === 0 && (
+                            <p className="text-sm text-gray-400">This creator hasn't added any profile details yet.</p>
+                        )}
+                    </Card>
 
-                            {brand.socialLinks?.instagram && (
-                                <div className="mt-6 pt-6 border-t border-white/[0.05]">
-                                    <div className="text-xs text-gray-300 mb-1">Instagram</div>
-                                    <a href="#" className="text-violet-400 hover:text-violet-300 transition-colors">@{brand.socialLinks.instagram}</a>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Events Hosted */}
-                        <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl overflow-hidden">
-                            <div className="p-6 border-b border-white/[0.05]">
-                                <h2 className="text-lg font-semibold text-white">Events Hosted</h2>
-                            </div>
-
-                            {events.length === 0 ? (
-                                <div className="p-12 text-center text-gray-300">
-                                    No events found
-                                </div>
-                            ) : (
-                                <div className="divide-y divide-white/[0.05]">
-                                    {events.map((event) => (
-                                        <Link to={`/events/${event._id}`} key={event._id} className="block p-6 hover:bg-white/[0.02] transition-colors group">
-                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                                <div>
-                                                    <h3 className="text-lg font-medium text-white group-hover:text-violet-400 transition-colors mb-1">{event.name}</h3>
-                                                    <div className="flex items-center gap-3 text-sm text-gray-300">
-                                                        {/* Custom-venue events carry the name on customVenue, not
-                                                            the venue ref. */}
-                                                        <span>{event.venue?.name || event.customVenue?.name || 'Custom venue'}</span>
-                                                        <span className="w-1 h-1 rounded-full bg-gray-600"></span>
-                                                        {/* startDateTime, not `date`: the Event schema has no
-                                                            `date` path, so new Date(undefined) was "Invalid Date". */}
-                                                        <span>{event.startDateTime ? new Date(event.startDateTime).toLocaleDateString() : 'Date TBD'}</span>
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center gap-6">
-                                                    <div className="text-right hidden sm:block">
-                                                        <div className="text-sm text-gray-300">
-                                                            <span className="text-white font-medium">{event.currentAttendees || 0}</span> / {event.maxAttendees} tickets
-                                                        </div>
-                                                    </div>
-                                                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${event.status === 'upcoming' ? 'bg-green-500/20 text-green-400 border-green-500/30' :
-                                                        'bg-gray-500/20 text-gray-400 border-gray-500/30'
-                                                        }`}>
-                                                        {event.status}
-                                                    </span>
-                                                    <svg className="w-5 h-5 text-gray-300 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                                    </svg>
-                                                </div>
+                    <Card
+                        title="Events"
+                        description={events.length ? `All ${events.length.toLocaleString('en-IN')}, newest first - including cancelled and removed` : undefined}
+                        padded={false}
+                    >
+                        {events.length === 0 ? (
+                            <div className="border-t border-line"><EmptyState icon={CalendarDays} title="No events yet" /></div>
+                        ) : (
+                            <>
+                            <ul className="divide-y divide-line border-t border-line">
+                                {(showAllEvents ? events : events.slice(0, EVENTS_PREVIEW)).map((event) => (
+                                    <li key={event._id}>
+                                        <Link to={`/events/${event._id}`} className="group flex items-center gap-4 px-5 py-3.5 transition-colors hover:bg-hover">
+                                            <div className="min-w-0 flex-1">
+                                                <p className="truncate font-medium text-white group-hover:text-violet-300">{event.name}</p>
+                                                <p className="text-xs text-gray-400">
+                                                    {/* Custom-venue events carry the name on customVenue. */}
+                                                    {event.venue?.name || event.customVenue?.name || 'Custom venue'}
+                                                    {' · '}
+                                                    {formatDate(event.startDateTime) || 'Date TBD'}
+                                                </p>
                                             </div>
+                                            <span className="hidden text-sm tabular-nums text-gray-300 sm:block">
+                                                <span className="text-white">{(event.currentAttendees || 0).toLocaleString('en-IN')}</span> / {(event.maxAttendees || 0).toLocaleString('en-IN')} tickets
+                                            </span>
+                                            {event.isDeleted && event.status !== 'cancelled' && <StatusBadge tone="neutral">Removed</StatusBadge>}
+                                            <StatusBadge value={event.status} />
+                                            <ChevronRight className="h-4 w-4 text-gray-500 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
                                         </Link>
-                                    ))}
+                                    </li>
+                                ))}
+                            </ul>
+                            {events.length > EVENTS_PREVIEW && (
+                                <div className="border-t border-line px-5 py-3">
+                                    <Button variant="ghost" size="sm" onClick={() => setShowAllEvents((v) => !v)}>
+                                        {showAllEvents ? 'Show fewer' : `Show all ${events.length.toLocaleString('en-IN')} events`}
+                                    </Button>
                                 </div>
                             )}
-                        </div>
-                    </div>
+                            </>
+                        )}
+                    </Card>
                 </div>
-            </FadeIn>
+
+                <div className="space-y-6">
+                    <Card title="Owner">
+                        <InfoList
+                            className="sm:grid-cols-1"
+                            items={[
+                                { label: 'Name', value: owner._id ? <Link to={`/users/${owner._id}`} className="hover:text-violet-300">{owner.name || 'Unnamed'}</Link> : (owner.name || '—') },
+                                { label: 'Email', value: owner.email || '—' },
+                                { label: 'Phone', value: owner.phone || '—' },
+                                {
+                                    label: 'Verified badge',
+                                    value: owner.isVerified
+                                        ? <StatusBadge tone="accent" icon={BadgeCheck}>{badge ? humanize(badge) : 'Verified'}</StatusBadge>
+                                        : <span className="text-gray-400">Not verified</span>,
+                                },
+                            ]}
+                        />
+                    </Card>
+
+                    {brand.members?.length > 0 && (
+                        <Card title="Members" description={`${brand.members.length} ${brand.members.length === 1 ? 'person' : 'people'}`}>
+                            <ul className="space-y-3">
+                                {brand.members.map((m, i) => (
+                                    <li key={m._id || `${m.name}-${i}`} className="flex items-center gap-3">
+                                        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/[0.06] text-xs font-medium text-white">
+                                            {m.photoUrl ? <img src={m.photoUrl} alt="" className="h-full w-full object-cover" /> : (m.name?.charAt(0) || '?').toUpperCase()}
+                                        </span>
+                                        <span className="min-w-0">
+                                            <span className="block truncate text-sm text-white">{m.name}</span>
+                                            <span className="block truncate text-xs text-gray-400">{m.role}</span>
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </Card>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }

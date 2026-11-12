@@ -1,4 +1,4 @@
-import React, { forwardRef } from 'react';
+import { forwardRef, useId } from 'react';
 
 /**
  * Dark-themed select, matching <Input>'s geometry.
@@ -18,22 +18,27 @@ import React, { forwardRef } from 'react';
  * other mismatch - a light system triangle on a dark control. `pr-10` reserves room
  * for it so a long label never runs under the arrow.
  */
-export const Select = forwardRef(({ label, error, options = [], className = '', ...props }, ref) => {
+export const Select = forwardRef(({ label, error, id: idProp, options = [], className = '', ...props }, ref) => {
+    // The label is tied to its field, so clicking it focuses the field and
+    // screen readers announce it (it used to be a detached <label>).
+    const autoId = useId();
+    const id = idProp || autoId;
     return (
         <div className="w-full">
             {label && (
-                <label className="block text-sm font-medium text-gray-300 mb-2">
+                <label htmlFor={id} className="block text-sm font-medium text-gray-300 mb-1.5">
                     {label}
                 </label>
             )}
             <div className="relative">
                 <select
+                    id={id}
                     ref={ref}
                     className={`
-                        w-full appearance-none px-4 py-3 pr-10 rounded-xl
-                        bg-white/5 border border-white/10
+                        w-full h-10 appearance-none px-3.5 pr-10 rounded-xl text-sm
+                        bg-surface border border-line
                         text-white cursor-pointer
-                        focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500/50
+                        focus:outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-500/60
                         transition-all duration-200
                         [color-scheme:dark]
                         ${error ? 'border-red-500/50 focus:ring-red-500/50' : ''}

@@ -1,3 +1,6 @@
+import { X } from 'lucide-react';
+import { cn } from '../lib/cn';
+
 /**
  * Sticky bar that appears when rows are selected, offering bulk actions.
  *
@@ -10,30 +13,38 @@ export default function BulkActionBar({ count, actions = [], onClear, busy = fal
     if (count === 0) return null;
 
     return (
-        <div className="sticky top-2 z-20 mb-4 flex flex-wrap items-center gap-3 px-4 py-3 rounded-2xl bg-violet-500/10 border border-violet-500/30 backdrop-blur-md">
-            <span className="text-sm text-white font-medium">
+        <div
+            role="region"
+            aria-label="Bulk actions"
+            className="sticky top-16 z-20 mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-violet-500/30 bg-surface-raised px-3 py-2 shadow-lg lg:top-20"
+        >
+            <span className="px-1 text-sm font-medium text-white">
                 {count} selected
             </span>
             <div className="flex-1" />
             {actions.map((action) => (
                 <button
                     key={action.label}
+                    type="button"
                     onClick={action.onClick}
                     disabled={busy}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    className={cn(
+                        'h-8 rounded-lg px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
                         action.variant === 'danger'
-                            ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                            : 'bg-white/10 text-white hover:bg-white/20'
-                    }`}
+                            ? 'bg-red-500/15 text-red-300 hover:bg-red-500/25'
+                            : 'bg-white/[0.08] text-white hover:bg-white/[0.14]'
+                    )}
                 >
                     {action.label}
                 </button>
             ))}
             <button
+                type="button"
                 onClick={onClear}
                 disabled={busy}
-                className="px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white transition-colors disabled:opacity-50"
+                className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-sm text-gray-400 transition-colors hover:bg-hover hover:text-white disabled:opacity-50"
             >
+                <X className="h-4 w-4" aria-hidden="true" />
                 Clear
             </button>
         </div>

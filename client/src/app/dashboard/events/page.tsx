@@ -11,6 +11,7 @@ import { eventsApi, ticketsApi } from '@/lib/api';
 import FilterDropdown from '@/components/ui/FilterDropdown';
 import { FadeIn, SlideUp } from '@/components/animations';
 import { venueLabel } from '@/lib/venueDisplay';
+import { SUPPORT_EMAIL } from '@/lib/siteConfig';
 
 interface Event {
     _id: string;
@@ -48,7 +49,11 @@ function eventStatusLabel(e: Event): { text: string; tone: 'green' | 'yellow' | 
     if (e.status === 'rejected' || e.venueApproval?.status === 'rejected' || e.adminApproval?.status === 'rejected') {
         return { text: 'Rejected', tone: 'red' };
     }
-    if (e.status === 'cancelled' || e.status === 'blocked') {
+    // Only FIRA can lift a block, so say who did it; the cell adds a support link.
+    if (e.status === 'blocked') {
+        return { text: 'Blocked by FIRA', tone: 'red' };
+    }
+    if (e.status === 'cancelled') {
         return { text: e.status, tone: 'gray' };
     }
     if (e.status === 'draft') {
@@ -228,9 +233,18 @@ export default function EventsPage() {
                 const due = venueDue(e);
                 return (
                     <div className="flex flex-col items-center gap-1.5">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${due ? '' : 'capitalize'} ${toneClass}`}>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${due || e.status === 'blocked' ? '' : 'capitalize'} ${toneClass}`}>
                             {text}
                         </span>
+                        {e.status === 'blocked' && (
+                            <a
+                                href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(`Blocked event: ${e.name}`)}`}
+                                onClick={(ev) => ev.stopPropagation()}
+                                className="text-xs text-violet-300 hover:text-violet-200 underline-offset-2 hover:underline whitespace-nowrap"
+                            >
+                                Contact support
+                            </a>
+                        )}
                         {due && (
                             <Link
                                 href={`/dashboard/bookings/${due._id}`}

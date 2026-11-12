@@ -1,250 +1,233 @@
-import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useCallback } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import {
+    CalendarDays, IndianRupee, Star, MapPin, ExternalLink, Check, X, Ban, RotateCcw,
+    Trash2, IdCard, TriangleAlert, Image as ImageIcon,
+} from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn } from '../components/animations';
+import { formatInr } from '../lib/formatInr';
+import { useRemote } from '../lib/useRemote';
+import { humanize } from '../lib/statusStyles';
+import { venueActions, venueAvailable, useConfirmedAction } from '../lib/listingActions';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Card } from '../components/ui/Card';
+import { StatCard } from '../components/ui/StatCard';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import { InfoList } from '../components/ui/InfoList';
+import { Button } from '../components/ui/Button';
+import { ErrorState, PageSkeleton } from '../components/ui/States';
+import BankDetails from '../components/BankDetails';
 import ListingSettlementPanel from '../components/ListingSettlementPanel';
+
+const formatDate = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+const capacityText = (capacity) => {
+    if (capacity == null) return null;
+    if (typeof capacity !== 'object') return Number(capacity).toLocaleString('en-IN');
+    const { min, max } = capacity;
+    if (min != null && max != null) return `${Number(min).toLocaleString('en-IN')} – ${Number(max).toLocaleString('en-IN')} guests`;
+    return `${Number(max ?? min ?? 0).toLocaleString('en-IN')} guests`;
+};
+
+// The venue's price is a day rate. The old "Per Hour" card read a top-level
+// `pricePerHour` that venues never had, so it showed ₹0 for every venue.
+// pricePerDay is authoritative; basePrice is its back-compat mirror on older venues.
+const dayRate = (venue) => venue.pricing?.pricePerDay ?? venue.pricing?.basePrice ?? null;
+
+const ID_TEXT = { verified: 'ID verified', pending: 'ID waiting for review', rejected: 'ID rejected' };
+const ID_TONE = { verified: 'success', pending: 'warning', rejected: 'danger' };
 
 export default function VenueDetail() {
     const { id } = useParams();
-    const [venue, setVenue] = useState(null);
-    const [stats, setStats] = useState({});
-    const [loading, setLoading] = useState(true);
+    const navigate = useNavigate();
+    const runAction = useConfirmedAction();
+    const loadVenue = useCallback(() => adminApi.getVenueById(id), [id]);
+    const { data: venue, loading, refreshing, error, reload } = useRemote(loadVenue);
 
-    useEffect(() => {
-        fetchVenue();
-    }, [id]);
-
-    const fetchVenue = async () => {
-        try {
-            setLoading(true);
-            const data = await adminApi.getVenueById(id);
-            setVenue(data);
-            setStats(data.stats || {});
-        } catch (err) {
-            console.error('Failed to fetch venue:', err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('en-IN', {
-            style: 'currency',
-            currency: 'INR',
-            maximumFractionDigits: 0,
-        }).format(amount || 0);
-    };
-
-    if (loading) {
-        return <div className="p-12 text-center text-gray-300">Loading venue details...</div>;
-    }
-
-    if (!venue) {
+    if (loading && !error) return <PageSkeleton />;
+    // Moved from one venue to another: the previous one is still held while the
+    // next loads.
+    if (venue && venue._id !== id && !error) return <PageSkeleton />;
+    if (error || !venue) {
         return (
-            <div className="p-12 text-center text-gray-300">
-                <p>Venue not found</p>
-                <Link to="/venues" className="text-violet-400 hover:text-violet-300 mt-4 inline-block">← Back to Venues</Link>
+            <div className="p-4 sm:p-6 lg:p-8">
+                <PageHeader title="Venue" backTo="/venues" backLabel="Back to venues" />
+                <Card>
+                    <ErrorState title={error ? "Couldn't load this venue" : 'Venue not found'} message={error || 'It may have been deleted.'} onRetry={error ? reload : undefined} />
+                </Card>
             </div>
         );
     }
 
+    const stats = venue.stats || {};
+    const actions = venueActions(venue);
+    const available = venueAvailable(venue);
+    const act = async (key) => {
+        if (await runAction(actions[key])) {
+            if (key === 'remove') navigate('/venues');
+            else reload();
+        }
+    };
+    const owner = venue.owner || {};
+    const rate = dayRate(venue);
+    const weekend = venue.pricing?.weekendPricePerDay;
+    const policy = venue.cancellationPolicy;
+    const address = [venue.address?.street, venue.address?.city, venue.address?.state, venue.address?.pincode].filter(Boolean).join(', ');
+    const images = (venue.images || []).filter(Boolean);
+
     return (
-        <div className="p-4 sm:p-6 lg:p-8">
-            <FadeIn>
-                {/* Header */}
-                <div className="flex flex-col gap-6 mb-8">
-                    <Link to="/venues" className="text-gray-400 hover:text-white flex items-center gap-2 transition-colors w-fit">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M19 12H5M12 19l-7-7 7-7" />
-                        </svg>
-                        Back to Venues
-                    </Link>
-
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                        <div>
-                            <h1 className="text-3xl font-bold text-white mb-2">{venue.name}</h1>
-                            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-gray-300">
-                                <span className="flex items-center gap-1.5">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                    {venue.address?.street}, {venue.address?.city}
-                                </span>
-                                <span className="hidden sm:inline">•</span>
-                                <span className="flex items-center gap-1.5">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                                    </svg>
-                                    Capacity: {venue.capacity?.min || 0}–{venue.capacity?.max || 0}
-                                </span>
-                            </div>
-                        </div>
-                        <span className={`px-3 py-1 rounded-full text-sm font-medium border ${venue.status === 'approved' ? 'bg-green-500/20 text-green-400 border-green-500/30' :
-                                venue.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' :
-                                    venue.status === 'rejected' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
-                                        'bg-gray-500/20 text-gray-400 border-gray-500/30'
-                            }`}>
-                            {venue.status.charAt(0).toUpperCase() + venue.status.slice(1)}
+        <div className={`p-4 sm:p-6 lg:p-8 transition-opacity ${refreshing ? 'opacity-70' : ''}`}>
+            <PageHeader
+                title={venue.name}
+                backTo="/venues"
+                backLabel="Back to venues"
+                actions={(
+                    <>
+                        {available.approve && <Button variant="success" onClick={() => act('approve')} leftIcon={<Check className="h-4 w-4" aria-hidden="true" />}>Approve</Button>}
+                        {available.reject && <Button variant="secondary" onClick={() => act('reject')} leftIcon={<X className="h-4 w-4" aria-hidden="true" />}>Reject</Button>}
+                        {available.block && <Button variant="secondary" onClick={() => act('block')} leftIcon={<Ban className="h-4 w-4" aria-hidden="true" />}>Block</Button>}
+                        {available.unblock && <Button variant="secondary" onClick={() => act('unblock')} leftIcon={<RotateCcw className="h-4 w-4" aria-hidden="true" />}>Unblock</Button>}
+                        <Button variant="danger" onClick={() => act('remove')} leftIcon={<Trash2 className="h-4 w-4" aria-hidden="true" />}>Delete</Button>
+                    </>
+                )}
+            >
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <StatusBadge value={venue.status} />
+                    {venue.venueType && <StatusBadge tone="neutral">{humanize(venue.venueType)}</StatusBadge>}
+                    {address && (
+                        <span className="ml-1 inline-flex items-center gap-1 text-sm text-gray-400">
+                            <MapPin className="h-3.5 w-3.5" aria-hidden="true" />{address}
                         </span>
-                    </div>
+                    )}
                 </div>
+            </PageHeader>
 
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-blue-500/10 text-blue-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <rect x="3" y="4" width="18" height="18" rx="2" />
-                                    <path d="M16 2v4M8 2v4M3 10h18" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Total Bookings</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{stats.totalBookings || 0}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-green-500/10 text-green-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Total Revenue</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{formatCurrency(stats.totalRevenue)}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <circle cx="12" cy="12" r="10" />
-                                    <path d="M12 6v6l4 2" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Per Hour</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{formatCurrency(venue.pricePerHour)}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-yellow-500/10 text-yellow-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Rating</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{venue.rating?.average?.toFixed(1) || 'N/A'}</div>
-                    </div>
-                </div>
-
-                {/* Content Logic */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    {/* Left Column: Owner & Details */}
-                    <div className="lg:col-span-2 space-y-8">
-                        {/* Owner Info */}
-                        <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                            <h2 className="text-lg font-semibold text-white mb-4">Owner Information</h2>
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-                                <div>
-                                    <div className="text-xs text-gray-300 mb-1">Name</div>
-                                    <div className="text-white font-medium">{venue.owner?.name || 'N/A'}</div>
-                                </div>
-                                <div>
-                                    <div className="text-xs text-gray-300 mb-1">Email</div>
-                                    <div className="text-white">{venue.owner?.email || 'N/A'}</div>
-                                </div>
-                                <div>
-                                    <div className="text-xs text-gray-300 mb-1">Phone</div>
-                                    <div className="text-white">{venue.owner?.phone || 'N/A'}</div>
-                                </div>
-                            </div>
-
-                            {/* Owner payout bank details — admin-only read (Flow 8.6).
-                                Server populates owner.bankDetails on this endpoint. */}
-                            {(() => {
-                                const bank = venue.owner?.bankDetails;
-                                const hasAny = bank && (bank.accountNumber || bank.ifscCode || bank.accountName || bank.bankName);
-                                return (
-                                    <div className="mt-6 pt-6 border-t border-white/10">
-                                        <div className="flex items-center gap-2 mb-3">
-                                            <span className="text-xs font-semibold text-amber-400 uppercase tracking-wide">Bank Details</span>
-                                            <span className="text-[10px] text-gray-500">(admin-only)</span>
-                                        </div>
-                                        {!hasAny ? (
-                                            <p className="text-gray-500 text-sm">No bank details on file.</p>
-                                        ) : (
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                                {[
-                                                    ['Account Name', bank.accountName],
-                                                    ['Account Number', bank.accountNumber],
-                                                    ['IFSC Code', bank.ifscCode],
-                                                    ['Bank Name', bank.bankName],
-                                                ].map(([label, value]) => (
-                                                    <div key={label}>
-                                                        <div className="text-xs text-gray-300 mb-1">{label}</div>
-                                                        <div className="text-white break-all">{value || 'N/A'}</div>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                );
-                            })()}
-                        </div>
-
-                        {/* Amenities */}
-                        {venue.amenities && venue.amenities.length > 0 && (
-                            <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                                <h2 className="text-lg font-semibold text-white mb-4">Amenities</h2>
-                                <div className="flex flex-wrap gap-2">
-                                    {venue.amenities.map((amenity, i) => (
-                                        <span key={i} className="px-3 py-1.5 rounded-full bg-violet-500/15 text-violet-400 text-sm font-medium border border-violet-500/20">
-                                            {amenity}
-                                        </span>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Description */}
-                        {venue.description && (
-                            <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                                <h2 className="text-lg font-semibold text-white mb-4">Description</h2>
-                                <p className="text-gray-300 leading-relaxed">{venue.description}</p>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Right Column: Summary Card */}
+            {venue.deletionRequest?.requestedAt && (
+                <div role="note" className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/25 bg-red-500/[0.06] p-4 text-sm">
+                    <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-300" aria-hidden="true" />
                     <div>
-                        <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6 sticky top-8">
-                            <div className="flex items-baseline justify-between gap-3 mb-4">
-                                <h2 className="text-lg font-semibold text-white">Booking Summary</h2>
-                                <Link to={`/bookings?venue=${id}`} className="text-sm text-violet-400 hover:text-violet-300 whitespace-nowrap">See bookings</Link>
-                            </div>
-                            <div className="space-y-4">
-                                <div className="flex justifying-between items-center">
-                                    <span className="text-gray-300">Completed Bookings</span>
-                                    <span className="text-white font-medium ml-auto">{stats.completedBookings || 0}</span>
-                                </div>
-                                <div className="pt-4 border-t border-white/10 flex justifying-between items-center">
-                                    <span className="text-gray-300">Total Revenue</span>
-                                    <span className="text-green-400 font-bold ml-auto text-lg">{formatCurrency(stats.totalRevenue)}</span>
-                                </div>
-                            </div>
-                        </div>
+                        <p className="font-medium text-red-200">The owner asked for this venue to be removed{formatDate(venue.deletionRequest.requestedAt) ? ` on ${formatDate(venue.deletionRequest.requestedAt)}` : ''}.</p>
+                        {venue.deletionRequest.reason && <p className="mt-1 text-red-100/80">Reason: {venue.deletionRequest.reason}</p>}
+                        <p className="mt-1 text-gray-400">Deleting cancels its upcoming bookings and adds what guests paid to Refunds.</p>
                     </div>
                 </div>
+            )}
 
-                {/* Settlement ledger for this venue — renders its own titled card. */}
-                <ListingSettlementPanel kind="venue" listingId={id} />
-            </FadeIn>
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+                <StatCard label="Bookings" value={(stats.totalBookings || 0).toLocaleString('en-IN')} icon={CalendarDays} accent="blue" to={`/bookings?venue=${venue._id}`} hint={`${stats.completedBookings || 0} completed`} />
+                <StatCard label="Received from guests" value={formatInr(stats.totalRevenue || 0)} icon={IndianRupee} accent="green" hint="Paid bookings" />
+                <StatCard label="Day rate" value={rate != null ? formatInr(rate) : '—'} icon={IndianRupee} accent="violet" hint={weekend ? `Weekend ${formatInr(weekend)}` : 'Same every day'} />
+                <StatCard
+                    label="Rating"
+                    value={venue.rating?.count ? venue.rating.average.toFixed(1) : '—'}
+                    icon={Star}
+                    accent="amber"
+                    hint={venue.rating?.count ? `${venue.rating.count} ${venue.rating.count === 1 ? 'review' : 'reviews'}` : 'No reviews yet'}
+                />
+            </div>
+
+            {images.length > 0 && (
+                <div className="mt-6 -mx-1 flex gap-3 overflow-x-auto px-1 pb-1" aria-label="Venue photos">
+                    {images.map((src, i) => (
+                        <a key={src} href={src} target="_blank" rel="noreferrer" className="block shrink-0 overflow-hidden rounded-xl border border-line">
+                            <img src={src} alt={`${venue.name} photo ${i + 1}`} loading="lazy" className="h-32 w-48 object-cover sm:h-40 sm:w-60" />
+                        </a>
+                    ))}
+                </div>
+            )}
+
+            <div className="mt-6 grid gap-6 lg:grid-cols-3">
+                <div className="space-y-6 lg:col-span-2">
+                    <Card title="Venue details">
+                        <InfoList
+                            items={[
+                                { label: 'Description', value: venue.description, wide: true },
+                                { label: 'Capacity', value: capacityText(venue.capacity) },
+                                { label: 'Venue type', value: venue.venueType ? humanize(venue.venueType) : null },
+                                { label: 'Address', value: address || null, wide: true },
+                                {
+                                    label: 'Map',
+                                    value: venue.locationLink ? (
+                                        <a href={venue.locationLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-violet-300 hover:text-violet-200">
+                                            Open in maps <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                                        </a>
+                                    ) : null,
+                                },
+                                { label: 'Booking requests', value: venue.autoApproveBookings ? 'Accepted automatically' : 'Owner accepts each one' },
+                                { label: 'Platform fee', value: venue.platformFeePercentage != null ? `${venue.platformFeePercentage}%` : null },
+                                { label: 'Listed', value: formatDate(venue.createdAt) },
+                                {
+                                    label: 'Cancellation policy',
+                                    wide: true,
+                                    value: policy ? `Free cancellation up to ${policy.freeCancellationHours}h before · ${policy.partialRefundPercentage}% refund after that · no refund in the last ${policy.noCancellationHours}h` : null,
+                                },
+                                {
+                                    label: 'Special date prices',
+                                    wide: true,
+                                    value: venue.pricing?.specialDates?.length
+                                        ? venue.pricing.specialDates.map((s) => `${s.date}: ${formatInr(s.pricePerDay)}`).join(' · ')
+                                        : null,
+                                },
+                            ]}
+                        />
+                    </Card>
+
+                    {(venue.amenities?.length > 0 || venue.rules?.length > 0) && (
+                        <Card title="Amenities and rules">
+                            {venue.amenities?.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5">
+                                    {venue.amenities.map((a) => <StatusBadge key={a} tone="accent">{a}</StatusBadge>)}
+                                </div>
+                            )}
+                            {venue.rules?.length > 0 && (
+                                <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-gray-300">
+                                    {venue.rules.map((r) => <li key={r}>{r}</li>)}
+                                </ul>
+                            )}
+                        </Card>
+                    )}
+                </div>
+
+                <div className="space-y-6">
+                    <Card
+                        title="Owner"
+                        actions={owner._id ? (
+                            <StatusBadge tone={ID_TONE[owner.govIdStatus] || 'neutral'} icon={IdCard}>{ID_TEXT[owner.govIdStatus] || 'ID not submitted'}</StatusBadge>
+                        ) : null}
+                    >
+                        <InfoList
+                            className="sm:grid-cols-1"
+                            items={[
+                                { label: 'Name', value: owner._id ? <Link to={`/users/${owner._id}`} className="hover:text-violet-300">{owner.name || 'Unnamed'}</Link> : (owner.name || '—') },
+                                { label: 'Email', value: owner.email || '—' },
+                                { label: 'Phone', value: owner.phone || '—' },
+                            ]}
+                        />
+                        {owner.govIdStatus !== 'verified' && venue.status === 'pending' && (
+                            <p className="mt-4 text-xs text-amber-200/80">
+                                This venue can't be approved until the owner's government ID is verified.{' '}
+                                <Link to="/venue-owners" className="text-violet-300 hover:text-violet-200">Review it in Venue Owners</Link>
+                            </p>
+                        )}
+                        <div className="mt-4">
+                            <BankDetails bank={owner.bankDetails} />
+                        </div>
+                    </Card>
+
+                    {images.length === 0 && (
+                        <Card>
+                            <p className="flex items-center gap-2 text-sm text-gray-400"><ImageIcon className="h-4 w-4" aria-hidden="true" />No photos uploaded.</p>
+                        </Card>
+                    )}
+                </div>
+            </div>
+
+            {/* Settlement ledger for this venue — renders its own titled card. */}
+            <ListingSettlementPanel kind="venue" listingId={id} />
         </div>
     );
 }

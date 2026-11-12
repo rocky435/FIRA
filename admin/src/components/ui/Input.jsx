@@ -1,10 +1,14 @@
-import React, { forwardRef } from 'react';
+import { forwardRef, useId } from 'react';
 
-export const Input = forwardRef(({ label, error, helperText, leftIcon, rightIcon, className = '', ...props }, ref) => {
+export const Input = forwardRef(({ label, error, id: idProp, helperText, leftIcon, rightIcon, className = '', ...props }, ref) => {
+    // The label is tied to its field, so clicking it focuses the field and
+    // screen readers announce it (it used to be a detached <label>).
+    const autoId = useId();
+    const id = idProp || autoId;
     return (
         <div className="w-full">
             {label && (
-                <label className="block text-sm font-medium text-gray-300 mb-2">
+                <label htmlFor={id} className="block text-sm font-medium text-gray-300 mb-1.5">
                     {label}
                 </label>
             )}
@@ -15,12 +19,13 @@ export const Input = forwardRef(({ label, error, helperText, leftIcon, rightIcon
                     </div>
                 )}
                 <input
+                    id={id}
                     ref={ref}
                     className={`
-          w-full px-4 py-3 rounded-xl
-          bg-white/5 border border-white/10
+          w-full h-10 px-3.5 rounded-xl text-sm
+          bg-surface border border-line
           text-white placeholder-gray-500
-          focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500/50
+          focus:outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-500/60
           transition-all duration-200
           ${leftIcon ? 'pl-10' : ''}
           ${rightIcon ? 'pr-10' : ''}

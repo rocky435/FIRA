@@ -146,7 +146,11 @@ const venueSchema = new mongoose.Schema({
     }],
     status: {
         type: String,
-        enum: ['pending', 'approved', 'rejected', 'suspended'],
+        // 'blocked' is what the admin's Block action stores (routes/admin.js). It
+        // was missing here, so a blocked venue held a value its own schema
+        // rejects: any full validation of that document would fail. 'suspended'
+        // is never written by current code; kept so older rows stay valid.
+        enum: ['pending', 'approved', 'rejected', 'blocked', 'suspended'],
         default: 'pending'
     },
     rating: {

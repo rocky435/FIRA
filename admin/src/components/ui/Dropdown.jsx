@@ -53,12 +53,12 @@ export default function Dropdown({ value, onChange, options = [], label, classNa
 
     return (
         <div ref={containerRef} className={`relative w-full ${className}`}>
-            {label && <label className="block text-sm font-medium text-gray-300 mb-2">{label}</label>}
+            {label && <label className="block text-sm font-medium text-gray-300 mb-1.5">{label}</label>}
             <button
                 type="button"
                 onClick={() => { setIsOpen(!isOpen); setFocusedIndex(options.findIndex((o) => o.value === value)); }}
                 onKeyDown={handleKeyDown}
-                className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all"
+                className="w-full flex items-center justify-between h-10 px-3.5 rounded-xl bg-surface border border-line text-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-violet-500/30 transition-all"
                 aria-haspopup="listbox"
                 aria-expanded={isOpen}
             >
@@ -76,7 +76,7 @@ export default function Dropdown({ value, onChange, options = [], label, classNa
             {isOpen && (
                 <div
                     role="listbox"
-                    className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-xl bg-[#121212] border border-white/10 shadow-2xl py-1 animate-in fade-in zoom-in-95 duration-150"
+                    className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-xl bg-surface-raised border border-line-strong shadow-2xl py-1 animate-in fade-in zoom-in-95 duration-150"
                 >
                     {options.map((opt, index) => (
                         <button

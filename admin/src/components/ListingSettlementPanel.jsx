@@ -15,8 +15,12 @@ import {
     pinnedOutstanding,
     stateBadge,
 } from '../lib/settlementView';
+import { Landmark } from 'lucide-react';
 import { Button } from './ui/Button';
 import { FigureCard } from './ui/FigureCard';
+import { EmptyState, ErrorState, Skeleton } from './ui/States';
+import { useConfirm } from './ui/confirmContext';
+import { useToast } from './ui/toastContext';
 import { Input } from './ui/Input';
 import { Select } from './ui/Select';
 
@@ -45,7 +49,7 @@ function StateBadge({ state }) {
 function MoneyRow({ label, value, emphasis, sign, indent, hint }) {
     const operator = sign === '+' || sign === '−' ? sign : null;
     return (
-        <div className={`flex justify-between items-baseline gap-4 ${indent ? 'py-1 pl-4' : 'py-2'} ${sign === '=' ? 'border-t border-white/[0.15]' : ''}`}>
+        <div className={`flex justify-between items-baseline gap-4 ${indent ? 'py-1 pl-4' : 'py-2'} ${sign === '=' ? 'border-t border-line-strong' : ''}`}>
             <dt className="min-w-0">
                 <span className={indent ? 'text-xs text-gray-500' : 'text-sm text-gray-400'}>{label}</span>
                 {hint && <span className="block text-xs text-gray-500 mt-0.5">{hint}</span>}
@@ -60,9 +64,9 @@ function MoneyRow({ label, value, emphasis, sign, indent, hint }) {
 
 function MoneyGroup({ title, children }) {
     return (
-        <div className="bg-white/[0.02] border border-white/[0.08] rounded-xl p-4 sm:p-5">
+        <div className="rounded-xl border border-line bg-surface-raised p-4 sm:p-5">
             <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">{title}</h4>
-            <dl className="divide-y divide-white/[0.05]">{children}</dl>
+            <dl className="divide-y divide-line">{children}</dl>
         </div>
     );
 }
@@ -70,7 +74,7 @@ function MoneyGroup({ title, children }) {
 // One activity count (Requirement 3.2). A count, not money — no formatInr here.
 function CountCard({ label, value }) {
     return (
-        <div className="bg-white/[0.02] border border-white/[0.08] rounded-xl px-4 py-3">
+        <div className="rounded-xl border border-line bg-surface-raised px-4 py-3">
             <div className="text-xl font-bold text-white tabular-nums">{value ?? 0}</div>
             <div className="text-xs text-gray-400 mt-0.5">{label}</div>
         </div>
@@ -95,7 +99,7 @@ function RecordSettlementForm({ form, dispatch, onSubmit, isSuperAdmin }) {
     const today = new Date().toISOString().slice(0, 10);
 
     return (
-        <section className="border-t border-white/[0.08] pt-6">
+        <section className="border-t border-line pt-6">
             <h3 className="text-sm font-semibold text-white mb-4">Record a settlement</h3>
 
             <form onSubmit={onSubmit} className="space-y-4">
@@ -300,7 +304,7 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
             </div>
 
             {nothingToSettle(money) && (
-                <p className="px-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.08] text-gray-300 text-sm">
+                <p className="rounded-xl border border-line bg-surface-raised px-4 py-3 text-sm text-gray-300">
                     Nothing owed yet — no paid sales on this {kind === 'venue' ? 'venue' : 'event'}.
                 </p>
             )}
@@ -319,7 +323,7 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
 
             {/* Requirement 2.1/2.2: Refunded_Total is a figure of its own — it
                 belongs to neither group named in 2.3. */}
-            <div className="flex justify-between items-baseline gap-4 px-5 py-3 rounded-xl bg-white/[0.02] border border-white/[0.08]">
+            <div className="flex items-baseline justify-between gap-4 rounded-xl border border-line bg-surface-raised px-5 py-3">
                 <span className="text-sm text-gray-400">Refunded to buyers</span>
                 <span className="text-sm text-gray-200 tabular-nums">{formatInr(money.refundedTotal)}</span>
             </div>
@@ -349,14 +353,14 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
 
                 {/* Requirement 1.6: an empty ledger is named, not implied. */}
                 {ordered.length === 0 ? (
-                    <p className="py-8 text-center text-sm text-gray-400 border border-dashed border-white/[0.12] rounded-xl">
+                    <p className="rounded-xl border border-dashed border-line-strong py-8 text-center text-sm text-gray-400">
                         {emptyLedgerMessage(kind)}
                     </p>
                 ) : (
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                             <thead>
-                                <tr className="text-left text-gray-400 border-b border-white/[0.08]">
+                                <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-gray-400">
                                     <th className="py-3 pr-4 font-medium">Settled on</th>
                                     <th className="py-3 pr-4 font-medium text-right">Amount</th>
                                     <th className="py-3 pr-4 font-medium">Reference</th>
@@ -373,7 +377,7 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
                                     const reversal = entry.reversedBy;
                                     const struck = reversal ? 'line-through text-gray-500' : '';
                                     return (
-                                        <tr key={entry._id} className="border-b border-white/[0.04] text-gray-200 align-top">
+                                        <tr key={entry._id} className="border-b border-line align-top text-gray-200">
                                             <td className={`py-3 pr-4 whitespace-nowrap ${struck}`}>
                                                 {formatDateTime(entry.settledAt)}
                                             </td>
@@ -462,7 +466,7 @@ function PayTo({ account, kind }) {
         ['Bank', account.bankName],
     ];
     return (
-        <section className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 sm:p-5">
+        <section className="rounded-xl border border-line bg-surface-raised p-4 sm:p-5">
             <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
                 <h3 className="text-base font-semibold text-white">Pay to</h3>
                 <span className="text-xs text-gray-400">
@@ -500,7 +504,7 @@ function CopyButton({ value, label }) {
             type="button"
             onClick={copy}
             aria-label={`Copy ${label}`}
-            className="shrink-0 text-xs px-2 py-0.5 rounded-md bg-white/[0.06] text-gray-300 hover:bg-white/[0.12] hover:text-white"
+            className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-xs text-gray-300 hover:bg-white/[0.12] hover:text-white focus-visible:outline-2 focus-visible:outline-violet-400"
         >
             {copied ? 'Copied' : 'Copy'}
         </button>
@@ -520,7 +524,7 @@ function PayoutBlocked({ check }) {
             <p className="text-sm text-gray-300">{PAN_BLOCK_TEXT[check.status] || PAN_BLOCK_TEXT.none}</p>
             <p className="text-sm text-gray-400">Payouts can be recorded once the PAN is verified.</p>
             {check.status === 'pending' && (
-                <Link to="/id-checks" className="inline-block text-sm text-violet-400 hover:text-violet-300">
+                <Link to="/id-checks" className="inline-block text-sm text-violet-300 hover:text-violet-200">
                     Review it in ID Checks →
                 </Link>
             )}
@@ -541,6 +545,8 @@ function PayoutBlocked({ check }) {
  */
 export default function ListingSettlementPanel({ kind, listingId }) {
     const [view, dispatch] = useReducer(settlementReducer, initialSettlementState);
+    const confirm = useConfirm();
+    const toast = useToast();
 
     // Requirement 11.3: a moderator has no settlement read or write, so the
     // panel is not rendered at all. The server guard is the boundary — this
@@ -569,6 +575,15 @@ export default function ListingSettlementPanel({ kind, listingId }) {
     // exactly as they were (13.5).
     const recordSettlement = useCallback(async (e) => {
         e.preventDefault();
+        // A recorded settlement can only be undone by a reversal, so say what is
+        // about to be recorded first. The amount and reference are the ones typed.
+        const { settledAmount, settlementReference } = view.form.values;
+        const ok = await confirm({
+            title: `Record a ${formatInr(Number(settledAmount) || 0)} settlement?`,
+            message: `Bank reference ${settlementReference || '—'}. Only record a transfer that has already been made - it can't be edited, only reversed.`,
+            confirmLabel: 'Record settlement',
+        });
+        if (!ok) return;
         // One Idempotency_Key per form session: kept by the reducer across a
         // rejection and retry, so a retried submission is the same transfer.
         const idempotencyKey = view.form.idempotencyKey || crypto.randomUUID();
@@ -577,22 +592,24 @@ export default function ListingSettlementPanel({ kind, listingId }) {
         try {
             const result = await adminApi.recordSettlement(kind, listingId, body);
             dispatch({ type: 'submitSucceeded', result });
+            toast.success(`${formatInr(Number(settledAmount) || 0)} settlement recorded`);
             await fetchSettlement();
         } catch (err) {
             dispatch({ type: 'submitRejected', error: err?.message, body: err?.body });
         }
-    }, [kind, listingId, view.form, fetchSettlement]);
+    }, [kind, listingId, view.form, fetchSettlement, confirm, toast]);
 
     const reverseEntry = useCallback(async (entryId, reason) => {
         dispatch({ type: 'reverseSubmit' });
         try {
             await adminApi.reverseSettlement(kind, listingId, entryId, reason);
             dispatch({ type: 'reverseSucceeded' });
+            toast.success('Settlement reversed');
             await fetchSettlement();
         } catch (err) {
             dispatch({ type: 'reverseFailed', error: err?.message });
         }
-    }, [kind, listingId, fetchSettlement]);
+    }, [kind, listingId, fetchSettlement, toast]);
 
     // The Payouts page links here as …#settlement; the panel loads after the
     // page around it, so scroll once its figures are in.
@@ -606,8 +623,8 @@ export default function ListingSettlementPanel({ kind, listingId }) {
     if (isModerator) return null;
 
     return (
-        <div id="settlement" className="bg-white/[0.02] border border-white/[0.08] rounded-2xl overflow-hidden mt-8 scroll-mt-6">
-            <div className="p-4 sm:p-6 border-b border-white/[0.05] flex justify-between items-center gap-4">
+        <div id="settlement" className="mt-8 scroll-mt-20 overflow-hidden rounded-2xl border border-line bg-surface">
+            <div className="flex items-center justify-between gap-4 border-b border-line p-4 sm:px-6">
                 <h2 className="text-lg font-semibold text-white">Settlement</h2>
                 {/* Requirement 1.4 / 5.6: the state sits beside the figures it
                     describes. `data` is only ever set on ready/empty, so a
@@ -617,41 +634,28 @@ export default function ListingSettlementPanel({ kind, listingId }) {
 
             {/* Requirement 13.1: loading, and nothing else. */}
             {view.status === 'loading' && (
-                <div className="p-6 space-y-4" aria-busy="true">
-                    <div className="h-5 w-40 bg-white/[0.05] rounded animate-pulse" />
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div className="h-20 bg-white/[0.03] rounded-xl animate-pulse" />
-                        <div className="h-20 bg-white/[0.03] rounded-xl animate-pulse" />
+                <div className="space-y-4 p-4 sm:p-6" aria-busy="true" role="status" aria-label="Loading settlement">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                        {[0, 1, 2].map((i) => <Skeleton key={i} className="h-24 rounded-2xl" />)}
                     </div>
-                    <p className="text-gray-300 text-sm">Loading settlement…</p>
+                    <Skeleton className="h-40 rounded-xl" />
                 </div>
             )}
 
             {/* Requirement 13.3 / 13.4: error with a retry that re-enters loading,
                 and no stale or partial figures shown as current. */}
             {view.status === 'error' && (
-                <div className="p-6 text-center">
-                    <svg className="w-12 h-12 text-red-400/70 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <h3 className="text-white font-semibold mb-1">Couldn&apos;t load settlement</h3>
-                    <p className="text-gray-300 text-sm mb-5">{view.error}</p>
-                    <Button variant="secondary" size="sm" onClick={fetchSettlement}>Try Again</Button>
-                </div>
+                <ErrorState title="Couldn't load settlement" message={view.error} onRetry={fetchSettlement} />
             )}
 
             {/* Requirement 13.2: retrieval succeeded, the listing genuinely has
                 no records — named as such, not rendered as a wall of zeros. */}
             {view.status === 'empty' && (
-                <div className="p-6 text-center">
-                    <svg className="w-12 h-12 text-gray-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-6h13M9 17H4V7a2 2 0 012-2h12a2 2 0 012 2v4M4 11h5" />
-                    </svg>
-                    <h3 className="text-white font-semibold mb-1">No settlement records</h3>
-                    <p className="text-gray-300 text-sm">
-                        This {kind} has no payments and no recorded settlements yet.
-                    </p>
-                </div>
+                <EmptyState
+                    icon={Landmark}
+                    title="No settlement records"
+                    message={`This ${kind} has no payments and no recorded settlements yet.`}
+                />
             )}
 
             {view.status === 'ready' && (

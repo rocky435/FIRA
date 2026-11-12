@@ -1,20 +1,14 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
+import { ExternalLink, IdCard, ShieldCheck, X } from 'lucide-react';
 import adminApi from '../api/adminApi';
+import { StatusBadge } from './ui/StatusBadge';
+import { Button } from './ui/Button';
+import { useToast } from './ui/toastContext';
 
-const STATUS_STYLE = {
-    verified: 'bg-green-500/20 text-green-400 border-green-500/30',
-    pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-    rejected: 'bg-red-500/20 text-red-400 border-red-500/30',
-    none: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
-};
 const STATUS_LABEL = { verified: 'Verified', pending: 'Waiting for review', rejected: 'Rejected', none: 'Not submitted' };
 
 export function IdentityStatusBadge({ status }) {
-    return (
-        <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${STATUS_STYLE[status] || STATUS_STYLE.none}`}>
-            {STATUS_LABEL[status] || status}
-        </span>
-    );
+    return <StatusBadge value={status || 'none'}>{STATUS_LABEL[status] || status || STATUS_LABEL.none}</StatusBadge>;
 }
 
 /**
@@ -23,9 +17,11 @@ export function IdentityStatusBadge({ status }) {
  * shown and notified about.
  */
 function Check({ userId, kind, title, detail, onReviewed }) {
+    const toast = useToast();
+    const reasonId = useId();
     const [rejecting, setRejecting] = useState(false);
     const [reason, setReason] = useState('');
-    const [busy, setBusy] = useState(false);
+    const [busy, setBusy] = useState(null);
     const [error, setError] = useState('');
 
     const decide = async (action) => {
@@ -33,80 +29,88 @@ function Check({ userId, kind, title, detail, onReviewed }) {
             setError('Write the reason - the user sees it.');
             return;
         }
-        setBusy(true);
+        setBusy(action);
         setError('');
         try {
             const updated = await adminApi.reviewIdentity(userId, kind, action, reason.trim());
             setRejecting(false);
             setReason('');
+            toast.success(action === 'verify' ? `${title} verified` : `${title} rejected. The user is notified.`);
             onReviewed?.(updated);
         } catch (err) {
-            setError(err.message || 'Could not save the decision');
+            setError(err?.message || 'Could not save the decision');
         } finally {
-            setBusy(false);
+            setBusy(null);
         }
     };
 
     const submitted = detail.status !== 'none';
     return (
-        <div className="bg-white/[0.03] rounded-xl p-3 border border-white/[0.06] text-sm space-y-2">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-                <p className="text-gray-400 text-[11px] uppercase tracking-wide font-semibold">{title}</p>
+        <div className="space-y-2.5 rounded-xl border border-line bg-surface-raised p-3.5 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="flex items-center gap-1.5 text-xs font-medium text-gray-400">
+                    <IdCard className="h-3.5 w-3.5" aria-hidden="true" />
+                    {title}
+                </p>
                 <IdentityStatusBadge status={detail.status} />
             </div>
 
             {submitted ? (
                 <>
-                    <p className="text-gray-200 break-all">
-                        {detail.type ? `${detail.type.replace('_', ' ')}: ` : ''}{detail.number || '—'}
+                    <p className="break-all text-gray-200">
+                        {detail.type ? <span className="text-gray-400">{detail.type.replace(/_/g, ' ')}: </span> : null}
+                        <span className="font-mono">{detail.number || '—'}</span>
                     </p>
                     {detail.documentUrl
-                        ? <a href={detail.documentUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-violet-400 hover:text-violet-300">Open photo (link works for 10 minutes)</a>
+                        ? (
+                            <a href={detail.documentUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-violet-300 hover:text-violet-200">
+                                Open photo <ExternalLink className="h-3 w-3" aria-hidden="true" /> <span className="text-gray-500">(link works for 10 minutes)</span>
+                            </a>
+                        )
                         : <p className="text-xs text-gray-500">No photo uploaded</p>}
                     {detail.status === 'rejected' && detail.rejectionReason && (
                         <p className="text-xs text-red-300">Rejected: {detail.rejectionReason}</p>
                     )}
                 </>
             ) : (
-                <p className="text-gray-500 text-xs">Nothing submitted yet.</p>
+                <p className="text-xs text-gray-500">Nothing submitted yet.</p>
             )}
 
             {submitted && !rejecting && (
-                <div className="flex gap-2 pt-1">
+                <div className="flex flex-wrap gap-2 pt-1">
                     {detail.status !== 'verified' && (
-                        <button type="button" disabled={busy} onClick={() => decide('verify')}
-                            className="text-xs px-3 py-1.5 rounded-lg bg-green-500/15 border border-green-500/30 text-green-300 hover:bg-green-500/25 disabled:opacity-50">
-                            {busy ? 'Saving…' : 'Mark verified'}
-                        </button>
+                        <Button size="sm" variant="success" onClick={() => decide('verify')} isLoading={busy === 'verify'} disabled={Boolean(busy)} leftIcon={<ShieldCheck className="h-4 w-4" aria-hidden="true" />}>
+                            Mark verified
+                        </Button>
                     )}
                     {detail.status !== 'rejected' && (
-                        <button type="button" disabled={busy} onClick={() => { setRejecting(true); setError(''); }}
-                            className="text-xs px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 disabled:opacity-50">
+                        <Button size="sm" variant="secondary" onClick={() => { setRejecting(true); setError(''); }} disabled={Boolean(busy)} leftIcon={<X className="h-4 w-4" aria-hidden="true" />}>
                             Reject
-                        </button>
+                        </Button>
                     )}
                 </div>
             )}
 
             {rejecting && (
                 <div className="space-y-2 pt-1">
+                    <label htmlFor={reasonId} className="block text-xs font-medium text-gray-300">Reason (shown to the user)</label>
                     <textarea
+                        id={reasonId}
                         value={reason}
                         onChange={(e) => { setReason(e.target.value); setError(''); }}
                         maxLength={500}
                         rows={2}
-                        placeholder="Why? e.g. Photo is blurry, name does not match"
-                        className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.1] text-white text-xs placeholder-gray-500 focus:outline-none focus:border-white/25"
+                        autoFocus
+                        placeholder="e.g. Photo is blurry, name does not match"
+                        className="w-full resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-violet-500/60 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
                     />
-                    <div className="flex gap-2">
-                        <button type="button" disabled={busy} onClick={() => decide('reject')}
-                            className="text-xs px-3 py-1.5 rounded-lg bg-red-500/20 border border-red-500/40 text-red-200 hover:bg-red-500/30 disabled:opacity-50">
-                            {busy ? 'Saving…' : 'Reject and notify user'}
-                        </button>
-                        <button type="button" disabled={busy} onClick={() => { setRejecting(false); setReason(''); setError(''); }}
-                            className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10">
+                    <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="danger" onClick={() => decide('reject')} isLoading={busy === 'reject'}>
+                            Reject and notify user
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => { setRejecting(false); setReason(''); setError(''); }} disabled={Boolean(busy)}>
                             Cancel
-                        </button>
+                        </Button>
                     </div>
                 </div>
             )}
@@ -145,18 +149,24 @@ export function IdentityReviewLoader({ userId, onChange }) {
         try {
             setState({ status: 'done', data: await adminApi.getGovId(userId), error: null });
         } catch (err) {
-            setState({ status: 'error', data: null, error: err.message || 'Failed to load' });
+            setState({ status: 'error', data: null, error: err?.message || 'Failed to load' });
         }
     };
     if (state.status === 'idle' || state.status === 'loading') {
         return (
-            <button type="button" onClick={load} disabled={state.status === 'loading'}
-                className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10">
-                {state.status === 'loading' ? 'Loading…' : 'Show ID and PAN'}
-            </button>
+            <Button size="sm" variant="secondary" onClick={load} isLoading={state.status === 'loading'} leftIcon={<IdCard className="h-4 w-4" aria-hidden="true" />}>
+                Show ID and PAN
+            </Button>
         );
     }
-    if (state.status === 'error') return <p className="text-xs text-red-400">{state.error}</p>;
+    if (state.status === 'error') {
+        return (
+            <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
+                <span className="text-red-400">{state.error}</span>
+                <Button size="sm" variant="ghost" onClick={load}>Try again</Button>
+            </div>
+        );
+    }
     return (
         <IdentityReview
             identity={state.data}

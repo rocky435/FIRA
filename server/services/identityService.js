@@ -211,11 +211,14 @@ const identityService = {
         };
     },
 
-    /** Everyone with at least one check waiting for review, oldest change first. */
-    async listPending({ limit = 100 } = {}) {
+    /**
+     * Users with at least one check waiting for review. One definition shared by
+     * the review queue and the dashboard count, so the two can never disagree.
+     */
+    pendingFilter() {
         const unset = { $in: [null, 'none'] };
         const has = (field) => ({ [field]: { $nin: [null, ''] } });
-        const users = await User.find({
+        return {
             $or: [
                 { govIdStatus: 'pending' },
                 { panStatus: 'pending' },
@@ -223,7 +226,17 @@ const identityService = {
                 { govIdStatus: unset, govIdVerified: { $ne: true }, $or: [has('govIdNumber'), has('govIdDocument')] },
                 { panStatus: unset, $or: [has('panNumber'), has('panDocument')] },
             ],
-        })
+        };
+    },
+
+    /** How many people are waiting in the ID review queue. */
+    async countPending() {
+        return User.countDocuments(identityService.pendingFilter());
+    },
+
+    /** Everyone with at least one check waiting for review, oldest change first. */
+    async listPending({ limit = 100 } = {}) {
+        const users = await User.find(identityService.pendingFilter())
             .select(IDENTITY_FIELDS)
             .sort({ updatedAt: 1 })
             .limit(Math.min(Math.max(parseInt(limit, 10) || 100, 1), 200))

@@ -920,6 +920,9 @@ const eventService = {
             throw new Error('Event not found');
         }
 
+        // Read before changing, so the audit entry can say what it was.
+        const before = { approval: event.adminApproval?.status || 'pending', status: event.status };
+
         event.adminApproval = {
             status,
             respondedAt: new Date(),
@@ -936,6 +939,26 @@ const eventService = {
         await event.save();
         // Approved: live only once the venue has approved and been paid.
         const live = status === 'approved' && await this.goLiveIfReady(event, { announce: false });
+
+        // The admin's decision on an event is the most common admin action, and
+        // it was the one missing from the audit trail: venues, creators, refunds
+        // and ID checks were all recorded, event approvals were not. Same writer
+        // as every other admin action (adminService.recordAdminAction).
+        await require('./adminService').recordAdminAction({
+            adminUser: adminId,
+            action: status === 'approved' ? 'approve' : 'reject',
+            entityType: 'event',
+            entityId: event._id,
+            metadata: {
+                name: event.name,
+                field: 'adminApproval',
+                from: before.approval,
+                to: status,
+                ...(status === 'rejected' ? { reason: rejectionReason || null } : { wentLive: Boolean(live) }),
+                statusFrom: before.status,
+                statusTo: live ? 'approved' : event.status,
+            },
+        });
 
         let waitingFor = '';
         if (status === 'approved' && !live) {

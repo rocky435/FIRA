@@ -1,371 +1,353 @@
-import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useCallback, useMemo, useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import {
+    Ticket, IndianRupee, Tags, Users as UsersIcon, CalendarClock, ExternalLink, Check, X, Ban, RotateCcw, Trash2,
+    Star, TriangleAlert, Lock, UserCheck,
+} from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn } from '../components/animations';
-import ListingSettlementPanel from '../components/ListingSettlementPanel';
-// Formats DateTime like "30 Dec 2025 14:00" — shared with the settlement panel.
+import { formatInr } from '../lib/formatInr';
 import { formatDateTime } from '../lib/formatDateTime';
+import { useRemote } from '../lib/useRemote';
+import { useListParams } from '../lib/useListParams';
+import { humanize } from '../lib/statusStyles';
+import { eventTiers, tierTotals } from '../lib/ticketTiers';
+import { eventActions, eventAwaitsAdmin, decideEvent, useConfirmedAction } from '../lib/listingActions';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Card } from '../components/ui/Card';
+import { StatCard } from '../components/ui/StatCard';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import { InfoList } from '../components/ui/InfoList';
+import { Button } from '../components/ui/Button';
+import { SearchInput } from '../components/ui/SearchInput';
+import { Table, THead, Th, TBody, Td } from '../components/ui/Table';
+import { Pagination } from '../components/ui/Pagination';
+import { EmptyState, ErrorState, PageSkeleton } from '../components/ui/States';
+import { useConfirm } from '../components/ui/confirmContext';
+import { useToast } from '../components/ui/toastContext';
+import TicketTiers, { TierPriceRange } from '../components/TicketTiers';
+import BankDetails from '../components/BankDetails';
+import EventRejectDialog from '../components/EventRejectDialog';
+import ListingSettlementPanel from '../components/ListingSettlementPanel';
 
-const ITEMS_PER_PAGE = 10;
+const BUYERS_PER_PAGE = 10;
+
+const formatDate = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+function ApprovalStep({ label, approval }) {
+    const status = approval?.status || 'pending';
+    return (
+        <div className="rounded-xl border border-line bg-surface-raised p-3.5">
+            <p className="text-xs text-gray-400">{label}</p>
+            <StatusBadge value={status} className="mt-2" />
+            {approval?.respondedAt && <p className="mt-2 text-xs text-gray-500">{formatDateTime(approval.respondedAt)}</p>}
+            {status === 'rejected' && approval?.rejectionReason && (
+                <p className="mt-2 text-xs text-red-200/90">Reason: {approval.rejectionReason}</p>
+            )}
+        </div>
+    );
+}
 
 export default function EventDetail() {
     const { id } = useParams();
-    const [event, setEvent] = useState(null);
-    const [tickets, setTickets] = useState([]);
-    const [stats, setStats] = useState({});
-    const [loading, setLoading] = useState(true);
-    const [currentPage, setCurrentPage] = useState(1);
-    const [search, setSearch] = useState('');
-    const [featuredLoading, setFeaturedLoading] = useState(false);
-    const [toastError, setToastError] = useState(null);
+    const navigate = useNavigate();
+    const confirm = useConfirm();
+    const toast = useToast();
+    const runAction = useConfirmedAction();
+    const loadEvent = useCallback(() => adminApi.getEventById(id), [id]);
+    const { data: event, loading, refreshing, error, reload } = useRemote(loadEvent);
+    const { params, set } = useListParams({ q: '', page: 1 });
+    const [featuredBusy, setFeaturedBusy] = useState(false);
+    const [rejecting, setRejecting] = useState(false);
+    const [rejectBusy, setRejectBusy] = useState(false);
 
-    useEffect(() => {
-        fetchEvent();
-    }, [id]);
+    const tickets = useMemo(() => event?.tickets || [], [event]);
+    const filteredTickets = useMemo(() => {
+        const q = params.q.toLowerCase();
+        if (!q) return tickets;
+        return tickets.filter((t) =>
+            t.user?.name?.toLowerCase().includes(q)
+            || t.user?.email?.toLowerCase().includes(q)
+            || t.ticketType?.toLowerCase().includes(q)
+            || t.ticketId?.toLowerCase().includes(q));
+    }, [tickets, params.q]);
 
-    const fetchEvent = async () => {
-        try {
-            setLoading(true);
-            const data = await adminApi.getEventById(id);
-            setEvent(data);
-            setTickets(data.tickets || []);
-            setStats(data.stats || {});
-        } catch (err) {
-            console.error('Failed to fetch event:', err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const canToggleFeatured = event && ['approved', 'upcoming'].includes(event.status);
-
-    const handleToggleFeatured = async () => {
-        if (!canToggleFeatured || featuredLoading) return;
-        const newValue = !event.isFeatured;
-        const action = newValue ? 'Feature this event? It will appear at the top of listings.' : 'Remove this event from featured?';
-        if (!window.confirm(action)) return;
-        // Optimistic update
-        setEvent(prev => ({ ...prev, isFeatured: newValue }));
-        setFeaturedLoading(true);
-        try {
-            await adminApi.toggleFeatured(id, newValue);
-        } catch (err) {
-            // Revert on failure
-            setEvent(prev => ({ ...prev, isFeatured: !newValue }));
-            setToastError(err.message || 'Failed to update featured status');
-            setTimeout(() => setToastError(null), 4000);
-        } finally {
-            setFeaturedLoading(false);
-        }
-    };
-
-    const filteredTickets = tickets.filter(t =>
-        t.user?.name?.toLowerCase().includes(search.toLowerCase()) ||
-        t.user?.email?.toLowerCase().includes(search.toLowerCase())
-    );
-
-    const totalPages = Math.ceil(filteredTickets.length / ITEMS_PER_PAGE);
-    const paginatedTickets = filteredTickets.slice(
-        (currentPage - 1) * ITEMS_PER_PAGE,
-        currentPage * ITEMS_PER_PAGE
-    );
-
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('en-IN', {
-            style: 'currency',
-            currency: 'INR',
-            maximumFractionDigits: 0,
-        }).format(amount || 0);
-    };
-
-    if (loading) {
-        return <div className="p-12 text-center text-gray-300">Loading event details...</div>;
-    }
-
-    if (!event) {
+    if (loading && !error) return <PageSkeleton />;
+    if (event && event._id !== id && !error) return <PageSkeleton />;
+    if (error || !event) {
         return (
-            <div className="p-12 text-center text-gray-300">
-                <p>Event not found</p>
-                <Link to="/events" className="text-violet-400 hover:text-violet-300 mt-4 inline-block">← Back to Events</Link>
+            <div className="p-4 sm:p-6 lg:p-8">
+                <PageHeader title="Event" backTo="/events" backLabel="Back to events" />
+                <Card>
+                    <ErrorState title={error ? "Couldn't load this event" : 'Event not found'} message={error || 'It may have been deleted.'} onRetry={error ? reload : undefined} />
+                </Card>
             </div>
         );
     }
 
+    const stats = event.stats || {};
+    const tiers = eventTiers(event);
+    const totals = tierTotals(tiers);
+    const sold = stats.ticketsSold ?? event.currentAttendees ?? 0;
+    const capacity = event.maxAttendees || totals.quantity || 0;
+    const soldPct = capacity > 0 ? Math.min(100, Math.round((sold / capacity) * 100)) : 0;
+    const actions = eventActions(event);
+    const awaits = eventAwaitsAdmin(event);
+    const canFeature = ['approved', 'upcoming'].includes(event.status);
+    const organizer = event.organizer || {};
+    const custom = event.customVenue?.isCustom ? event.customVenue : null;
+
+    const totalPages = Math.max(1, Math.ceil(filteredTickets.length / BUYERS_PER_PAGE));
+    const page = Math.min(params.page, totalPages);
+    const pageTickets = filteredTickets.slice((page - 1) * BUYERS_PER_PAGE, page * BUYERS_PER_PAGE);
+
+    const act = async (key) => {
+        if (await runAction(actions[key])) {
+            if (key === 'remove') navigate('/events');
+            else reload();
+        }
+    };
+
+    const reject = async (reason) => {
+        setRejectBusy(true);
+        try {
+            await decideEvent(event._id, 'rejected', reason);
+            setRejecting(false);
+            toast.success(`"${event.name}" is rejected`);
+            reload();
+        } catch (err) {
+            toast.error(err?.message || 'Failed to update event status');
+        } finally {
+            setRejectBusy(false);
+        }
+    };
+
+    const toggleFeatured = async () => {
+        const next = !event.isFeatured;
+        const ok = await confirm(next
+            ? { title: `Feature "${event.name}"?`, message: 'It will appear at the top of listings.', confirmLabel: 'Feature event' }
+            : { title: `Remove "${event.name}" from featured?`, confirmLabel: 'Remove from featured' });
+        if (!ok) return;
+        setFeaturedBusy(true);
+        try {
+            await adminApi.toggleFeatured(event._id, next);
+            toast.success(next ? `"${event.name}" is featured` : `"${event.name}" is no longer featured`);
+            reload();
+        } catch (err) {
+            toast.error(err?.message || 'Failed to update featured status');
+        } finally {
+            setFeaturedBusy(false);
+        }
+    };
+
     return (
-        <div className="p-4 sm:p-6 lg:p-8">
-            <FadeIn>
-                {/* Header */}
-                <div className="flex flex-col gap-6 mb-8">
-                    <Link to="/events" className="text-gray-400 hover:text-white flex items-center gap-2 transition-colors w-fit">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M19 12H5M12 19l-7-7 7-7" />
-                        </svg>
-                        Back to Events
-                    </Link>
-
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                        <div>
-                            <h1 className="text-3xl font-bold text-white mb-2">{event.name}</h1>
-                            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-gray-300">
-                                <span className="flex items-center gap-1.5">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                    {event.venue?.name || 'N/A'}
-                                </span>
-                                <span className="hidden sm:inline">•</span>
-                                <span className="flex items-center gap-1.5">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    {formatDateTime(event.startDateTime)} to {formatDateTime(event.endDateTime)}
-                                </span>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${event.status === 'approved' || event.status === 'upcoming' ? 'bg-green-500/20 text-green-400 border-green-500/30' :
-                                    event.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' :
-                                        event.status === 'rejected' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
-                                            'bg-gray-500/20 text-gray-400 border-gray-500/30'
-                                }`}>
-                                {event.status.charAt(0).toUpperCase() + event.status.slice(1)}
-                            </span>
-
-                            {/* Featured Toggle */}
-                            <div className="relative group">
-                                <button
-                                    onClick={handleToggleFeatured}
-                                    disabled={!canToggleFeatured || featuredLoading}
-                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium transition-all ${
-                                        !canToggleFeatured
-                                            ? 'bg-gray-500/10 text-gray-500 border-gray-500/20 cursor-not-allowed opacity-50'
-                                            : event.isFeatured
-                                                ? 'bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30'
-                                                : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10 hover:text-white'
-                                    }`}
-                                    aria-label={event.isFeatured ? 'Remove from featured' : 'Mark as featured'}
-                                >
-                                    <svg className="w-4 h-4" fill={event.isFeatured ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                                    </svg>
-                                    {featuredLoading ? 'Updating...' : event.isFeatured ? 'Featured' : 'Feature'}
-                                </button>
-                                {!canToggleFeatured && (
-                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-gray-900 border border-white/10 rounded-lg text-xs text-gray-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                                        Only approved or upcoming events can be featured
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
+        <div className={`p-4 sm:p-6 lg:p-8 transition-opacity ${refreshing ? 'opacity-70' : ''}`}>
+            <PageHeader
+                title={event.name}
+                backTo="/events"
+                backLabel="Back to events"
+                actions={(
+                    <>
+                        <Button
+                            variant="secondary"
+                            onClick={toggleFeatured}
+                            disabled={!canFeature}
+                            isLoading={featuredBusy}
+                            title={canFeature ? undefined : 'Only approved or upcoming events can be featured'}
+                            leftIcon={<Star className={`h-4 w-4 ${event.isFeatured ? 'fill-amber-300 text-amber-300' : ''}`} aria-hidden="true" />}
+                        >
+                            {event.isFeatured ? 'Featured' : 'Feature'}
+                        </Button>
+                        {awaits && <Button variant="success" onClick={() => act('approve')} leftIcon={<Check className="h-4 w-4" aria-hidden="true" />}>Approve</Button>}
+                        {awaits && <Button variant="secondary" onClick={() => setRejecting(true)} leftIcon={<X className="h-4 w-4" aria-hidden="true" />}>Reject</Button>}
+                        {event.status === 'approved' && <Button variant="secondary" onClick={() => act('block')} leftIcon={<Ban className="h-4 w-4" aria-hidden="true" />}>Block</Button>}
+                        {event.status === 'blocked' && <Button variant="success" onClick={() => act('unblock')} leftIcon={<RotateCcw className="h-4 w-4" aria-hidden="true" />}>Unblock</Button>}
+                        <Button variant="danger" onClick={() => act('remove')} leftIcon={<Trash2 className="h-4 w-4" aria-hidden="true" />}>Delete</Button>
+                    </>
+                )}
+            >
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <StatusBadge value={event.status} />
+                    {event.eventType === 'private' && <StatusBadge value="private" icon={Lock}>Private{event.privateCode ? ` · code ${event.privateCode}` : ''}</StatusBadge>}
+                    {event.category && <StatusBadge tone="neutral">{humanize(event.category)}</StatusBadge>}
+                    {event.isFeatured && <StatusBadge tone="warning" icon={Star}>Featured</StatusBadge>}
+                    <span className="ml-1 inline-flex items-center gap-1 text-sm text-gray-400">
+                        <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
+                        {formatDateTime(event.startDateTime)} to {formatDateTime(event.endDateTime)}
+                    </span>
                 </div>
+            </PageHeader>
 
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6 relative overflow-hidden">
-                        <div className="flex items-center gap-4 mb-2 relative z-10">
-                            <div className="p-3 rounded-xl bg-blue-500/10 text-blue-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M2 9a3 3 0 013-3h14a3 3 0 013 3M2 9v8a3 3 0 003 3h14a3 3 0 003-3V9M2 9l10 6 10-6" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Tickets Sold</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1 relative z-10">{stats.ticketsSold || event.currentAttendees || 0}</div>
-
-                        {/* Progress Bar */}
-                        <div className="mt-4 relative z-10">
-                            <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-                                <div
-                                    className="h-full bg-blue-500 rounded-full"
-                                    style={{ width: `${Math.min(((event.currentAttendees || 0) / event.maxAttendees) * 100, 100)}%` }}
-                                />
-                            </div>
-                            <div className="flex justify-between mt-1 text-xs text-gray-300">
-                                <span>{Math.round(((event.currentAttendees || 0) / event.maxAttendees) * 100)}% sold</span>
-                                <span>{event.maxAttendees} total</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-green-500/10 text-green-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Ticket Sales</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{formatCurrency(stats.totalRevenue)}</div>
-                        {/* Σ ticket prices, so before discounts, fee and GST - the
-                            Settlement panel below breaks down what buyers paid. */}
-                        <p className="text-xs text-gray-400 mt-2 pl-1">Full price, before discounts. Breakdown in Settlement below.</p>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <rect x="2" y="5" width="20" height="14" rx="2" />
-                                    <path d="M2 10h20" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Ticket Price</span>
-                        </div>
-                        {event.ticketTiers?.length > 0 ? (
-                            <div className="space-y-1.5 pl-1">
-                                {event.ticketTiers.map((tier, i) => (
-                                    <div key={tier._id || i} className="flex items-baseline justify-between gap-3">
-                                        <span className="text-sm text-gray-300 truncate">{tier.name}</span>
-                                        <span className="text-lg font-bold text-white whitespace-nowrap">{formatCurrency(tier.price)}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="text-2xl font-bold text-white pl-1">{formatCurrency(event.ticketPrice)}</div>
-                        )}
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-yellow-500/10 text-yellow-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
-                                    <circle cx="9" cy="7" r="4" />
-                                    <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Total Bookings</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{stats.totalBookings || tickets.length}</div>
-                    </div>
-                </div>
-
-                {/* Ticket Buyers Table */}
-                <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl overflow-hidden">
-                    <div className="p-6 border-b border-white/[0.05] flex flex-col sm:flex-row justify-between items-center gap-4">
-                        <h2 className="text-lg font-semibold text-white">Ticket Buyers</h2>
-                        <div className="relative w-full sm:w-64">
-                            <input
-                                type="text"
-                                placeholder="Search buyers..."
-                                value={search}
-                                onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
-                                className="w-full pl-10 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all"
-                            />
-                            <svg className="w-5 h-5 text-gray-300 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                            </svg>
-                        </div>
-                    </div>
-
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                            <thead className="bg-white/[0.02] border-b border-white/[0.05]">
-                                <tr>
-                                    <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Buyer</th>
-                                    <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Phone</th>
-                                    <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Tickets</th>
-                                    <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Amount</th>
-                                    <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Date</th>
-                                    <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-white/[0.05]">
-                                {paginatedTickets.length === 0 ? (
-                                    <tr>
-                                        <td colSpan="6" className="px-6 py-12 text-center text-gray-300">
-                                            No tickets found
-                                        </td>
-                                    </tr>
-                                ) : paginatedTickets.map((ticket) => (
-                                    <tr key={ticket._id} className="hover:bg-white/[0.02] transition-colors">
-                                        <td className="px-6 py-4">
-                                            <div className="flex items-center gap-3">
-                                                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 flex items-center justify-center text-white text-xs font-medium border border-white/10">
-                                                    {(ticket.user?.name?.charAt(0) || 'U').toUpperCase()}
-                                                </div>
-                                                <div>
-                                                    <div className="font-medium text-white">{ticket.user?.name || 'N/A'}</div>
-                                                    <div className="text-xs text-gray-300">{ticket.user?.email || ''}</div>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4 text-gray-300 text-sm">{ticket.user?.phone || 'N/A'}</td>
-                                        <td className="px-6 py-4 text-white font-medium">{ticket.quantity || 1}</td>
-                                        <td className="px-6 py-4 text-green-400 font-medium">
-                                            {formatCurrency(ticket.price)}
-                                        </td>
-                                        <td className="px-6 py-4 text-gray-300 text-sm">{new Date(ticket.createdAt).toLocaleDateString()}</td>
-                                        <td className="px-6 py-4">
-                                            <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${ticket.status === 'confirmed'
-                                                    ? 'bg-green-500/20 text-green-400 border-green-500/30'
-                                                    : 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-                                                }`}>
-                                                {ticket.status || 'confirmed'}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-
-                    {/* Pagination */}
-                    {totalPages > 1 && (
-                        <div className="p-4 border-t border-white/[0.05] flex justify-center">
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => setCurrentPage(c => Math.max(1, c - 1))}
-                                    disabled={currentPage === 1}
-                                    className="px-3 py-1 rounded-lg bg-white/5 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    Previous
-                                </button>
-                                {Array.from({ length: totalPages }, (_, i) => (
-                                    <button
-                                        key={i + 1}
-                                        onClick={() => setCurrentPage(i + 1)}
-                                        className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-medium transition-colors ${currentPage === i + 1
-                                            ? 'bg-violet-500 text-white'
-                                            : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                                            }`}
-                                    >
-                                        {i + 1}
-                                    </button>
-                                ))}
-                                <button
-                                    onClick={() => setCurrentPage(c => Math.min(totalPages, c + 1))}
-                                    disabled={currentPage === totalPages}
-                                    className="px-3 py-1 rounded-lg bg-white/5 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    Next
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                {/* Settlement ledger for this event — renders its own titled card. */}
-                <ListingSettlementPanel kind="event" listingId={id} />
-            </FadeIn>
-
-            {/* Error Toast */}
-            {toastError && (
-                <div className="fixed bottom-6 right-6 z-50 bg-red-500/90 text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-3 animate-fade-in">
-                    <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span className="text-sm">{toastError}</span>
-                    <button onClick={() => setToastError(null)} className="ml-2 text-white/70 hover:text-white">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
+            {event.status === 'blocked' && (
+                <div role="note" className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/25 bg-red-500/[0.06] p-4 text-sm">
+                    <Ban className="mt-0.5 h-4 w-4 shrink-0 text-red-300" aria-hidden="true" />
+                    <p className="text-red-100/90">Blocked by FIRA and hidden from the site. Only an admin can unblock it; the organizer was told to contact FIRA.</p>
                 </div>
             )}
+
+            {event.deletionRequest?.requestedAt && (
+                <div role="note" className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/25 bg-red-500/[0.06] p-4 text-sm">
+                    <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-300" aria-hidden="true" />
+                    <div>
+                        <p className="font-medium text-red-200">The organizer asked for this event to be removed{formatDate(event.deletionRequest.requestedAt) ? ` on ${formatDate(event.deletionRequest.requestedAt)}` : ''}.</p>
+                        {event.deletionRequest.reason && <p className="mt-1 text-red-100/80">Reason: {event.deletionRequest.reason}</p>}
+                        <p className="mt-1 text-gray-400">Deleting cancels the tickets sold and adds their refunds to Refunds.</p>
+                    </div>
+                </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+                <StatCard label="Tickets sold" value={sold.toLocaleString('en-IN')} icon={Ticket} accent="blue" hint={`${soldPct}% of ${capacity.toLocaleString('en-IN')}`}>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]" aria-hidden="true">
+                        <div className={`h-full rounded-full ${soldPct >= 100 ? 'bg-amber-400' : 'bg-blue-400'}`} style={{ width: `${soldPct}%` }} />
+                    </div>
+                </StatCard>
+                {/* Σ ticket prices, so before discounts, fee and GST - the
+                    Settlement panel below breaks down what buyers paid. */}
+                <StatCard label="Ticket sales" value={formatInr(stats.totalRevenue || 0)} icon={IndianRupee} accent="green" hint="Full price, before discounts" />
+                <StatCard label="Ticket price" value={<TierPriceRange event={event} />} icon={Tags} accent="violet" hint={totals.count > 1 ? 'Every category below' : (event.ticketType === 'free' ? 'Free event' : 'One category')} />
+                <StatCard label="Orders" value={(stats.totalBookings ?? tickets.length).toLocaleString('en-IN')} icon={UsersIcon} accent="amber" hint="Purchases, any size" />
+            </div>
+
+            {/* Every category, not just the first: event.ticketPrice only holds the
+                first tier's price, so it cannot describe a multi-category event. */}
+            <Card className="mt-6" title="Ticket categories" description={`${totals.count} ${totals.count === 1 ? 'category' : 'categories'} · ${totals.sold.toLocaleString('en-IN')} of ${totals.quantity.toLocaleString('en-IN')} sold`} padded={false}>
+                <div className="border-t border-line">
+                    <TicketTiers event={event} />
+                </div>
+            </Card>
+
+            <div className="mt-6 grid gap-6 lg:grid-cols-3">
+                <div className="space-y-6 lg:col-span-2">
+                    {event.coverPhoto && (
+                        <a href={event.coverPhoto} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-2xl border border-line">
+                            <img src={event.coverPhoto} alt={`${event.name} cover`} loading="lazy" className="max-h-72 w-full object-cover" />
+                        </a>
+                    )}
+                    <Card title="Event details">
+                        <InfoList
+                            items={[
+                                { label: 'Description', value: event.description, wide: true },
+                                {
+                                    label: 'Venue',
+                                    value: custom ? `${custom.name || 'Custom venue'} (own venue)` : (event.venue?._id
+                                        ? <Link to={`/venues/${event.venue._id}`} className="hover:text-violet-300">{event.venue.name}</Link>
+                                        : (event.venue?.name || '—')),
+                                },
+                                { label: 'City', value: custom ? custom.city : event.venue?.address?.city },
+                                { label: 'Address', value: custom ? [custom.address, custom.city, custom.state, custom.pincode].filter(Boolean).join(', ') : null, wide: true },
+                                {
+                                    label: 'Map',
+                                    value: custom?.locationLink ? (
+                                        <a href={custom.locationLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-violet-300 hover:text-violet-200">
+                                            Open in maps <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                                        </a>
+                                    ) : null,
+                                },
+                                { label: 'Starts', value: formatDateTime(event.startDateTime) },
+                                { label: 'Ends', value: formatDateTime(event.endDateTime) },
+                                { label: 'Visibility', value: event.eventType === 'private' ? `Private${event.privateCode ? ` (code ${event.privateCode})` : ''}` : 'Public' },
+                                { label: 'Tickets', value: event.ticketType === 'free' ? 'Free' : 'Paid' },
+                                { label: 'Capacity', value: capacity ? `${capacity.toLocaleString('en-IN')} people` : null },
+                                { label: 'Alcohol', value: event.allowAlcohol ? 'Allowed' : 'Not allowed' },
+                                { label: 'Platform fee', value: event.platformFeePercentage != null ? `${event.platformFeePercentage}%` : null },
+                                { label: 'Created', value: formatDate(event.createdAt) },
+                                { label: 'Tags', value: event.tags?.length ? event.tags.join(', ') : null, wide: true },
+                                { label: 'Terms', value: event.termsAndConditions, wide: true },
+                            ]}
+                        />
+                    </Card>
+                </div>
+
+                <div className="space-y-6">
+                    <Card title="Approvals">
+                        <div className="grid gap-3">
+                            <ApprovalStep label="Venue owner" approval={event.venueApproval} />
+                            <ApprovalStep label="Admin" approval={event.adminApproval} />
+                        </div>
+                    </Card>
+
+                    <Card title="Organizer">
+                        <InfoList
+                            className="sm:grid-cols-1"
+                            items={[
+                                { label: 'Name', value: organizer._id ? <Link to={`/users/${organizer._id}`} className="hover:text-violet-300">{organizer.name || 'Unnamed'}</Link> : (organizer.name || '—') },
+                                { label: 'Email', value: organizer.email || '—' },
+                                { label: 'Phone', value: organizer.phone || '—' },
+                            ]}
+                        />
+                        {/* Sent by the server all along (admin-only read), never shown. */}
+                        <div className="mt-4">
+                            <BankDetails bank={organizer.bankDetails} />
+                        </div>
+                    </Card>
+                </div>
+            </div>
+
+            <Card
+                className="mt-6"
+                title="Ticket buyers"
+                description={`${tickets.length.toLocaleString('en-IN')} ${tickets.length === 1 ? 'order' : 'orders'}`}
+                actions={<SearchInput value={params.q} onSearch={(q) => set({ q })} placeholder="Name, email, category or ticket ID" label="Search ticket buyers" />}
+                padded={false}
+            >
+                {filteredTickets.length === 0 ? (
+                    <div className="border-t border-line">
+                        <EmptyState icon={Ticket} title={params.q ? 'No buyers match this search' : 'No tickets sold yet'} />
+                    </div>
+                ) : (
+                    <div className="border-t border-line">
+                        <Table label="Ticket buyers">
+                            <THead>
+                                <Th>Buyer</Th>
+                                <Th>Phone</Th>
+                                <Th>Category</Th>
+                                <Th>Qty</Th>
+                                <Th>Amount</Th>
+                                <Th>Bought</Th>
+                                <Th>Status</Th>
+                                <Th>Checked in</Th>
+                            </THead>
+                            <TBody>
+                                {pageTickets.map((t) => (
+                                    <tr key={t._id}>
+                                        <Td>
+                                            <p className="font-medium text-white">{t.user?.name || 'Deleted account'}</p>
+                                            <p className="text-xs text-gray-400">{t.user?.email}</p>
+                                        </Td>
+                                        <Td>{t.user?.phone || '—'}</Td>
+                                        <Td>{t.ticketType ? humanize(t.ticketType) : '—'}</Td>
+                                        <Td className="tabular-nums">{t.quantity || 1}</Td>
+                                        <Td className="tabular-nums text-white">{formatInr(t.price || 0)}</Td>
+                                        <Td>{formatDate(t.purchaseDate || t.createdAt) || '—'}</Td>
+                                        <Td><StatusBadge value={t.status || 'active'} /></Td>
+                                        <Td>
+                                            {t.isUsed
+                                                ? <span className="inline-flex items-center gap-1 text-xs text-green-400"><UserCheck className="h-4 w-4" aria-hidden="true" />{formatDateTime(t.usedAt) !== 'N/A' ? formatDateTime(t.usedAt) : 'Yes'}</span>
+                                                : <span className="text-gray-500">—</span>}
+                                        </Td>
+                                    </tr>
+                                ))}
+                            </TBody>
+                        </Table>
+                        <Pagination currentPage={page} totalPages={totalPages} onChange={(p) => set({ page: p })} />
+                    </div>
+                )}
+            </Card>
+
+            {/* Settlement ledger for this event — renders its own titled card. */}
+            <ListingSettlementPanel kind="event" listingId={id} />
+
+            <EventRejectDialog
+                key={rejecting ? 'open' : 'closed'}
+                event={rejecting ? event : null}
+                busy={rejectBusy}
+                onCancel={() => setRejecting(false)}
+                onReject={reject}
+            />
         </div>
     );
 }

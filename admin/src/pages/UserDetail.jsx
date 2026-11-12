@@ -1,216 +1,241 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import {
+    BadgeCheck, Mail, MailCheck, MailX, Phone, MapPin, Briefcase, CalendarDays, Ban, RotateCcw,
+    IndianRupee, Ticket, IdCard,
+} from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn } from '../components/animations';
+import { formatInr } from '../lib/formatInr';
+import { getAdminRoleFromToken } from '../lib/adminRole';
+import { useRemote } from '../lib/useRemote';
+import { humanize } from '../lib/statusStyles';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Card } from '../components/ui/Card';
+import { StatCard } from '../components/ui/StatCard';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import { Button } from '../components/ui/Button';
+import { ErrorState, EmptyState, PageSkeleton } from '../components/ui/States';
+import { useConfirm } from '../components/ui/confirmContext';
+import { useToast } from '../components/ui/toastContext';
+
+const formatDate = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+/** Roles from `roles` (source of truth), falling back to legacy `role`; adminRole as its own entry. */
+function roleLabels(user) {
+    const labels = Array.isArray(user.roles) && user.roles.length ? [...user.roles] : (user.role ? [user.role] : []);
+    if (user.adminRole && !labels.includes(user.adminRole)) labels.push(user.adminRole);
+    return labels.length ? labels : ['user'];
+}
+
+function DetailRow({ icon, label, children }) {
+    const Icon = icon;
+    return (
+        <div className="flex items-start gap-3 py-2.5">
+            <Icon className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" />
+            <dt className="w-28 shrink-0 text-sm text-gray-400">{label}</dt>
+            <dd className="min-w-0 flex-1 break-words text-sm text-white">{children}</dd>
+        </div>
+    );
+}
 
 export default function UserDetail() {
     const { id } = useParams();
-    const [user, setUser] = useState(null);
-    const [loading, setLoading] = useState(true);
+    const confirm = useConfirm();
+    const toast = useToast();
+    const loadUser = useCallback(() => adminApi.getUserById(id), [id]);
+    const { data: user, loading, error, reload: fetchUser } = useRemote(loadUser);
+    const [busy, setBusy] = useState(false);
+    const canReviewIds = getAdminRoleFromToken() !== 'moderator';
 
-    useEffect(() => {
-        fetchUser();
-    }, [id]);
-
-    const fetchUser = async () => {
+    const setBlocked = async (block) => {
+        const name = user?.name || 'this user';
+        const ok = await confirm(block
+            ? { title: `Block ${name}?`, message: 'They will be signed out and lose access to their account until unblocked.', confirmLabel: 'Block user', tone: 'danger' }
+            : { title: `Unblock ${name}?`, message: 'They will regain full access to their account.', confirmLabel: 'Unblock user' });
+        if (!ok) return;
+        setBusy(true);
         try {
-            setLoading(true);
-            const data = await adminApi.getUserById(id);
-            setUser(data);
+            await (block ? adminApi.blockUser(id) : adminApi.unblockUser(id));
+            toast.success(block ? `${name} is blocked` : `${name} is unblocked`);
+            await fetchUser();
         } catch (err) {
-            console.error('Failed to fetch user:', err);
+            toast.error(err?.message || `Could not ${block ? 'block' : 'unblock'} ${name}`);
         } finally {
-            setLoading(false);
+            setBusy(false);
         }
     };
 
-    const handleBlock = async () => {
-        if (!window.confirm(`Block ${user?.name || 'this user'}? They will lose access to their account.`)) return;
-        try {
-            await adminApi.blockUser(id);
-            fetchUser();
-        } catch (err) {
-            console.error('Failed to block user:', err);
-        }
-    };
+    if (loading && !error) return <PageSkeleton />;
 
-    const handleUnblock = async () => {
-        if (!window.confirm(`Unblock ${user?.name || 'this user'}? They will regain full access.`)) return;
-        try {
-            await adminApi.unblockUser(id);
-            fetchUser();
-        } catch (err) {
-            console.error('Failed to unblock user:', err);
-        }
-    };
+    // Navigated from one user to another: the previous user's data is still
+    // held while the new one loads, so check it is the one in the URL.
+    if (user && user._id !== id && !error) return <PageSkeleton />;
 
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('en-IN', {
-            style: 'currency',
-            currency: 'INR',
-            maximumFractionDigits: 0,
-        }).format(amount || 0);
-    };
-
-    if (loading) {
+    if (error || !user) {
         return (
-            <div className="p-12 text-center text-gray-300">Loading...</div>
-        );
-    }
-
-    if (!user) {
-        return (
-            <div className="p-12 text-center text-gray-300">
-                <p>User not found</p>
-                <Link to="/users" className="text-violet-400 hover:text-violet-300 mt-4 inline-block">← Back to Users</Link>
+            <div className="p-4 sm:p-6 lg:p-8">
+                <PageHeader title="User" backTo="/users" backLabel="Back to users" />
+                <Card>
+                    <ErrorState
+                        title={error ? "Couldn't load this user" : 'User not found'}
+                        message={error || 'This account may have been deleted.'}
+                        onRetry={error ? fetchUser : undefined}
+                    />
+                </Card>
             </div>
         );
     }
 
-    const { stats, bookings, tickets } = user;
+    const { stats, bookings = [], tickets = [] } = user;
+    const badge = user.verificationBadge && user.verificationBadge !== 'none' ? user.verificationBadge : null;
+    const hasIdChecks = (user.govIdStatus && user.govIdStatus !== 'none') || (user.panStatus && user.panStatus !== 'none');
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
-            <FadeIn>
-                {/* Header */}
-                <div className="flex flex-col gap-6 mb-8">
-                    <Link to="/users" className="text-gray-400 hover:text-white flex items-center gap-2 transition-colors w-fit">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M19 12H5M12 19l-7-7 7-7" />
-                        </svg>
-                        Back to Users
-                    </Link>
+            <PageHeader
+                title={
+                    <span className="flex flex-wrap items-center gap-2">
+                        {user.name}
+                        {user.isVerified && (
+                            <BadgeCheck className="h-6 w-6 text-violet-300" aria-label="Verified" />
+                        )}
+                    </span>
+                }
+                backTo="/users"
+                backLabel="Back to users"
+                actions={user.isBlocked ? (
+                    <Button variant="secondary" onClick={() => setBlocked(false)} isLoading={busy} leftIcon={<RotateCcw className="h-4 w-4" aria-hidden="true" />}>
+                        Unblock user
+                    </Button>
+                ) : (
+                    <Button variant="danger" onClick={() => setBlocked(true)} isLoading={busy} leftIcon={<Ban className="h-4 w-4" aria-hidden="true" />}>
+                        Block user
+                    </Button>
+                )}
+            >
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <StatusBadge value={user.isBlocked ? 'blocked' : 'active'} />
+                    {roleLabels(user).map((label) => <StatusBadge key={label} value={label} />)}
+                    {badge && <StatusBadge tone="accent" icon={BadgeCheck}>{humanize(badge)}</StatusBadge>}
+                </div>
+            </PageHeader>
 
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                        <div className="flex items-center gap-4">
-                            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center text-2xl font-bold text-white border border-white/10">
-                                {(user.name?.charAt(0) || 'U').toUpperCase()}
-                            </div>
-                            <div>
-                                <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-                                    {user.name}
-                                    {user.badge && (
-                                        <span className="px-3 py-1 rounded-full text-xs font-medium bg-violet-500/20 text-violet-400 border border-violet-500/20">
-                                            {user.badge}
-                                        </span>
-                                    )}
-                                </h1>
-                                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-gray-300 mt-1">
-                                    <span>{user.email}</span>
-                                    {user.phoneNumber && (
-                                        <>
-                                            <span className="hidden sm:inline">•</span>
-                                            <span>{user.phoneNumber}</span>
-                                        </>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+                <StatCard label="Total spent" value={formatInr(stats?.totalSpent || 0)} icon={IndianRupee} accent="blue" />
+                <StatCard label="Venue bookings" value={(stats?.totalBookings || 0).toLocaleString('en-IN')} icon={CalendarDays} accent="violet" />
+                <StatCard label="Tickets bought" value={(stats?.totalTickets || 0).toLocaleString('en-IN')} icon={Ticket} accent="pink" />
+            </div>
 
-                        <div className="flex gap-3">
-                            {user.isBlocked ? (
-                                <Button variant="outline" className="bg-green-500/10 text-green-400 border-green-500/20 hover:bg-green-500/20" onClick={handleUnblock}>
-                                    Unblock User
-                                </Button>
+            <div className="mt-6 grid gap-6 lg:grid-cols-3">
+                <Card title="Account" className="lg:col-span-1">
+                    <dl className="divide-y divide-line">
+                        <DetailRow icon={Mail} label="Email">{user.email || '—'}</DetailRow>
+                        <DetailRow icon={user.emailVerified ? MailCheck : MailX} label="Email status">
+                            {user.emailVerified
+                                ? <StatusBadge tone="success">Verified</StatusBadge>
+                                : <StatusBadge tone="warning">Not verified</StatusBadge>}
+                        </DetailRow>
+                        <DetailRow icon={Phone} label="Phone">{user.phone || user.businessPhone || '—'}</DetailRow>
+                        <DetailRow icon={MapPin} label="City">{user.city || '—'}</DetailRow>
+                        {user.businessName && <DetailRow icon={Briefcase} label="Business">{user.businessName}</DetailRow>}
+                        <DetailRow icon={BadgeCheck} label="Creator">
+                            {user.isVerified
+                                ? <StatusBadge tone="accent">{badge ? `Verified ${humanize(badge)}` : 'Verified'}</StatusBadge>
+                                : <span className="text-gray-400">Not verified</span>}
+                        </DetailRow>
+                        <DetailRow icon={CalendarDays} label="Joined">{formatDate(user.createdAt) || '—'}</DetailRow>
+                    </dl>
+                </Card>
+
+                <div className="space-y-6 lg:col-span-2">
+                    {hasIdChecks && (
+                        <Card
+                            title="ID checks"
+                            description="Government ID for venue owners, PAN for event organisers"
+                            actions={canReviewIds ? (
+                                <Link to="/id-checks" className="text-sm text-violet-300 hover:text-violet-200">Open ID checks</Link>
+                            ) : null}
+                        >
+                            <dl className="grid gap-3 sm:grid-cols-2">
+                                {[{ label: 'Government ID', status: user.govIdStatus, reason: user.govIdRejectionReason },
+                                  { label: 'PAN', status: user.panStatus, reason: user.panRejectionReason }].map((c) => (
+                                    <div key={c.label} className="rounded-xl border border-line bg-surface-raised p-3.5">
+                                        <dt className="flex items-center gap-2 text-xs text-gray-400">
+                                            <IdCard className="h-3.5 w-3.5" aria-hidden="true" />
+                                            {c.label}
+                                        </dt>
+                                        <dd className="mt-2">
+                                            <StatusBadge value={c.status && c.status !== 'none' ? c.status : 'none'}>
+                                                {c.status && c.status !== 'none' ? humanize(c.status) : 'Not submitted'}
+                                            </StatusBadge>
+                                            {c.status === 'rejected' && c.reason && (
+                                                <p className="mt-2 text-xs text-gray-400">Reason: {c.reason}</p>
+                                            )}
+                                        </dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        </Card>
+                    )}
+
+                    <div className="grid gap-6 xl:grid-cols-2">
+                        <Card title="Recent bookings" padded={false}>
+                            {bookings.length === 0 ? (
+                                <EmptyState icon={CalendarDays} title="No bookings" className="py-10" />
                             ) : (
-                                <Button variant="destructive" onClick={handleBlock}>
-                                    Block User
-                                </Button>
+                                <ul className="divide-y divide-line border-t border-line">
+                                    {bookings.slice(0, 5).map((booking) => (
+                                        <li key={booking._id} className="flex items-center justify-between gap-3 px-5 py-3">
+                                            <div className="min-w-0">
+                                                <p className="truncate text-sm font-medium text-white">{booking.venue?.name || 'Unknown venue'}</p>
+                                                <p className="text-xs text-gray-400">{formatDate(booking.bookingDate || booking.createdAt) || '—'}</p>
+                                            </div>
+                                            <div className="shrink-0 text-right">
+                                                <p className="text-sm tabular-nums text-white">{formatInr(booking.totalAmount || 0)}</p>
+                                                <StatusBadge value={booking.status} className="mt-1" />
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
                             )}
-                        </div>
+                        </Card>
+
+                        <Card title="Recent tickets" padded={false}>
+                            {tickets.length === 0 ? (
+                                <EmptyState icon={Ticket} title="No tickets" className="py-10" />
+                            ) : (
+                                <ul className="divide-y divide-line border-t border-line">
+                                    {tickets.slice(0, 5).map((ticket) => (
+                                        <li key={ticket._id} className="flex items-center justify-between gap-3 px-5 py-3">
+                                            <div className="min-w-0">
+                                                {ticket.event?._id ? (
+                                                    <Link to={`/events/${ticket.event._id}`} className="block truncate text-sm font-medium text-white hover:text-violet-300">
+                                                        {ticket.event.name}
+                                                    </Link>
+                                                ) : (
+                                                    <p className="truncate text-sm font-medium text-white">Unknown event</p>
+                                                )}
+                                                <p className="truncate text-xs text-gray-400">
+                                                    {[ticket.event?.venue?.name, formatDate(ticket.event?.startDateTime)].filter(Boolean).join(' · ') || '—'}
+                                                </p>
+                                            </div>
+                                            <div className="shrink-0 text-right">
+                                                <p className="text-sm tabular-nums text-white">{formatInr(ticket.price || 0)}</p>
+                                                {/* Which category - an event can have several. */}
+                                                <p className="text-xs text-gray-400">{ticket.ticketType ? `${humanize(ticket.ticketType)} ` : ''}× {ticket.quantity || 1}</p>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </Card>
                     </div>
                 </div>
-
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-blue-500/10 text-blue-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Total Spent</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{formatCurrency(stats?.totalSpent)}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <rect x="3" y="4" width="18" height="18" rx="2" />
-                                    <path d="M16 2v4M8 2v4M3 10h18" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Bookings Made</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{stats?.totalBookings || 0}</div>
-                    </div>
-
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <div className="flex items-center gap-4 mb-2">
-                            <div className="p-3 rounded-xl bg-pink-500/10 text-pink-400">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-                                </svg>
-                            </div>
-                            <span className="text-gray-300 font-medium">Tickets Bought</span>
-                        </div>
-                        <div className="text-2xl font-bold text-white pl-1">{stats?.totalTickets || 0}</div>
-                    </div>
-                </div>
-
-                {/* Content Sections */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    {/* Recent Bookings */}
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <h2 className="text-lg font-semibold text-white mb-4">Recent Bookings</h2>
-                        <div className="space-y-4">
-                            {!bookings?.length ? (
-                                <p className="text-gray-300 text-sm">No bookings found</p>
-                            ) : bookings.slice(0, 5).map((booking) => (
-                                <div key={booking._id} className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
-                                    <div>
-                                        <div className="font-medium text-white">{booking.venue?.name || 'Unknown Venue'}</div>
-                                        <div className="text-xs text-gray-300">{new Date(booking.date).toLocaleDateString()}</div>
-                                    </div>
-                                    <div className="text-right">
-                                        <div className="text-sm font-medium text-white">{formatCurrency(booking.totalAmount)}</div>
-                                        <div className={`text-xs capitalize ${booking.status === 'completed' ? 'text-green-400' :
-                                                booking.status === 'cancelled' ? 'text-red-400' : 'text-yellow-400'
-                                            }`}>{booking.status}</div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Recent Tickets */}
-                    <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-6">
-                        <h2 className="text-lg font-semibold text-white mb-4">Recent Tickets</h2>
-                        <div className="space-y-4">
-                            {!tickets?.length ? (
-                                <p className="text-gray-300 text-sm">No tickets found</p>
-                            ) : tickets.slice(0, 5).map((ticket) => (
-                                <div key={ticket._id} className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
-                                    <div>
-                                        <div className="font-medium text-white">{ticket.event?.name || 'Unknown Event'}</div>
-                                        <div className="text-xs text-gray-300">
-                                            {ticket.event?.venue?.name} • {new Date(ticket.event?.date).toLocaleDateString()}
-                                        </div>
-                                    </div>
-                                    <div className="text-right">
-                                        <div className="text-sm font-medium text-white">{formatCurrency(ticket.price)}</div>
-                                        <div className="text-xs text-gray-300">x{ticket.quantity || 1}</div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            </FadeIn>
+            </div>
         </div>
     );
 }

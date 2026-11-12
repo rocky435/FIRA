@@ -199,6 +199,12 @@ const adminApi = {
         return handle(res, 'Failed to update event status');
     },
 
+    /** Lift a block; the server restores the status the event had before it. */
+    async unblockEvent(eventId) {
+        const res = await fetch(`${API_BASE}/events/${eventId}/unblock`, { method: 'POST', headers: authHeaders() });
+        return handle(res, 'Failed to unblock event');
+    },
+
     async deleteEvent(eventId) {
         const res = await fetch(`${API_BASE}/events/${eventId}`, { method: 'DELETE', headers: authHeaders() });
         return handle(res, 'Failed to delete event');

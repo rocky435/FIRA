@@ -29,6 +29,10 @@ const BOOKING_RECEIVED = {
 const adminService = {
     // ================== DASHBOARD STATS ==================
     async getStats() {
+        // Required here, not at the top: identityService and refundService both
+        // require this module lazily, and a top-level require would be circular.
+        const identityService = require('./identityService');
+        const Refund = require('../models/Refund');
         const [
             totalUsers,
             totalVenues,
@@ -40,7 +44,9 @@ const adminService = {
             blockedUsers,
             totalTickets,
             ticketRevenue,
-            bookingRevenue
+            bookingRevenue,
+            pendingRefunds,
+            pendingIdChecks
         ] = await Promise.all([
             User.countDocuments(),
             // Deleted listings are excluded here so the headline counts agree
@@ -64,7 +70,11 @@ const adminService = {
             Booking.aggregate([
                 { $match: { paymentStatus: 'paid' } },
                 { $group: { _id: null, total: { $sum: BOOKING_RECEIVED } } }
-            ])
+            ]),
+            // The two queues that need an admin's hand: refunds raised but not
+            // yet paid, and ID documents waiting for review.
+            Refund.countDocuments({ status: 'pending' }),
+            identityService.countPending()
         ]);
 
         const ticketRev = ticketRevenue[0]?.total || 0;
@@ -80,6 +90,8 @@ const adminService = {
             pendingBrands,
             blockedUsers,
             totalTickets,
+            pendingRefunds,
+            pendingIdChecks,
             totalRevenue: ticketRev + bookingRev,
             ticketRevenue: ticketRev,
             venueRevenue: bookingRev,
@@ -126,8 +138,15 @@ const adminService = {
         const user = await User.findById(id).select('-password');
         if (!user) throw new Error('User not found');
 
-        const tickets = await Ticket.find({ user: id }).populate('event', 'name date venue');
-        const bookings = await Booking.find({ user: id }).populate('venue', 'name address');
+        // Newest first, for the "Recent" lists on the admin's user page. Events
+        // carry startDateTime (not `date`, which the model never had - the page
+        // showed "Invalid Date"), with the venue's name populated.
+        const tickets = await Ticket.find({ user: id })
+            .sort({ createdAt: -1 })
+            .populate({ path: 'event', select: 'name startDateTime venue', populate: { path: 'venue', select: 'name' } });
+        const bookings = await Booking.find({ user: id })
+            .sort({ createdAt: -1 })
+            .populate('venue', 'name address');
 
         return {
             ...user.toObject(),
@@ -285,7 +304,9 @@ const adminService = {
         if (status && status !== 'all') filter.status = status;
 
         const venues = await Venue.find(filter)
-            .populate('owner', 'name email')
+            // govIdStatus: a venue cannot be approved until its owner's ID is
+            // verified, so the list shows it beside the owner.
+            .populate('owner', 'name email govIdStatus')
             .limit(parseInt(limit))
             .skip((parseInt(page) - 1) * parseInt(limit))
             .sort({ createdAt: -1 });
@@ -389,7 +410,7 @@ const adminService = {
 
         // bankDetails is intentionally selected — admin-only read (Flow 8.6).
         const owners = await User.find(ownerFilter)
-            .select('name email phone role roles adminRole bankDetails');
+            .select('name email phone role roles adminRole bankDetails govIdStatus');
 
         const venuesByOwner = venues.reduce((acc, v) => {
             const key = String(v.owner);
@@ -406,7 +427,8 @@ const adminService = {
     },
 
     async getVenueById(id) {
-        const venue = await Venue.findById(id).populate('owner', 'name email phone bankDetails');
+        // govIdStatus: the venue cannot be approved until the owner's ID is verified.
+        const venue = await Venue.findById(id).populate('owner', 'name email phone bankDetails govIdStatus');
         if (!venue) throw new Error('Venue not found');
 
         // Get booking stats
@@ -570,7 +592,82 @@ const adminService = {
             entityId: eventId,
             metadata: { name: before.name, field: 'status', from: before.status, to: status },
         });
+
+        // Only FIRA can lift a block, so the organiser has to be told it happened
+        // and who to talk to - otherwise the event just disappears on them.
+        if (status === 'blocked' && before.status !== 'blocked') {
+            await adminService.notifyOrganizer(event, {
+                title: 'Your event was blocked',
+                message: `"${event.name}" was blocked by FIRA and is hidden from the site. Only FIRA can unblock it - please contact FIRA support.`,
+            });
+        }
         return event;
+    },
+
+    /**
+     * Lift an admin block on an event. Admin-only: organisers have no route to
+     * this, so a blocked event stays blocked until FIRA decides otherwise.
+     *
+     * The event returns to the status it had when it was blocked, read from the
+     * audit trail's block entry. Without one (blocked before the trail recorded
+     * from/to), it is rebuilt from the approvals: live if both are approved,
+     * otherwise back in review. A live event whose dates have since passed is
+     * moved on to ongoing/completed by the lifecycle job, as for any event.
+     */
+    async unblockEvent(eventId, adminUserId) {
+        const event = await Event.findById(eventId).select('status name organizer adminApproval venueApproval isDeleted').lean();
+        if (!event) throw new Error('Event not found');
+        if (event.status !== 'blocked') throw new Error('Only a blocked event can be unblocked');
+
+        const RESTORABLE = ['pending', 'approved', 'upcoming', 'ongoing', 'completed'];
+        // Skip a repeat block of an already-blocked event: its "from" is 'blocked'.
+        const lastBlock = await AuditLog.findOne({ entityType: 'event', entityId: eventId, action: 'block', 'metadata.from': { $ne: 'blocked' } })
+            .sort({ timestamp: -1 }).select('metadata').lean();
+        const recorded = lastBlock?.metadata?.from;
+        const venueOk = !event.venueApproval?.status || event.venueApproval.status === 'approved';
+        const restoreTo = RESTORABLE.includes(recorded)
+            ? recorded
+            : (event.adminApproval?.status === 'approved' && venueOk ? 'approved' : 'pending');
+
+        // Claimed on status so two admins unblocking at once restore it once.
+        const updated = await Event.findOneAndUpdate(
+            { _id: eventId, status: 'blocked' },
+            { $set: { status: restoreTo } },
+            { new: true }
+        );
+        if (!updated) throw new Error('Only a blocked event can be unblocked');
+
+        await adminService.recordAdminAction({
+            adminUser: adminUserId,
+            action: 'unblock',
+            entityType: 'event',
+            entityId: eventId,
+            metadata: { name: event.name, field: 'status', from: 'blocked', to: restoreTo },
+        });
+        await adminService.notifyOrganizer(updated, {
+            title: 'Your event was unblocked',
+            message: restoreTo === 'pending'
+                ? `"${event.name}" is no longer blocked. It is back in review.`
+                : `"${event.name}" is no longer blocked and is visible again.`,
+        });
+        return updated;
+    },
+
+    /** Best-effort in-app message to an event's organiser; never fails the action. */
+    async notifyOrganizer(event, { title, message }) {
+        if (!event?.organizer) return;
+        try {
+            const Notification = require('../models/Notification');
+            await Notification.create({
+                user: event.organizer,
+                title,
+                message,
+                type: 'system',
+                data: { referenceId: event._id, referenceModel: 'Event' },
+            });
+        } catch (error) {
+            console.error('Organizer notification failed:', error.message);
+        }
     },
 
     // Delist an event. Same reasoning as deleteVenue: soft delete via the
@@ -631,7 +728,7 @@ const adminService = {
         if (status && status !== 'all') filter.status = status;
 
         const brands = await BrandProfile.find(filter)
-            .populate('user', 'name email')
+            .populate('user', 'name email isVerified verificationBadge')
             .limit(parseInt(limit))
             .skip((parseInt(page) - 1) * parseInt(limit))
             .sort({ createdAt: -1 })
@@ -677,23 +774,34 @@ const adminService = {
     },
 
     async getBrandById(id) {
-        const brand = await BrandProfile.findById(id).populate('user', 'name email phone');
+        const brand = await BrandProfile.findById(id).populate('user', 'name email phone isVerified verificationBadge');
         if (!brand) throw new Error('Brand not found');
 
-        // Get events hosted by this brand's user
+        // Every event this creator's account ever organised - cancelled, rejected
+        // and removed ones included - so the admin sees the whole history. This
+        // was capped at the latest 10, and the totals below were computed from
+        // that slice, so an older creator's count and sales were understated.
+        // Only the fields the page shows are read, to keep a long history light.
         const events = await Event.find({ organizer: brand.user._id })
+            .select('name status startDateTime endDateTime venue customVenue.name customVenue.city isDeleted currentAttendees maxAttendees')
             .populate('venue', 'name')
             // startDateTime, not `date`: no such path on the schema, so this sort did
             // nothing and "latest events" was arbitrary.
             .sort({ startDateTime: -1 })
-            .limit(10);
+            .lean();
 
-        // Get revenue from events
+        // Revenue across all of them, computed the same way as before (sum of
+        // ticket prices), now over the full history rather than ten events.
         const eventIds = events.map(e => e._id);
-        const ticketRevenue = await Ticket.aggregate([
-            { $match: { event: { $in: eventIds } } },
-            { $group: { _id: null, total: { $sum: '$price' } } }
-        ]);
+        const ticketRevenue = eventIds.length
+            ? await Ticket.aggregate([
+                { $match: { event: { $in: eventIds } } },
+                { $group: { _id: null, total: { $sum: '$price' } } }
+            ])
+            : [];
+        // Same rule as the Creators list count (getBrands), so both pages agree.
+        const HOSTED = ['approved', 'upcoming', 'ongoing', 'completed'];
+        const eventsHosted = events.filter(e => !e.isDeleted && HOSTED.includes(e.status)).length;
 
         return {
             ...brand.toObject(),
@@ -704,7 +812,8 @@ const adminService = {
                 // object, dropping them to undefined → the UI showed 0 for every
                 // creator.
                 ...(brand.stats || {}),
-                eventsHosted: events.length,
+                eventsHosted,
+                totalEvents: events.length,
                 totalRevenue: ticketRevenue[0]?.total || 0
             }
         };

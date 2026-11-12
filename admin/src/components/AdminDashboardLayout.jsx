@@ -1,104 +1,239 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import {
+    LayoutDashboard, Building2, CalendarDays, Ticket, Star, IdCard, Wallet, Undo2, Tag,
+    Users, UsersRound, ClipboardList, LogOut, PanelLeftClose, PanelLeftOpen, Menu, X, ChevronDown,
+} from 'lucide-react';
 import logo from '../assets/logo.png';
 import ErrorBoundary from './ErrorBoundary';
+import adminApi from '../api/adminApi';
 import { getAdminRoleFromToken } from '../lib/adminRole';
+import { humanize } from '../lib/statusStyles';
+import { cn } from '../lib/cn';
 
-const navItems = [
-    { href: '/', icon: 'home', label: 'Dashboard' },
-    { href: '/venues', icon: 'building', label: 'Venues' },
-    { href: '/venue-owners', icon: 'users', label: 'Venue Owners' },
-    { href: '/id-checks', icon: 'idcard', label: 'ID Checks' },
-    { href: '/bookings', icon: 'calendar', label: 'Venue Bookings' },
-    { href: '/payouts', icon: 'wallet', label: 'Payouts to owners' },
-    { href: '/events', icon: 'ticket', label: 'Events' },
-    { href: '/brands', icon: 'star', label: 'Brands' },
-    { href: '/users', icon: 'users', label: 'Users' },
-    { href: '/audit-trail', icon: 'clipboard', label: 'Audit Trail' },
-    { href: '/discount-codes', icon: 'tag', label: 'Discount Codes' },
-    { href: '/refunds', icon: 'refund', label: 'Refunds to be done' },
+/**
+ * The nav, grouped by what the admin is there to do. `pendingKey` names the
+ * /admin/stats field whose count is shown as a badge, so the sidebar itself
+ * says where work is waiting.
+ */
+const navGroups = [
+    {
+        label: 'Overview',
+        items: [{ href: '/', icon: LayoutDashboard, label: 'Dashboard' }],
+    },
+    {
+        label: 'Review',
+        items: [
+            { href: '/venues', icon: Building2, label: 'Venues', pendingKey: 'pendingVenues' },
+            { href: '/events', icon: Ticket, label: 'Events', pendingKey: 'pendingEvents' },
+            { href: '/brands', icon: Star, label: 'Brands', pendingKey: 'pendingBrands' },
+            { href: '/id-checks', icon: IdCard, label: 'ID Checks', pendingKey: 'pendingIdChecks' },
+        ],
+    },
+    {
+        label: 'Money',
+        items: [
+            { href: '/bookings', icon: CalendarDays, label: 'Venue Bookings' },
+            { href: '/payouts', icon: Wallet, label: 'Payouts to owners' },
+            { href: '/refunds', icon: Undo2, label: 'Refunds to be done', pendingKey: 'pendingRefunds' },
+            { href: '/discount-codes', icon: Tag, label: 'Discount Codes' },
+        ],
+    },
+    {
+        label: 'People',
+        items: [
+            { href: '/users', icon: Users, label: 'Users' },
+            { href: '/venue-owners', icon: UsersRound, label: 'Venue Owners' },
+        ],
+    },
+    {
+        label: 'System',
+        items: [{ href: '/audit-trail', icon: ClipboardList, label: 'Audit Trail' }],
+    },
 ];
 
 /**
- * Role-based nav visibility (Requirements 3.3, 3.4):
- * - super_admin: sees everything
- * - admin: hide admin role assignment (no dedicated nav item yet, so full nav)
- * - moderator: hide Users (block/unblock), role management
+ * Role-based nav visibility (Requirements 3.3, 3.4) - unchanged from before the
+ * redesign:
+ * - super_admin (or a legacy admin with no adminRole): sees everything
+ * - admin: sees everything; admin role assignment is guarded server-side
+ * - moderator: no Users (block/unblock), Audit Trail, Refunds (approving sends
+ *   money), ID Checks or Payouts - the server limits all of those to admin and
+ *   super_admin.
  */
-function getVisibleNavItems(adminRole) {
-    if (!adminRole || adminRole === 'super_admin') return navItems;
-    if (adminRole === 'moderator') {
-        // Hide Users page (contains block/unblock) and Audit Trail — role
-        // management pages don't exist as nav items yet; they'll be filtered here
-        // when added.
-        // Refunds too: approving one sends money, which the server limits to
-        // admin and super_admin.
-        // ID Checks: reviewing IDs is limited to admin and super_admin server-side.
-        // Payouts: earnings are limited to admin and super_admin server-side.
-        const hidden = new Set(['/users', '/audit-trail', '/refunds', '/id-checks', '/payouts']);
-        return navItems.filter((item) => !hidden.has(item.href));
-    }
-    // 'admin' — currently sees everything in nav; admin role assignment is
-    // guarded server-side and will be filtered when that nav item is added.
-    return navItems;
+const MODERATOR_HIDDEN = new Set(['/users', '/audit-trail', '/refunds', '/id-checks', '/payouts']);
+
+function getVisibleNavGroups(adminRole) {
+    if (adminRole !== 'moderator') return navGroups;
+    return navGroups
+        .map((group) => ({ ...group, items: group.items.filter((item) => !MODERATOR_HIDDEN.has(item.href)) }))
+        .filter((group) => group.items.length > 0);
 }
 
-// `onLogout` is passed by App.jsx but was not destructured here, so
-// handleLogout's `props.onLogout` threw "props is not defined" and logging out
-// did nothing.
+/** `/venues/123` belongs to Venues; `/venue-owners` does not. */
+function isActivePath(pathname, href) {
+    if (href === '/') return pathname === '/';
+    return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function findCurrent(pathname, groups) {
+    for (const group of groups) {
+        const item = group.items.find((i) => isActivePath(pathname, i.href));
+        if (item) return { group: group.label, item };
+    }
+    return null;
+}
+
+const COLLAPSED_KEY = 'admin_sidebar_collapsed';
+const STATS_REFRESH_MS = 2 * 60 * 1000;
+
+function useIsDesktop() {
+    const query = '(min-width: 1024px)';
+    const [isDesktop, setIsDesktop] = useState(() => window.matchMedia(query).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(query);
+        const onChange = (e) => setIsDesktop(e.matches);
+        mq.addEventListener('change', onChange);
+        return () => mq.removeEventListener('change', onChange);
+    }, []);
+    return isDesktop;
+}
+
+function readStoredUser() {
+    try {
+        const data = JSON.parse(localStorage.getItem('fira_admin_auth') || 'null');
+        return data ? { name: data.name || 'Admin', email: data.email || '' } : { name: 'Admin', email: '' };
+    } catch {
+        return { name: 'Admin', email: '' };
+    }
+}
+
+function CountBadge({ count, collapsed }) {
+    if (!count) return null;
+    const text = count > 99 ? '99+' : String(count);
+    if (collapsed) {
+        return <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-surface" aria-hidden="true" />;
+    }
+    return (
+        <span className="ml-auto rounded-full bg-amber-400/15 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums leading-none text-amber-300">
+            {text}
+        </span>
+    );
+}
+
+function UserMenu({ user, roleLabel, onLogout }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+
+    useEffect(() => {
+        if (!open) return undefined;
+        const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+        const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+        document.addEventListener('mousedown', onDown);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('mousedown', onDown);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [open]);
+
+    const initial = (user.name || 'A').charAt(0).toUpperCase();
+
+    return (
+        <div ref={ref} className="relative">
+            <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                className="flex items-center gap-2 rounded-xl px-1.5 py-1 text-left hover:bg-hover"
+            >
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-600 text-sm font-semibold text-white">
+                    {initial}
+                </span>
+                <span className="hidden min-w-0 sm:block">
+                    <span className="block max-w-[10rem] truncate text-sm font-medium text-white">{user.name}</span>
+                    <span className="block text-xs text-gray-400">{roleLabel}</span>
+                </span>
+                <ChevronDown className={cn('hidden h-4 w-4 text-gray-500 transition-transform sm:block', open && 'rotate-180')} aria-hidden="true" />
+            </button>
+            {open && (
+                <div role="menu" className="absolute right-0 z-50 mt-2 w-64 rounded-xl border border-line-strong bg-surface-raised p-1.5 shadow-2xl animate-fade-in">
+                    <div className="px-3 py-2.5">
+                        <p className="truncate text-sm font-medium text-white">{user.name}</p>
+                        {user.email && <p className="truncate text-xs text-gray-400">{user.email}</p>}
+                        <span className="mt-2 inline-block rounded-full border border-violet-500/25 bg-violet-500/10 px-2 py-0.5 text-xs text-violet-300">
+                            {roleLabel}
+                        </span>
+                    </div>
+                    <div className="my-1 h-px bg-line" />
+                    <button
+                        type="button"
+                        role="menuitem"
+                        onClick={onLogout}
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
+                    >
+                        <LogOut className="h-4 w-4" aria-hidden="true" />
+                        Sign out
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// `onLogout` is passed by App.jsx.
 export default function AdminDashboardLayout({ children, onLogout }) {
     const location = useLocation();
-    const [user, setUser] = useState(null);
-    const [isExpanded, setIsExpanded] = useState(() => {
-        // Desktop-only preference - on mobile this opens a full drawer.
-        if (window.innerWidth < 1024) return false;
-        const saved = localStorage.getItem('admin_sidebar_expanded');
-        return saved === 'true';
-    });
-    const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
+    const isDesktop = useIsDesktop();
+    const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === 'true');
+    const [drawerRequested, setDrawerOpen] = useState(false);
+    // The drawer belongs to one page on a phone-sized screen: navigating or
+    // widening to desktop closes it (adjusted during render, not in an effect).
+    const [drawerPath, setDrawerPath] = useState(location.pathname);
+    if (drawerPath !== location.pathname) {
+        setDrawerPath(location.pathname);
+        if (drawerRequested) setDrawerOpen(false);
+    }
+    const drawerOpen = drawerRequested && !isDesktop;
+    const [stats, setStats] = useState(null);
+    const [user] = useState(readStoredUser);
 
-    // Hover-to-peek, kept separate from the pinned `isExpanded` state so that
-    // hovering never overwrites the saved preference or shifts the page.
-    const [isHovered, setIsHovered] = useState(false);
-
-    // What the sidebar should LOOK like. Not used for the main content margin -
-    // on hover it overlays the page rather than pushing it sideways.
-    const isOpen = isExpanded || (!isMobile && isHovered);
-
-    // Decode adminRole from JWT and compute visible nav items.
     const adminRole = useMemo(() => getAdminRoleFromToken(), []);
-    const visibleNavItems = useMemo(() => getVisibleNavItems(adminRole), [adminRole]);
+    const visibleGroups = useMemo(() => getVisibleNavGroups(adminRole), [adminRole]);
+    const roleLabel = adminRole ? humanize(adminRole) : 'Admin';
 
-    // Load the signed-in admin. This used to hardcode "Admin User /
-    // admin@fira.com" regardless of who was logged in; the real details are
-    // stored at login now.
     useEffect(() => {
-        const storedAuth = localStorage.getItem('fira_admin_auth');
-        if (storedAuth) {
-            try {
-                const data = JSON.parse(storedAuth);
-                setUser({
-                    name: data?.name || 'Admin',
-                    email: data?.email || '',
-                    role: data?.role || 'admin',
-                });
-            } catch (e) {
-                console.error(e);
-            }
-        }
+        localStorage.setItem(COLLAPSED_KEY, String(collapsed));
+    }, [collapsed]);
+
+    // Escape closes the mobile drawer; the page behind it does not scroll.
+    useEffect(() => {
+        if (!drawerOpen) return undefined;
+        const onKey = (e) => { if (e.key === 'Escape') setDrawerOpen(false); };
+        const { overflow } = document.body.style;
+        document.body.style.overflow = 'hidden';
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('keydown', onKey);
+            document.body.style.overflow = overflow;
+        };
+    }, [drawerOpen]);
+
+    // Pending counts for the nav badges. Refreshed on navigation (at most every
+    // couple of minutes) so a badge clears soon after the work is done. A failure
+    // just leaves the badges off - the nav never depends on it.
+    const lastFetch = useRef(0);
+    const loadStats = useCallback(() => {
+        if (Date.now() - lastFetch.current < STATS_REFRESH_MS) return;
+        lastFetch.current = Date.now();
+        adminApi.getStats().then(setStats).catch(() => {});
     }, []);
-
-    // Track screen size
+    useEffect(() => { loadStats(); }, [location.pathname, loadStats]);
     useEffect(() => {
-        const handleResize = () => setIsMobile(window.innerWidth < 1024);
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
-    }, []);
-
-    // Persist sidebar state
-    useEffect(() => {
-        localStorage.setItem('admin_sidebar_expanded', String(isExpanded));
-    }, [isExpanded]);
+        const id = setInterval(() => { lastFetch.current = 0; loadStats(); }, STATS_REFRESH_MS);
+        return () => clearInterval(id);
+    }, [loadStats]);
 
     const handleLogout = () => {
         if (onLogout) {
@@ -110,233 +245,163 @@ export default function AdminDashboardLayout({ children, onLogout }) {
         }
     };
 
-    const getIcon = (name) => {
-        const icons = {
-            'home': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-                </svg>
-            ),
-            'building': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                </svg>
-            ),
-            'ticket': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
-                </svg>
-            ),
-            'star': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                </svg>
-            ),
-            'users': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-            ),
-            'clipboard': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                </svg>
-            ),
-            'cog': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-            ),
-            'tag': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-                </svg>
-            ),
-            'refund': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                </svg>
-            ),
-            'calendar': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-            ),
-            'wallet': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7a2 2 0 012-2h13a1 1 0 011 1v2M3 7v11a2 2 0 002 2h14a1 1 0 001-1v-3M3 7h16a1 1 0 011 1v3m0 5h-4a2.5 2.5 0 010-5h4m0 5v-5" />
-                </svg>
-            ),
-            'idcard': (
-                <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
-                </svg>
-            ),
-        };
-        return icons[name] || null;
-    };
+    // Which nav item the current URL belongs to, for the top bar's "Group / Page".
+    // A dozen string compares: cheaper to redo than to memoise.
+    const current = findCurrent(location.pathname, visibleGroups);
+
+    // On desktop the rail can be collapsed; the mobile drawer is always full width.
+    const rail = isDesktop && collapsed;
+
+    const nav = (
+        <nav aria-label="Admin navigation" className="flex-1 overflow-y-auto px-3 py-4">
+            {visibleGroups.map((group) => (
+                <div key={group.label} className="mb-5 last:mb-0">
+                    {rail ? (
+                        <div className="mx-auto mb-2 h-px w-6 bg-line" aria-hidden="true" />
+                    ) : (
+                        <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-gray-500">{group.label}</p>
+                    )}
+                    <ul className="space-y-0.5">
+                        {group.items.map((item) => {
+                            const active = isActivePath(location.pathname, item.href);
+                            const count = item.pendingKey ? stats?.[item.pendingKey] : 0;
+                            const Icon = item.icon;
+                            return (
+                                <li key={item.href}>
+                                    <Link
+                                        to={item.href}
+                                        aria-current={active ? 'page' : undefined}
+                                        title={rail ? `${item.label}${count ? ` (${count} pending)` : ''}` : undefined}
+                                        className={cn(
+                                            'relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                                            rail && 'justify-center px-0',
+                                            active
+                                                ? 'bg-white/[0.08] text-white'
+                                                : 'text-gray-400 hover:bg-hover hover:text-white'
+                                        )}
+                                    >
+                                        {active && <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-violet-400" aria-hidden="true" />}
+                                        <Icon className={cn('h-[18px] w-[18px] shrink-0', active && 'text-violet-300')} aria-hidden="true" />
+                                        {!rail && <span className="truncate">{item.label}</span>}
+                                        {rail && <span className="sr-only">{item.label}</span>}
+                                        <CountBadge count={count} collapsed={rail} />
+                                        {count > 0 && <span className="sr-only">, {count} pending</span>}
+                                    </Link>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                </div>
+            ))}
+        </nav>
+    );
+
+    const brand = (
+        <Link to="/" className="flex min-w-0 items-center gap-2.5" aria-label="FIRA Admin home">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-black">
+                <img src={logo} alt="" className="h-full w-full object-contain" />
+            </span>
+            {!rail && (
+                <span className="text-sm font-semibold text-white">
+                    FIRA <span className="font-normal text-gray-400">Admin</span>
+                </span>
+            )}
+        </Link>
+    );
 
     return (
-        <div className="min-h-screen bg-[#0a0a0a] flex relative">
-            {/* Dark background */}
-            <div className="party-bg"></div>
-
-            {/* Party Light Rays */}
-            <div className="fixed top-0 left-0 w-full h-full pointer-events-none z-0 overflow-hidden">
-                <div className="absolute top-0 left-1/2 w-[300px] h-[120vh] origin-top -translate-x-1/2 rotate-[-55deg] bg-gradient-to-b from-red-500/25 via-red-500/5 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 w-[250px] h-[110vh] origin-top -translate-x-1/2 rotate-[-35deg] bg-gradient-to-b from-orange-500/20 via-orange-500/5 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 w-[200px] h-[100vh] origin-top -translate-x-1/2 rotate-[-18deg] bg-gradient-to-b from-yellow-400/18 via-yellow-400/3 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 w-[180px] h-[95vh] origin-top -translate-x-1/2 rotate-[-5deg] bg-gradient-to-b from-emerald-400/15 via-emerald-400/3 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 w-[200px] h-[100vh] origin-top -translate-x-1/2 rotate-[8deg] bg-gradient-to-b from-blue-500/18 via-blue-500/5 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 w-[250px] h-[110vh] origin-top -translate-x-1/2 rotate-[25deg] bg-gradient-to-b from-violet-500/22 via-violet-500/5 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 w-[280px] h-[115vh] origin-top -translate-x-1/2 rotate-[42deg] bg-gradient-to-b from-pink-500/20 via-pink-500/5 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 w-[300px] h-[120vh] origin-top -translate-x-1/2 rotate-[58deg] bg-gradient-to-b from-fuchsia-500/25 via-fuchsia-500/5 to-transparent blur-2xl"></div>
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[400px] h-[200px] bg-gradient-to-b from-white/20 via-white/3 to-transparent blur-3xl"></div>
-            </div>
-
-            {/* Backdrop overlay on mobile when sidebar is open */}
-            {isMobile && isExpanded && (
-                <div
-                    className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden transition-opacity duration-300"
-                    onClick={() => setIsExpanded(false)}
-                    aria-hidden="true"
-                />
-            )}
-
-            {/* Mobile hamburger - only while the drawer is closed. When it was
-                also the close button it stayed pinned top-left and sat on top of
-                the drawer's logo; the open drawer has its own ✕ in its header. */}
-            {isMobile && !isExpanded && (
-                <button
-                    onClick={() => setIsExpanded(true)}
-                    className="fixed top-4 left-4 z-50 p-2.5 bg-black/80 backdrop-blur-md border border-white/10 rounded-full text-gray-400 hover:text-white transition-colors"
-                    aria-label="Open navigation"
-                >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                    </svg>
-                </button>
-            )}
-
-            {/* Sidebar - icon rail by default, expands to labels */}
+        <div className="min-h-screen bg-background">
+            {/* Desktop sidebar */}
             <aside
-                onMouseEnter={() => setIsHovered(true)}
-                onMouseLeave={() => setIsHovered(false)}
-                role="navigation"
-                aria-label="Admin navigation"
-                // inset-y-0 rather than top-0 + h-full: `height:100%` on a fixed
-                // element resolves against the viewport, which mobile browsers
-                // resize as the URL bar hides on scroll - that made the pinned
-                // bottom section drift.
-                // Width follows isOpen on ALL sizes now - previously mobile was
-                // locked to a 68px rail with no way to expand it.
-                className={`fixed left-0 inset-y-0 bg-black/95 lg:bg-black/60 backdrop-blur-xl border-r border-white/[0.08] z-40 flex flex-col shadow-[0_0_60px_rgba(168,85,247,0.1)] transition-all duration-300 ease-in-out ${isOpen ? 'w-64' : 'w-0 overflow-hidden lg:w-20 lg:overflow-visible'}`}
+                className={cn(
+                    'fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-line bg-surface transition-[width] duration-200 lg:flex',
+                    rail ? 'w-[72px]' : 'w-64'
+                )}
             >
-                {/* Logo + collapse toggle — logo stacked with ADMIN below it,
-                    left-aligned. The logo uses the white version on a black bg
-                    so it reads on any theme. */}
-                <div className="p-4 border-b border-white/[0.08] flex items-center h-20 relative gap-3">
-                    {/* Logo with ADMIN stacked directly beneath it. The logo art
-                        already reads "fira", so a separate FIRA text line was
-                        redundant - ADMIN alone under the mark now. */}
-                    <Link to="/" className="flex flex-col items-center gap-0.5">
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden bg-black flex-shrink-0">
-                            <img src={logo} alt="Fira Logo" className="w-full h-full object-contain" />
-                        </div>
-                        {isOpen && (
-                            <span className="text-[9px] text-gray-400 font-medium tracking-widest uppercase leading-none">Admin</span>
-                        )}
-                    </Link>
-
-                    {/* Close / collapse toggle, at the right of the header so it
-                        never covers the logo. On mobile it closes the drawer. */}
-                    {isOpen && (
-                        <button
-                            onClick={() => setIsExpanded(prev => !prev)}
-                            className="absolute top-1/2 -translate-y-1/2 right-3 text-gray-400 hover:text-white p-2 rounded-full hover:bg-white/10"
-                            title={isMobile ? 'Close navigation' : 'Collapse sidebar'}
-                            aria-label={isMobile ? 'Close navigation' : 'Collapse sidebar'}
-                        >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
-                    )}
+                <div className={cn('flex h-16 items-center border-b border-line px-4', rail ? 'justify-center' : 'justify-between')}>
+                    {brand}
                 </div>
-
-                {/* Navigation */}
-                <nav className="flex-1 p-2 lg:p-3 space-y-1 overflow-y-auto">
-                    {visibleNavItems.map((item) => {
-                        const isActive = location.pathname === item.href;
-                        return (
-                            <Link
-                                key={item.href}
-                                to={item.href}
-                                // Close the drawer after navigating on mobile,
-                                // otherwise it stays over the page you just opened.
-                                onClick={() => { if (isMobile) setIsExpanded(false); }}
-                                className={`flex items-center gap-3 px-3 py-3.5 lg:py-3 rounded-xl transition-all duration-300 overflow-hidden ${isActive
-                                    ? 'bg-white text-black shadow-lg shadow-white/10'
-                                    : 'text-gray-400 hover:bg-white/[0.06] hover:text-white'
-                                    } ${isOpen ? '' : 'justify-center'}`}
-                                title={!isOpen ? item.label : undefined}
-                            >
-                                <span className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
-                                    {getIcon(item.icon)}
-                                </span>
-                                {isOpen && (
-                                    <span className="font-medium whitespace-nowrap">
-                                        {item.label}
-                                    </span>
-                                )}
-                            </Link>
-                        );
-                    })}
-                </nav>
-
-                <div className="p-2 lg:p-3 border-t border-white/[0.08] bg-black/20">
-                    {/* User avatar */}
-                    <div className={`flex items-center gap-3 px-2 lg:px-3 py-2 lg:py-3 ${isOpen ? '' : 'justify-center'}`}>
-                        <div className="w-9 h-9 lg:w-10 lg:h-10 rounded-full bg-gradient-to-br from-violet-500 to-pink-500 flex items-center justify-center text-white text-sm font-medium shadow-lg shadow-violet-500/25 flex-shrink-0">
-                            {user?.name?.charAt(0)?.toUpperCase() || 'A'}
-                        </div>
-                        {isOpen && (
-                            <div className="flex-1 min-w-0">
-                                <div className="text-sm font-medium text-white truncate break-words">{user?.name || 'Admin'}</div>
-                                <div className="text-xs text-gray-300 truncate">{user?.email}</div>
-                            </div>
-                        )}
-                    </div>
-                    {/* Logout Button */}
+                {nav}
+                <div className="border-t border-line p-3">
                     <button
-                        onClick={handleLogout}
-                        className={`w-full flex items-center gap-3 px-2 lg:px-3 py-2.5 mt-1 rounded-xl text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-all duration-300 ${isOpen ? '' : 'justify-center'}`}
-                        title="Sign Out"
-                        aria-label="Sign Out"
+                        type="button"
+                        onClick={() => setCollapsed((v) => !v)}
+                        className={cn('flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-gray-400 hover:bg-hover hover:text-white', rail && 'justify-center px-0')}
+                        aria-label={rail ? 'Expand sidebar' : 'Collapse sidebar'}
+                        title={rail ? 'Expand sidebar' : undefined}
                     >
-                        <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                        </svg>
-                        {isOpen && (
-                            <span className="font-medium whitespace-nowrap">Sign Out</span>
-                        )}
+                        {rail ? <PanelLeftOpen className="h-[18px] w-[18px]" aria-hidden="true" /> : <PanelLeftClose className="h-[18px] w-[18px]" aria-hidden="true" />}
+                        {!rail && <span>Collapse</span>}
                     </button>
                 </div>
             </aside>
 
-            {/* Main Content */}
-            {/* Margin tracks the COLLAPSED rail only, so hovering or opening the
-                drawer overlays the page rather than shoving it sideways.
-                min-w-0 matters on phones: a flex child's min-width defaults to its
-                content, so a wide table stretched <main> past the screen, where
-                #root's overflow-x: clip cut it off - the table's own
-                overflow-x-auto wrapper never got the chance to scroll. */}
-            <main className={`flex-1 min-w-0 min-h-screen relative z-10 pt-16 pb-20 lg:pt-4 lg:pb-0 transition-all duration-300 ${!isMobile && isExpanded ? 'ml-64' : 'ml-0 lg:ml-20'}`}>
-                <ErrorBoundary fallbackMessage="Something went wrong in the admin panel.">
-                    {children}
-                </ErrorBoundary>
-            </main>
+            {/* Mobile drawer */}
+            {drawerOpen && (
+                <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+                    <div className="absolute inset-0 bg-black/70 animate-fade-in" onClick={() => setDrawerOpen(false)} aria-hidden="true" />
+                    <aside className="absolute inset-y-0 left-0 flex w-[17rem] max-w-[85vw] flex-col border-r border-line bg-surface shadow-2xl animate-slide-up">
+                        <div className="flex h-16 items-center justify-between border-b border-line px-4">
+                            {brand}
+                            <button
+                                type="button"
+                                onClick={() => setDrawerOpen(false)}
+                                className="rounded-lg p-2 text-gray-400 hover:bg-hover hover:text-white"
+                                aria-label="Close navigation"
+                            >
+                                <X className="h-5 w-5" aria-hidden="true" />
+                            </button>
+                        </div>
+                        {nav}
+                        <div className="border-t border-line p-3">
+                            <button
+                                type="button"
+                                onClick={handleLogout}
+                                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
+                            >
+                                <LogOut className="h-[18px] w-[18px]" aria-hidden="true" />
+                                Sign out
+                            </button>
+                        </div>
+                    </aside>
+                </div>
+            )}
+
+            <div className={cn('flex min-h-screen min-w-0 flex-col transition-[padding] duration-200', rail ? 'lg:pl-[72px]' : 'lg:pl-64')}>
+                {/* Top bar */}
+                <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-line bg-background/90 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/75 sm:px-6 lg:px-8">
+                    <button
+                        type="button"
+                        onClick={() => setDrawerOpen(true)}
+                        className="-ml-1 rounded-lg p-2 text-gray-300 hover:bg-hover hover:text-white lg:hidden"
+                        aria-label="Open navigation"
+                        aria-expanded={drawerOpen}
+                    >
+                        <Menu className="h-5 w-5" aria-hidden="true" />
+                    </button>
+                    <div className="min-w-0 flex-1">
+                        {current && (
+                            <p className="truncate text-sm">
+                                <span className="text-gray-500">{current.group}</span>
+                                <span className="mx-1.5 text-gray-600" aria-hidden="true">/</span>
+                                <span className="font-medium text-white">{current.item.label}</span>
+                            </p>
+                        )}
+                    </div>
+                    <UserMenu user={user} roleLabel={roleLabel} onLogout={handleLogout} />
+                </header>
+
+                {/* min-w-0 matters on phones: a flex child's min-width defaults to
+                    its content, so a wide table would stretch <main> past the
+                    screen instead of scrolling inside its own wrapper. */}
+                <main className="relative min-w-0 flex-1 pb-16">
+                    <div className="admin-content mx-auto w-full">
+                        <ErrorBoundary fallbackMessage="Something went wrong in the admin panel.">
+                            {children}
+                        </ErrorBoundary>
+                    </div>
+                </main>
+            </div>
         </div>
     );
 }

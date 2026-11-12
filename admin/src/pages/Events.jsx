@@ -1,604 +1,386 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Ticket, Check, X, Ban, RotateCcw, Trash2, CircleCheck, Info, MapPin, CalendarClock, Tags } from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn } from '../components/animations';
+import { useListParams } from '../lib/useListParams';
+import { useRemote } from '../lib/useRemote';
+import { useBulkSelection } from '../lib/useBulkSelection';
+import { useBulkRunner } from '../lib/useBulkRunner';
+import { formatDateTime } from '../lib/formatDateTime';
+import { eventActions, eventAwaitsAdmin, decideEvent, EVENT_DELETE_MESSAGE, useConfirmedAction } from '../lib/listingActions';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Card } from '../components/ui/Card';
+import { FilterTabs } from '../components/ui/FilterTabs';
+import { SearchInput } from '../components/ui/SearchInput';
+import { Select } from '../components/ui/Select';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import { Table, THead, Th, TBody, Td } from '../components/ui/Table';
+import { IconButton, RowCheckbox } from '../components/ui/IconButton';
 import { Button } from '../components/ui/Button';
 import { Pagination } from '../components/ui/Pagination';
-import { useBulkSelection } from '../lib/useBulkSelection';
+import { EmptyState, ErrorState, TableSkeleton, Skeleton } from '../components/ui/States';
+import { useConfirm } from '../components/ui/confirmContext';
+import { useToast } from '../components/ui/toastContext';
 import BulkActionBar from '../components/BulkActionBar';
-
-// Helper to format DateTime like "30 Dec 2025 14:00"
-const formatDateTime = (dateTimeStr) => {
-    if (!dateTimeStr) return 'N/A';
-    const dt = new Date(dateTimeStr);
-    if (isNaN(dt.getTime())) return 'Invalid Date';
-    const day = dt.getDate();
-    const month = dt.toLocaleString('en-US', { month: 'short' });
-    const year = dt.getFullYear();
-    const hours = dt.getHours().toString().padStart(2, '0');
-    const mins = dt.getMinutes().toString().padStart(2, '0');
-    return `${day} ${month} ${year} ${hours}:${mins}`;
-};
+import TicketTiers, { TierPriceRange } from '../components/TicketTiers';
+import EventRejectDialog from '../components/EventRejectDialog';
 
 const ITEMS_PER_PAGE = 10;
+const STATUSES = ['all', 'upcoming', 'approved', 'ongoing', 'completed', 'cancelled', 'rejected', 'pending', 'blocked'];
+const TYPES = [
+    { value: 'all', label: 'Public and private' },
+    { value: 'public', label: 'Public only' },
+    { value: 'private', label: 'Private only' },
+];
+
+const venueName = (event) => (event.customVenue?.isCustom ? event.customVenue.name : event.venue?.name) || '—';
+const venueCity = (event) => (event.customVenue?.isCustom ? event.customVenue.city : event.venue?.address?.city) || 'Unknown location';
+
+// Tickets sold against capacity, e.g. "120 / 200". currentAttendees is the live
+// counter: ticket sales add to it and refunds take it back down.
+function TicketsSold({ event }) {
+    const sold = event.currentAttendees || 0;
+    const max = event.maxAttendees || 0;
+    const pct = max > 0 ? Math.min(100, Math.round((sold / max) * 100)) : 0;
+    return (
+        <div className="min-w-[90px]">
+            <p className="tabular-nums text-white">{sold.toLocaleString('en-IN')}<span className="text-gray-500"> / {max ? max.toLocaleString('en-IN') : '—'}</span></p>
+            {max > 0 && (
+                <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/[0.08]" aria-hidden="true">
+                    <div className={`h-full rounded-full ${pct >= 100 ? 'bg-amber-400' : 'bg-violet-400'}`} style={{ width: `${pct}%` }} />
+                </div>
+            )}
+        </div>
+    );
+}
+
+function ApprovalSteps({ event }) {
+    const step = (label, value) => (
+        <StatusBadge value={value || 'pending'} className="w-fit">{label}: {value || 'pending'}</StatusBadge>
+    );
+    return (
+        <div className="flex flex-col gap-1">
+            {step('Venue', event.venueApproval?.status)}
+            {step('Admin', event.adminApproval?.status)}
+        </div>
+    );
+}
+
+function PendingCard({ event, busy, onView, onApprove, onReject }) {
+    return (
+        <Card>
+            <div className="flex flex-col justify-between gap-5 lg:flex-row">
+                <div className="min-w-0 flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                        <StatusBadge tone="success" icon={Check}>Venue approved</StatusBadge>
+                        <StatusBadge tone="warning">Waiting for admin</StatusBadge>
+                    </div>
+                    <h3 className="text-lg font-semibold text-white">{event.name}</h3>
+                    <dl className="mt-4 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                        <div>
+                            <dt className="mb-1 flex items-center gap-1.5 text-xs text-gray-400"><MapPin className="h-3.5 w-3.5" aria-hidden="true" />Venue</dt>
+                            <dd className="text-white">{venueName(event)}</dd>
+                            <dd className="text-xs text-gray-400">{venueCity(event)}</dd>
+                        </div>
+                        <div>
+                            <dt className="mb-1 flex items-center gap-1.5 text-xs text-gray-400"><CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />Starts</dt>
+                            <dd className="text-white">{formatDateTime(event.startDateTime)}</dd>
+                        </div>
+                        <div>
+                            <dt className="mb-1 flex items-center gap-1.5 text-xs text-gray-400"><CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />Ends</dt>
+                            <dd className="text-white">{formatDateTime(event.endDateTime)}</dd>
+                        </div>
+                        <div>
+                            {/* Every category with its price and quantity - the approval
+                                decision used to be made without seeing any price at all. */}
+                            <dt className="mb-1 flex items-center gap-1.5 text-xs text-gray-400"><Tags className="h-3.5 w-3.5" aria-hidden="true" />Tickets · {(event.maxAttendees ?? 0).toLocaleString('en-IN')} total</dt>
+                            <dd><TicketTiers event={event} compact /></dd>
+                        </div>
+                    </dl>
+                    <p className="mt-4 border-t border-line pt-3 text-sm text-gray-400">
+                        Organizer: <span className="text-white">{event.organizer?.name || '—'}</span>
+                        {event.organizer?.email && <span> · {event.organizer.email}</span>}
+                    </p>
+                </div>
+                <div className="flex flex-row justify-end gap-2 lg:flex-col">
+                    <Button size="sm" variant="secondary" onClick={onView}>View details</Button>
+                    <Button size="sm" variant="success" onClick={onApprove} isLoading={busy} leftIcon={<Check className="h-4 w-4" aria-hidden="true" />}>Approve</Button>
+                    <Button size="sm" variant="danger" onClick={onReject} disabled={busy} leftIcon={<X className="h-4 w-4" aria-hidden="true" />}>Reject</Button>
+                </div>
+            </div>
+        </Card>
+    );
+}
+
+const loadPendingCount = () => adminApi.getPendingEventApprovals({ page: 1, limit: 1 });
 
 export default function Events() {
     const navigate = useNavigate();
-    const [activeTab, setActiveTab] = useState('all'); // 'all' (default) or 'pending'
-    const [events, setEvents] = useState([]);
-    const [pendingEvents, setPendingEvents] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [filter, setFilter] = useState('all');
-    const [search, setSearch] = useState('');
-    const [searchInput, setSearchInput] = useState('');
-    const [currentPage, setCurrentPage] = useState(1);
-    const [totalPages, setTotalPages] = useState(1);
-    const [total, setTotal] = useState(0);
+    const confirm = useConfirm();
+    const toast = useToast();
+    const runAction = useConfirmedAction();
+    // ?tab=pending opens the approvals queue (the dashboard links here that way).
+    const { params, set } = useListParams({ tab: 'all', status: 'all', type: 'all', q: '', page: 1 });
+    const tab = params.tab === 'pending' ? 'pending' : 'all';
+    const status = STATUSES.includes(params.status) ? params.status : 'all';
+    const type = TYPES.some((t) => t.value === params.type) ? params.type : 'all';
+
+    const loadList = useCallback(() => {
+        if (tab === 'pending') {
+            return adminApi.getPendingEventApprovals({ page: params.page, limit: ITEMS_PER_PAGE }).then((d) => ({ ...d, tab }));
+        }
+        // No includeCompleted flag: that is a param of the *public* /api/events
+        // route. The admin listing is /api/admin/events, which has no status
+        // allow-list at all, so `status: 'completed'` is enough here.
+        const query = { page: params.page, limit: ITEMS_PER_PAGE };
+        if (status !== 'all') query.status = status;
+        if (type !== 'all') query.eventType = type;
+        if (params.q) query.search = params.q;
+        return adminApi.getEvents(query).then((d) => ({ ...d, tab }));
+    }, [tab, status, type, params.page, params.q]);
+    const remote = useRemote(loadList);
+    const { error, reload } = remote;
+    // Each answer is tagged with its tab: just after switching, the other tab's
+    // rows are still held, and must not be drawn in this tab's layout.
+    const sameTab = remote.data?.tab === tab;
+    const data = sameTab ? remote.data : undefined;
+    const loading = remote.loading || (!sameTab && !error);
+    const refreshing = sameTab && remote.refreshing;
+    // The queue's size for the tab badge, whichever tab is open. (It used to
+    // read the pending list, which was only loaded on the pending tab, so on
+    // "All events" the badge never showed.)
+    const { data: pendingData, reload: reloadPending } = useRemote(loadPendingCount);
+
+    const events = data?.events || [];
+    const totalPages = data?.totalPages || 1;
+    const total = data?.total || 0;
+    const pendingTotal = pendingData?.total || 0;
+
     const [processingId, setProcessingId] = useState(null);
-    const [rejectingEvent, setRejectingEvent] = useState(null);
-    const [rejectionReason, setRejectionReason] = useState('');
-    const [bulkBusy, setBulkBusy] = useState(false);
+    const [rejecting, setRejecting] = useState(null);
     const bulk = useBulkSelection();
     const pageIds = events.map((e) => e._id);
+    const refresh = () => { reload(); reloadPending(); };
 
-    // Lock body scroll while the hand-rolled rejection overlay is open.
-    // Inline effect mirrors client's useBodyScrollLock / <Modal> (admin is JS, not TS).
-    useEffect(() => {
-        if (!rejectingEvent) return;
-        document.body.style.overflow = 'hidden';
-        return () => {
-            document.body.style.overflow = 'unset';
-        };
-    }, [rejectingEvent]);
-
-    // Mock admin ID - in real app this would come from auth context
-    const adminId = 'admin-user-id';
-
-    useEffect(() => {
-        if (activeTab === 'pending') {
-            fetchPendingEvents();
-        } else {
-            fetchEvents();
-        }
-    }, [activeTab, filter, currentPage, search]);
-
-    const fetchPendingEvents = async () => {
+    const approve = async (event) => {
+        const ok = await confirm({ title: `Approve "${event.name}"?`, message: 'It will go live immediately.', confirmLabel: 'Approve event' });
+        if (!ok) return;
+        setProcessingId(event._id);
         try {
-            setLoading(true);
-            const data = await adminApi.getPendingEventApprovals({ page: currentPage, limit: ITEMS_PER_PAGE });
-            setPendingEvents(data.events || []);
-            setTotalPages(data.totalPages || 1);
-            setTotal(data.total || 0);
+            await decideEvent(event._id, 'approved');
+            toast.success(`"${event.name}" is approved`);
+            refresh();
         } catch (err) {
-            console.error('Failed to fetch pending events:', err);
-            setPendingEvents([]);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const fetchEvents = async () => {
-        try {
-            setLoading(true);
-            // No includeCompleted flag: that is a param of the *public* /api/events
-            // route. The admin listing is /api/admin/events, which has no status
-            // allow-list at all, so `status: 'completed'` is enough here.
-            const params = { page: currentPage, limit: ITEMS_PER_PAGE };
-            if (filter === 'public' || filter === 'private') {
-                params.eventType = filter;
-            } else if (filter !== 'all') {
-                params.status = filter;
-            }
-            if (search) params.search = search;
-            const data = await adminApi.getEvents(params);
-            setEvents(data.events || []);
-            setTotalPages(data.totalPages || 1);
-            setTotal(data.total || 0);
-        } catch (err) {
-            console.error('Failed to fetch events:', err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleSearch = (e) => {
-        e.preventDefault();
-        setSearch(searchInput);
-        setCurrentPage(1);
-    };
-
-    const handleAdminApprove = async (eventId, status, reason = '') => {
-        // Approve goes straight through (positive action). Reject opens the
-        // rejection modal which has its own confirm flow. Both are guarded.
-        if (status === 'approved' && !window.confirm('Approve this event? It will go live immediately.')) return;
-        setProcessingId(eventId);
-        try {
-            await adminApi.adminApproveEvent(eventId, adminId, status, reason);
-            setRejectingEvent(null);
-            setRejectionReason('');
-            if (activeTab === 'pending') {
-                fetchPendingEvents();
-            } else {
-                fetchEvents();
-            }
-        } catch (err) {
-            console.error('Failed to update event:', err);
-            alert('Failed to update event status');
+            toast.error(err?.message || 'Failed to update event status');
         } finally {
             setProcessingId(null);
         }
     };
 
-    const handleBlock = async (id, e) => {
-        e.stopPropagation();
-        if (!window.confirm('Block this event? It will be hidden from all listings.')) return;
+    const reject = async (reason) => {
+        const event = rejecting;
+        setProcessingId(event._id);
         try {
-            await adminApi.updateEventStatus(id, 'blocked');
-            fetchEvents();
+            await decideEvent(event._id, 'rejected', reason);
+            setRejecting(null);
+            toast.success(`"${event.name}" is rejected`);
+            refresh();
         } catch (err) {
-            console.error('Failed to block event:', err);
+            toast.error(err?.message || 'Failed to update event status');
+        } finally {
+            setProcessingId(null);
         }
     };
 
-    // Soft delete on the server: the event leaves every listing but its tickets
-    // and revenue stay queryable. If tickets were sold, the server cancels them and
-    // raises their refunds in Refunds - this is also how an organizer's removal
-    // request is approved.
-    const handleDelete = async (event, e) => {
-        e.stopPropagation();
-        if (!window.confirm(`Delete "${event.name}"?\n\nIt will be removed from all listings. If tickets were sold, they are cancelled and their refunds are added to Refunds for you to pay.`)) return;
-        try {
-            await adminApi.deleteEvent(event._id);
-            fetchEvents();
-        } catch (err) {
-            console.error('Failed to delete event:', err);
-            alert(err.message || 'Failed to delete event');
-        }
-    };
+    const block = async (event) => { if (await runAction(eventActions(event).block)) refresh(); };
+    const unblock = async (event) => { if (await runAction(eventActions(event).unblock)) refresh(); };
+    const remove = async (event) => { if (await runAction(eventActions(event).remove)) refresh(); };
 
-    const getStatusColor = (status) => {
-        switch (status) {
-            case 'approved': return 'bg-green-500/20 text-green-400 border-green-500/30';
-            case 'upcoming': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
-            case 'ongoing': return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
-            case 'completed': return 'bg-slate-500/20 text-slate-300 border-slate-500/30';
-            case 'pending': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-            case 'rejected': return 'bg-red-500/20 text-red-400 border-red-500/30';
-            case 'cancelled': return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-            case 'blocked': return 'bg-red-700/20 text-red-300 border-red-700/30';
-            default: return 'bg-gray-500/20 text-gray-400';
-        }
-    };
+    const { busy: bulkBusy, run } = useBulkRunner({ bulk, reload: refresh, noun: ['event', 'events'] });
+    const bulkActions = [
+        // Called directly: it used to go through the single-row approve, which
+        // asked to confirm again for every selected event.
+        { label: 'Approve', onClick: () => run({ verb: 'Approve', past: 'Approved', message: 'They will go live immediately.', fn: (id) => decideEvent(id, 'approved') }) },
+        { label: 'Block', variant: 'danger', onClick: () => run({ verb: 'Block', past: 'Blocked', danger: true, fn: (id) => adminApi.updateEventStatus(id, 'blocked') }) },
+        { label: 'Delete', variant: 'danger', onClick: () => run({ verb: 'Delete', past: 'Deleted', danger: true, message: EVENT_DELETE_MESSAGE, requireText: 'DELETE', fn: (id) => adminApi.deleteEvent(id) }) },
+    ];
+
+    const statusTabs = STATUSES.map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) }));
+    const filtered = params.q || status !== 'all' || type !== 'all';
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
-            <FadeIn>
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-                    <div>
-                        <h1 className="text-3xl font-bold text-white mb-2">Events</h1>
-                        <div className="flex items-center gap-2 text-gray-300">
-                            <span>Manage and approve event listings</span>
-                            <span className="w-1 h-1 rounded-full bg-gray-600"></span>
-                            <span>{total} total</span>
-                        </div>
+            <PageHeader title="Events" description="Manage and approve event listings" count={loading || tab === 'pending' ? null : total} />
+
+            <div className="mb-5">
+                <FilterTabs
+                    label="Event view"
+                    value={tab}
+                    onChange={(v) => { bulk.clear(); set({ tab: v }); }}
+                    options={[
+                        { value: 'all', label: 'All events' },
+                        { value: 'pending', label: 'Pending approvals', count: pendingTotal },
+                    ]}
+                />
+            </div>
+
+            {tab === 'pending' ? (
+                <div className="space-y-4">
+                    <div className="flex items-start gap-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-4 text-sm">
+                        <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+                        <p className="text-amber-100/80">
+                            These events have been approved by their venue owners and are waiting for your final approval to go live.
+                        </p>
                     </div>
-                    {pendingEvents.length > 0 && activeTab === 'all' && (
-                        <div
-                            onClick={() => setActiveTab('pending')}
-                            className="bg-yellow-500/10 text-yellow-400 px-4 py-2 rounded-xl border border-yellow-500/20 flex items-center gap-2 cursor-pointer hover:bg-yellow-500/20 transition-colors"
-                        >
-                            <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
-                            {pendingEvents.length} pending approvals
+
+                    {error ? (
+                        <Card><ErrorState title="Couldn't load pending events" message={error} onRetry={reload} /></Card>
+                    ) : loading ? (
+                        <div className="space-y-4" role="status" aria-label="Loading">
+                            {[0, 1].map((i) => <Skeleton key={i} className="h-44 rounded-2xl" />)}
+                        </div>
+                    ) : events.length === 0 ? (
+                        <Card>
+                            <EmptyState icon={CircleCheck} title="All caught up" message="No events are waiting for approval." />
+                        </Card>
+                    ) : (
+                        <div className={`space-y-4 transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
+                            {events.map((event) => (
+                                <PendingCard
+                                    key={event._id}
+                                    event={event}
+                                    busy={processingId === event._id}
+                                    onView={() => navigate(`/events/${event._id}`)}
+                                    onApprove={() => approve(event)}
+                                    onReject={() => setRejecting(event)}
+                                />
+                            ))}
+                            <Card padded={false}>
+                                <Pagination currentPage={params.page} totalPages={totalPages} onChange={(page) => set({ page })} className="border-t-0" />
+                            </Card>
                         </div>
                     )}
                 </div>
-
-                {/* Tab Navigation — All Events on the left (the default view),
-                    Pending Approvals pushed to the right with ml-auto. */}
-                <div className="flex gap-4 border-b border-white/10 mb-6">
-                    <button
-                        onClick={() => { setActiveTab('all'); setCurrentPage(1); }}
-                        className={`pb-3 px-1 text-sm font-medium transition-all relative ${activeTab === 'all'
-                                ? 'text-violet-400'
-                                : 'text-gray-400 hover:text-white'
-                            }`}
-                    >
-                        All Events
-                        {activeTab === 'all' && (
-                            <span className="absolute bottom-0 left-0 w-full h-0.5 bg-violet-400 rounded-t-full"></span>
-                        )}
-                    </button>
-                    <button
-                        onClick={() => { setActiveTab('pending'); setCurrentPage(1); }}
-                        className={`pb-3 px-1 text-sm font-medium transition-all relative ml-auto ${activeTab === 'pending'
-                                ? 'text-violet-400'
-                                : 'text-gray-400 hover:text-white'
-                            }`}
-                    >
-                        Pending Approvals
-                        {pendingEvents.length > 0 && (
-                            <span className="ml-2 bg-yellow-500 text-black text-xs font-bold px-1.5 py-0.5 rounded-full">
-                                {pendingEvents.length}
-                            </span>
-                        )}
-                        {activeTab === 'pending' && (
-                            <span className="absolute bottom-0 left-0 w-full h-0.5 bg-violet-400 rounded-t-full"></span>
-                        )}
-                    </button>
-                </div>
-
-                {/* Content based on active tab */}
-                {activeTab === 'pending' ? (
-                    // Pending Approvals Tab
-                    <div className="space-y-4">
-                        {/* Info Banner */}
-                        <div className="bg-yellow-500/5 border border-yellow-500/10 rounded-xl p-4 flex items-start gap-3">
-                            <svg className="w-5 h-5 text-yellow-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <div>
-                                <h3 className="text-yellow-400 font-medium text-sm">Action Required</h3>
-                                <p className="text-yellow-400/70 text-sm mt-1">
-                                    These events have been approved by their venue owners and await your final approval to go live.
-                                </p>
+            ) : (
+                <>
+                    <div className="mb-4 flex flex-col gap-3">
+                        <FilterTabs label="Event status" options={statusTabs} value={status} onChange={(v) => set({ status: v })} />
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                            <div className="sm:w-52">
+                                <Select aria-label="Event type" value={type} onChange={(e) => set({ type: e.target.value })} options={TYPES} />
                             </div>
+                            <SearchInput value={params.q} onSearch={(q) => set({ q })} placeholder="Search name, venue or city" label="Search events" />
                         </div>
-
-                        {loading ? (
-                            <div className="p-12 text-center text-gray-300">Loading events...</div>
-                        ) : pendingEvents.length === 0 ? (
-                            <div className="p-12 text-center border-2 border-dashed border-white/10 rounded-2xl">
-                                <div className="text-4xl mb-4">✅</div>
-                                <h3 className="text-white font-medium text-lg">All Caught Up!</h3>
-                                <p className="text-gray-300">No events pending approval</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-4">
-                                {pendingEvents.map(event => (
-                                    <div key={event._id} className="bg-white/[0.02] backdrop-blur-sm border border-white/[0.08] rounded-2xl p-6 transition-all hover:bg-white/[0.04]">
-                                        <div className="flex flex-col lg:flex-row gap-6 justify-between">
-                                            <div className="flex-1">
-                                                <div className="flex items-center gap-2 mb-3">
-                                                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400 border border-green-500/20">
-                                                        ✓ Venue Approved
-                                                    </span>
-                                                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-yellow-500/20 text-yellow-400 border border-yellow-500/20">
-                                                        ⏳ Admin Pending
-                                                    </span>
-                                                </div>
-                                                <h3 className="text-xl font-bold text-white mb-2">{event.name}</h3>
-
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm mt-4">
-                                                    <div>
-                                                        <span className="text-gray-300 block text-xs uppercase tracking-wider mb-1">Venue & Location</span>
-                                                        <span className="text-gray-300 block">
-                                                            {event.customVenue?.isCustom ? event.customVenue.name : (event.venue?.name || 'N/A')}
-                                                        </span>
-                                                        <span className="text-gray-300 text-xs">
-                                                            {event.customVenue?.isCustom ? event.customVenue.city : (event.venue?.address?.city || 'Unknown Location')}
-                                                        </span>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-gray-300 block text-xs uppercase tracking-wider mb-1">Start Time</span>
-                                                        <span className="text-gray-300">{formatDateTime(event.startDateTime)}</span>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-gray-300 block text-xs uppercase tracking-wider mb-1">End Time</span>
-                                                        <span className="text-gray-300">{formatDateTime(event.endDateTime)}</span>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-gray-300 block text-xs uppercase tracking-wider mb-1">Capacity</span>
-                                                        <span className="text-gray-300">{event.maxAttendees}</span>
-                                                    </div>
-                                                </div>
-
-                                                <div className="mt-4 pt-4 border-t border-white/5 flex items-center gap-2 text-sm text-gray-300">
-                                                    <span>Organizer:</span>
-                                                    <span className="text-gray-300">{event.organizer?.name}</span>
-                                                    <span className="w-1 h-1 rounded-full bg-gray-700"></span>
-                                                    <span>{event.organizer?.email}</span>
-                                                </div>
-                                            </div>
-
-                                            <div className="flex flex-row lg:flex-col gap-2 justify-end">
-                                                <Button
-                                                    size="sm"
-                                                    variant="secondary"
-                                                    onClick={() => navigate(`/events/${event._id}`)}
-                                                >
-                                                    View Details
-                                                </Button>
-                                                <Button
-                                                    size="sm"
-                                                    variant="success"
-                                                    onClick={() => handleAdminApprove(event._id, 'approved')}
-                                                    disabled={processingId === event._id}
-                                                >
-                                                    {processingId === event._id ? 'Approving...' : 'Approve'}
-                                                </Button>
-                                                <Button
-                                                    size="sm"
-                                                    variant="danger"
-                                                    onClick={() => setRejectingEvent(event)}
-                                                    disabled={processingId === event._id}
-                                                >
-                                                    Reject
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
                     </div>
-                ) : (
-                    // All Events Tab
-                    <>
-                        {/* Bulk action bar for All Events */}
-                        <BulkActionBar
-                            count={bulk.count}
-                            actions={[
-                                { label: 'Approve', onClick: async () => {
-                                    if (!window.confirm(`Approve ${bulk.count} events?`)) return;
-                                    setBulkBusy(true);
-                                    try { for (const id of bulk.selectedIds) await handleAdminApprove(id, 'approved'); bulk.clear(); } catch (err) { alert(err.message || 'Some events could not be approved'); fetchEvents(); } finally { setBulkBusy(false); }
-                                }},
-                                { label: 'Block', variant: 'danger', onClick: async () => {
-                                    if (!window.confirm(`Block ${bulk.count} events?`)) return;
-                                    setBulkBusy(true);
-                                    try { for (const id of bulk.selectedIds) await adminApi.updateEventStatus(id, 'blocked'); bulk.clear(); fetchEvents(); } catch (err) { alert(err.message || 'Some events could not be blocked'); fetchEvents(); } finally { setBulkBusy(false); }
-                                }},
-                                { label: 'Delete', variant: 'danger', onClick: async () => {
-                                    if (!window.confirm(`Delete ${bulk.count} events? This cannot be undone.`)) return;
-                                    setBulkBusy(true);
-                                    try { for (const id of bulk.selectedIds) await adminApi.deleteEvent(id); bulk.clear(); fetchEvents(); } catch (err) { alert(err.message || 'Some events could not be deleted'); fetchEvents(); } finally { setBulkBusy(false); }
-                                }},
-                            ]}
-                            onClear={bulk.clear}
-                            busy={bulkBusy}
-                        />
 
-                        {/* Filters & Search */}
-                        <div className="flex flex-col md:flex-row justify-between gap-4 mb-6">
-                            <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0">
-                                {['all', 'upcoming', 'approved', 'ongoing', 'completed', 'cancelled', 'rejected', 'pending', 'blocked'].map(status => (
-                                    <button
-                                        key={status}
-                                        onClick={() => { setFilter(status); setCurrentPage(1); }}
-                                        className={`px-4 py-2 rounded-xl text-sm font-medium transition-all whitespace-nowrap ${filter === status
-                                                ? 'bg-white text-black shadow-lg shadow-white/10'
-                                                : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                                            }`}
-                                    >
-                                        {status.charAt(0).toUpperCase() + status.slice(1)}
-                                    </button>
-                                ))}
-                            </div>
+                    <BulkActionBar count={bulk.count} actions={bulkActions} onClear={bulk.clear} busy={bulkBusy} />
 
-                            <form onSubmit={handleSearch} className="flex gap-2 max-w-md w-full">
-                                <div className="relative flex-1">
-                                    <input
-                                        type="text"
-                                        placeholder="Search events..."
-                                        value={searchInput}
-                                        onChange={(e) => setSearchInput(e.target.value)}
-                                        className="w-full pl-10 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all"
-                                    />
-                                    <svg className="w-5 h-5 text-gray-300 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                    </svg>
-                                </div>
-                                <Button type="submit" size="sm" variant="secondary">Search</Button>
-                                {search && (
-                                    <Button type="button" size="sm" variant="ghost" onClick={() => { setSearch(''); setSearchInput(''); setCurrentPage(1); }}>
-                                        Clear
-                                    </Button>
-                                )}
-                            </form>
-                        </div>
-
-                        {/* Table */}
-                        <div className="bg-white/[0.02] backdrop-blur-sm border border-white/[0.08] rounded-2xl overflow-hidden">
-                            {loading ? (
-                                <div className="p-12 text-center text-gray-300">Loading events...</div>
-                            ) : (
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-left">
-                                        <thead className="bg-white/[0.02] border-b border-white/[0.05]">
-                                            <tr>
-                                                <th className="px-6 py-4 w-10">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={bulk.isPageAllSelected(pageIds)}
-                                                        onChange={() => bulk.togglePage(pageIds)}
-                                                        className="w-4 h-4 rounded border-white/20 bg-white/5 accent-violet-500 cursor-pointer"
-                                                        aria-label="Select all on this page"
-                                                    />
-                                                </th>
-                                                <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Event</th>
-                                                <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Organizer</th>
-                                                <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Venue</th>
-                                                <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Date</th>
-                                                <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Approvals</th>
-                                                <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Status</th>
-                                                <th className="px-6 py-4 text-xs font-semibold text-gray-300 uppercase tracking-wider">Actions</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-white/[0.05]">
-                                            {events.length === 0 ? (
-                                                <tr>
-                                                    <td colSpan="7" className="px-6 py-12 text-center">
-                                                        <div className="flex flex-col items-center gap-2">
-                                                            <span className="text-2xl">📭</span>
-                                                            <span className="text-gray-300">
-                                                                {filter !== 'all'
-                                                                    ? `No ${filter} events found`
-                                                                    : 'No events found matching your criteria'}
-                                                            </span>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ) : events.map((event) => (
-                                                <tr
-                                                    key={event._id}
-                                                    onClick={() => navigate(`/events/${event._id}`)}
-                                                    className={`hover:bg-white/[0.02] transition-colors cursor-pointer group ${bulk.isSelected(event._id) ? 'bg-violet-500/5' : ''}`}
-                                                >
-                                                    <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={bulk.isSelected(event._id)}
-                                                            onChange={() => bulk.toggle(event._id)}
-                                                            className="w-4 h-4 rounded border-white/20 bg-white/5 accent-violet-500 cursor-pointer"
-                                                            aria-label={`Select ${event.name}`}
-                                                        />
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="flex items-center gap-3">
-                                                            <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 group-hover:scale-105 transition-transform">
-                                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <rect x="3" y="4" width="18" height="18" rx="2" strokeWidth={1.5} />
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 2v4M8 2v4M3 10h18" />
-                                                                </svg>
-                                                            </div>
-                                                            <span className="font-medium text-white group-hover:text-blue-400 transition-colors">{event.name}</span>
-                                                            {event.deletionRequest?.requestedAt && (
-                                                                <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-red-500/15 text-red-300 border border-red-500/30" title={event.deletionRequest.reason || 'The organizer asked for this event to be removed'}>
-                                                                    Removal requested
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="flex flex-col">
-                                                            <span className="text-white text-sm">{event.organizer?.name || 'N/A'}</span>
-                                                            <span className="text-gray-300 text-xs">{event.organizer?.email}</span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="flex flex-col">
-                                                            <span className="text-gray-300 text-sm">{event.customVenue?.isCustom ? event.customVenue.name : (event.venue?.name || 'N/A')}</span>
-                                                            <span className="text-gray-300 text-xs">{event.customVenue?.isCustom ? event.customVenue.city : (event.venue?.address?.city || 'Unknown Location')}</span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4 text-gray-300 text-sm">{formatDateTime(event.startDateTime)}</td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="flex flex-col gap-1">
-                                                            <span className={`text-[10px] px-1.5 py-0.5 rounded w-fit ${event.venueApproval?.status === 'approved'
-                                                                    ? 'bg-green-500/10 text-green-400'
-                                                                    : 'bg-yellow-500/10 text-yellow-400'
-                                                                }`}>
-                                                                Venue: {event.venueApproval?.status || 'pending'}
-                                                            </span>
-                                                            <span className={`text-[10px] px-1.5 py-0.5 rounded w-fit ${event.adminApproval?.status === 'approved'
-                                                                    ? 'bg-green-500/10 text-green-400'
-                                                                    : 'bg-yellow-500/10 text-yellow-400'
-                                                                }`}>
-                                                                Admin: {event.adminApproval?.status || 'pending'}
-                                                            </span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusColor(event.status)}`}>
-                                                            {event.status}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                                                        <div className="flex items-center gap-2">
-                                                            {/* Approve/Reject for events awaiting admin approval */}
-                                                            {(event.adminApproval?.status !== 'approved' && event.status !== 'rejected' && event.status !== 'cancelled' && event.status !== 'blocked') && (
-                                                                <>
-                                                                    <button
-                                                                        onClick={(e) => { e.stopPropagation(); handleAdminApprove(event._id, 'approved'); }}
-                                                                        disabled={processingId === event._id}
-                                                                        className="p-1.5 rounded-lg text-green-400 hover:bg-green-500/20 transition-colors disabled:opacity-50"
-                                                                        title="Approve"
-                                                                    >
-                                                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 13l4 4L19 7" />
-                                                                        </svg>
-                                                                    </button>
-                                                                    <button
-                                                                        onClick={(e) => { e.stopPropagation(); setRejectingEvent(event); }}
-                                                                        disabled={processingId === event._id}
-                                                                        className="p-1.5 rounded-lg text-yellow-400 hover:bg-yellow-500/20 transition-colors disabled:opacity-50"
-                                                                        title="Reject"
-                                                                    >
-                                                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
-                                                                        </svg>
-                                                                    </button>
-                                                                </>
-                                                            )}
-                                                            {event.status === 'approved' && (
-                                                                <button
-                                                                    onClick={(e) => handleBlock(event._id, e)}
-                                                                    className="p-1.5 rounded-lg text-red-400 hover:bg-red-500/20 transition-colors"
-                                                                    title="Block"
-                                                                >
-                                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                                                                    </svg>
-                                                                </button>
-                                                            )}
-                                                            <button
-                                                                onClick={(e) => handleDelete(event, e)}
-                                                                className="p-1.5 rounded-lg text-red-400 hover:bg-red-500/20 transition-colors"
-                                                                title="Delete Event"
-                                                                aria-label={`Delete event ${event.name}`}
-                                                            >
-                                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                                </svg>
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            )}
-
-                            {/* Pagination */}
-                            <Pagination currentPage={currentPage} totalPages={totalPages} onChange={setCurrentPage} />
-                        </div>
-                    </>
-                )}
-
-                {/* Rejection Modal */}
-                {rejectingEvent && (
-                    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                        <div className="bg-[#1f2937] border border-white/10 rounded-2xl w-full max-w-md p-6 shadow-2xl">
-                            <h3 className="text-xl font-bold text-white mb-2">Reject Event?</h3>
-                            <p className="text-gray-300 text-sm mb-4">
-                                Please provide a reason for rejecting "{rejectingEvent.name}". This will be sent to the organizer.
-                            </p>
-                            <textarea
-                                value={rejectionReason}
-                                onChange={(e) => setRejectionReason(e.target.value)}
-                                placeholder="Enter rejection reason..."
-                                className="w-full h-32 px-4 py-3 bg-black/20 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/50 resize-none mb-6"
+                    <Card padded={false} aria-busy={loading || refreshing || undefined} className={`overflow-hidden transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
+                        {error ? (
+                            <ErrorState title="Couldn't load events" message={error} onRetry={reload} />
+                        ) : loading ? (
+                            <TableSkeleton rows={6} columns={7} />
+                        ) : events.length === 0 ? (
+                            <EmptyState
+                                icon={Ticket}
+                                title={filtered ? (status !== 'all' ? `No ${status} events found` : 'No events match these filters') : 'No events yet'}
+                                message={params.q ? `Nothing found for "${params.q}".` : undefined}
                             />
-                            <div className="flex gap-3 justify-end">
-                                <Button
-                                    variant="ghost"
-                                    onClick={() => { setRejectingEvent(null); setRejectionReason(''); }}
-                                >
-                                    Cancel
-                                </Button>
-                                <Button
-                                    variant="danger"
-                                    onClick={() => handleAdminApprove(rejectingEvent._id, 'rejected', rejectionReason)}
-                                    disabled={processingId === rejectingEvent._id}
-                                >
-                                    {processingId === rejectingEvent._id ? 'Rejecting...' : 'Reject Event'}
-                                </Button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-            </FadeIn>
+                        ) : (
+                            <Table label="Events">
+                                <THead>
+                                    <Th className="w-10">
+                                        <RowCheckbox checked={bulk.isPageAllSelected(pageIds)} onChange={() => bulk.togglePage(pageIds)} label="Select all on this page" />
+                                    </Th>
+                                    <Th>Event</Th>
+                                    <Th>Organizer</Th>
+                                    <Th>Venue</Th>
+                                    <Th>Date</Th>
+                                    <Th>Price</Th>
+                                    <Th>Tickets sold</Th>
+                                    <Th>Approvals</Th>
+                                    <Th>Status</Th>
+                                    <Th className="text-right">Actions</Th>
+                                </THead>
+                                <TBody>
+                                    {events.map((event) => (
+                                        <tr
+                                            key={event._id}
+                                            onClick={() => navigate(`/events/${event._id}`)}
+                                            className={`cursor-pointer ${bulk.isSelected(event._id) ? 'bg-violet-500/[0.06]' : ''}`}
+                                        >
+                                            <Td onClick={(e) => e.stopPropagation()}>
+                                                <RowCheckbox checked={bulk.isSelected(event._id)} onChange={() => bulk.toggle(event._id)} label={`Select ${event.name}`} />
+                                            </Td>
+                                            <Td>
+                                                <div className="flex items-center gap-3">
+                                                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10 text-blue-300">
+                                                        <Ticket className="h-4 w-4" aria-hidden="true" />
+                                                    </span>
+                                                    <div className="min-w-0">
+                                                        <p className="font-medium text-white">{event.name}</p>
+                                                        <div className="mt-1 flex flex-wrap gap-1">
+                                                            {event.eventType === 'private' && <StatusBadge value="private" />}
+                                                            {event.deletionRequest?.requestedAt && (
+                                                                <StatusBadge tone="danger" title={event.deletionRequest.reason || 'The organizer asked for this event to be removed'}>
+                                                                    Removal requested
+                                                                </StatusBadge>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </Td>
+                                            <Td>
+                                                <p className="text-white">{event.organizer?.name || '—'}</p>
+                                                <p className="text-xs text-gray-400">{event.organizer?.email}</p>
+                                            </Td>
+                                            <Td>
+                                                <p>{venueName(event)}</p>
+                                                <p className="text-xs text-gray-400">{venueCity(event)}</p>
+                                            </Td>
+                                            <Td>{formatDateTime(event.startDateTime)}</Td>
+                                            <Td><TierPriceRange event={event} className="tabular-nums" /></Td>
+                                            <Td><TicketsSold event={event} /></Td>
+                                            <Td><ApprovalSteps event={event} /></Td>
+                                            <Td><StatusBadge value={event.status} /></Td>
+                                            <Td className="text-right" onClick={(e) => e.stopPropagation()}>
+                                                <div className="flex items-center justify-end gap-1">
+                                                    {eventAwaitsAdmin(event) && (
+                                                        <>
+                                                            <IconButton label={`Approve ${event.name}`} tone="success" icon={Check} disabled={processingId === event._id} onClick={() => approve(event)} />
+                                                            <IconButton label={`Reject ${event.name}`} tone="warning" icon={X} disabled={processingId === event._id} onClick={() => setRejecting(event)} />
+                                                        </>
+                                                    )}
+                                                    {event.status === 'approved' && (
+                                                        <IconButton label={`Block ${event.name}`} tone="danger" icon={Ban} onClick={() => block(event)} />
+                                                    )}
+                                                    {event.status === 'blocked' && (
+                                                        <IconButton label={`Unblock ${event.name}`} tone="success" icon={RotateCcw} onClick={() => unblock(event)} />
+                                                    )}
+                                                    <IconButton label={`Delete event ${event.name}`} tone="danger" icon={Trash2} onClick={() => remove(event)} />
+                                                </div>
+                                            </Td>
+                                        </tr>
+                                    ))}
+                                </TBody>
+                            </Table>
+                        )}
+
+                        {!loading && !error && (
+                            <Pagination currentPage={params.page} totalPages={totalPages} onChange={(page) => set({ page })} />
+                        )}
+                    </Card>
+                </>
+            )}
+
+            {/* Keyed so each opening starts with an empty reason box. */}
+            <EventRejectDialog
+                key={rejecting?._id || 'closed'}
+                event={rejecting}
+                busy={Boolean(rejecting) && processingId === rejecting._id}
+                onCancel={() => setRejecting(null)}
+                onReject={reject}
+            />
         </div>
     );
 }

@@ -1,10 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { RefreshCw, Wallet, TriangleAlert } from 'lucide-react';
 import adminApi from '../api/adminApi';
-import { FadeIn } from '../components/animations';
-import { FigureCard } from '../components/ui/FigureCard';
 import { formatInr } from '../lib/formatInr';
 import { formatDateTime } from '../lib/formatDateTime';
+import { useListParams } from '../lib/useListParams';
+import { useRemote } from '../lib/useRemote';
+import { cn } from '../lib/cn';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Card } from '../components/ui/Card';
+import { FigureCard } from '../components/ui/FigureCard';
+import { FilterTabs } from '../components/ui/FilterTabs';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import { Table, THead, Th, TBody, Td } from '../components/ui/Table';
+import { Button } from '../components/ui/Button';
+import { EmptyState, ErrorState, Skeleton, TableSkeleton } from '../components/ui/States';
 
 const KINDS = [
     { value: 'all', label: 'All' },
@@ -20,161 +30,118 @@ const detailPath = (row) => `/${row.kind === 'venue' ? 'venues' : 'events'}/${ro
  *
  * The figures are the same ones each listing's Settlement panel shows; paying
  * is still recorded there (the "Pay" link opens it), so every transfer keeps
- * its UTR and audit entry.
+ * its UTR and audit entry. This page reads and links only - no money moves here.
  */
 export default function Payouts() {
-    const [kind, setKind] = useState('all');
-    const [showSettled, setShowSettled] = useState(false);
-    const [data, setData] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
+    // Kind and the "show fully paid" switch live in the URL, so back/refresh keep them.
+    const { params, set } = useListParams({ kind: 'all', settled: '' });
+    const kind = KINDS.some((k) => k.value === params.kind) ? params.kind : 'all';
+    const showSettled = params.settled === '1';
 
-    const load = useCallback(async () => {
-        setLoading(true);
-        setError('');
-        try {
-            setData(await adminApi.getPayoutQueue(kind));
-        } catch (err) {
-            setError(err.message || 'Failed to load payouts');
-            setData(null);
-        } finally {
-            setLoading(false);
-        }
-    }, [kind]);
-
-    useEffect(() => { load(); }, [load]);
+    const load = useCallback(() => adminApi.getPayoutQueue(kind), [kind]);
+    const { data, loading, refreshing, error, reload } = useRemote(load);
 
     const rows = useMemo(() => {
         const all = data?.rows || [];
-        return showSettled ? all : all.filter(r => r.error || r.money.outstandingAmount > 0.01 || r.money.excessAmount > 0.01);
+        return showSettled ? all : all.filter((r) => r.error || r.money.outstandingAmount > 0.01 || r.money.excessAmount > 0.01);
     }, [data, showSettled]);
     const hiddenCount = (data?.rows?.length || 0) - rows.length;
     const totals = data?.totals;
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
-            <FadeIn>
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-                    <div>
-                        <h1 className="text-3xl font-bold text-white mb-2">Payouts to owners</h1>
-                        <p className="text-gray-300">What each venue owner and organiser is owed, most owed first.</p>
-                    </div>
-                    <button
-                        type="button"
-                        onClick={load}
-                        disabled={loading}
-                        className="px-4 py-2 rounded-lg bg-white/[0.08] text-white text-sm hover:bg-white/[0.14] transition-colors disabled:opacity-50 self-start md:self-auto"
-                    >
-                        {loading ? 'Loading…' : 'Refresh'}
-                    </button>
-                </div>
-
-                {totals && (
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-                        <FigureCard label="Ready to pay" value={formatInr(totals.dueNow)} accent="green" />
-                        <FigureCard label="Owed in total" value={formatInr(totals.outstanding)} accent="orange" />
-                        <FigureCard label="Owners waiting" value={String(totals.owedListings)} accent="violet" />
-                        <FigureCard label="Can't pay yet" value={String(totals.blockedListings)} accent={totals.blockedListings ? 'red' : 'blue'} />
-                    </div>
+            <PageHeader
+                title="Payouts"
+                description="What each venue owner and organiser is owed, most owed first."
+                actions={(
+                    <Button variant="secondary" onClick={reload} isLoading={refreshing} disabled={loading} leftIcon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}>
+                        Refresh
+                    </Button>
                 )}
-                <p className="text-sm text-gray-400 mb-6 max-w-3xl">
-                    <span className="text-gray-200">Ready to pay</span> is money from bookings and events that have already happened.
-                    {' '}<span className="text-gray-200">Upcoming</span> is for dates still to come, and goes back to the guest if they cancel, so wait until the date has passed.
-                    Amounts are the owner&apos;s share: what guests paid, minus FIRA&apos;s fee and GST.
-                </p>
+            />
 
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                        {KINDS.map(k => (
-                            <button
-                                key={k.value}
-                                type="button"
-                                onClick={() => setKind(k.value)}
-                                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all whitespace-nowrap ${kind === k.value
-                                    ? 'bg-white text-black shadow-lg shadow-white/10'
-                                    : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}`}
-                            >
-                                {k.label}
-                            </button>
-                        ))}
-                    </div>
-                    <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none">
-                        <input
-                            type="checkbox"
-                            checked={showSettled}
-                            onChange={e => setShowSettled(e.target.checked)}
-                            className="accent-violet-500 w-4 h-4"
-                        />
-                        Show fully paid listings{hiddenCount > 0 && !showSettled ? ` (${hiddenCount})` : ''}
-                    </label>
+            {totals ? (
+                <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+                    <FigureCard label="Ready to pay" value={formatInr(totals.dueNow)} accent="green" />
+                    <FigureCard label="Owed in total" value={formatInr(totals.outstanding)} accent="orange" />
+                    <FigureCard label="Owners waiting" value={String(totals.owedListings)} accent="violet" />
+                    <FigureCard label="Can't pay yet" value={String(totals.blockedListings)} accent={totals.blockedListings ? 'red' : 'blue'} />
                 </div>
-
-                {error && <p role="alert" className="text-red-400 text-sm mb-4">{error}</p>}
-
-                <div className="bg-white/[0.02] backdrop-blur-sm border border-white/[0.08] rounded-2xl overflow-hidden">
-                    {loading && !data ? (
-                        <div className="p-12 text-center text-gray-300">Working out who is owed…</div>
-                    ) : rows.length === 0 ? (
-                        <div className="p-12 text-center">
-                            <p className="text-white font-medium mb-1">Nobody is waiting to be paid</p>
-                            <p className="text-gray-400 text-sm">
-                                Listings appear here once a guest pays for a booking or a ticket.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left min-w-[960px]">
-                                <thead className="bg-white/[0.02] border-b border-white/[0.05]">
-                                    <tr className="text-xs font-semibold text-gray-300">
-                                        <th className="px-5 py-4">Listing</th>
-                                        <th className="px-5 py-4">Owner</th>
-                                        <th className="px-5 py-4 text-right">Owner&apos;s share</th>
-                                        <th className="px-5 py-4 text-right">Paid out</th>
-                                        <th className="px-5 py-4 text-right">Ready to pay</th>
-                                        <th className="px-5 py-4 text-right">Upcoming</th>
-                                        <th className="px-5 py-4">Pay to</th>
-                                        <th className="px-5 py-4"><span className="sr-only">Action</span></th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-white/[0.05]">
-                                    {rows.map(row => <PayoutRow key={`${row.kind}-${row.id}`} row={row} />)}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
+            ) : loading && (
+                <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4" role="status" aria-label="Loading">
+                    {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-2xl" />)}
                 </div>
-                {data?.generatedAt && (
-                    <p className="text-xs text-gray-500 mt-3">Worked out {formatDateTime(data.generatedAt)}.</p>
+            )}
+            <p className="mb-6 max-w-3xl text-sm text-gray-400">
+                <span className="text-gray-200">Ready to pay</span> is money from bookings and events that have already happened.
+                {' '}<span className="text-gray-200">Upcoming</span> is for dates still to come, and goes back to the guest if they cancel, so wait until the date has passed.
+                {' '}Amounts are the owner&apos;s share: what guests paid, minus FIRA&apos;s fee and GST.
+            </p>
+
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <FilterTabs label="Listing type" options={KINDS} value={kind} onChange={(v) => set({ kind: v })} />
+                <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-gray-300">
+                    <input
+                        type="checkbox"
+                        checked={showSettled}
+                        onChange={(e) => set({ settled: e.target.checked ? '1' : '' })}
+                        className="h-4 w-4 accent-violet-500"
+                    />
+                    Show fully paid listings{hiddenCount > 0 && !showSettled ? ` (${hiddenCount})` : ''}
+                </label>
+            </div>
+
+            <Card padded={false} aria-busy={loading || refreshing || undefined} className={cn('overflow-hidden transition-opacity', refreshing && 'opacity-60')}>
+                {error ? (
+                    <ErrorState title="Couldn't load payouts" message={error} onRetry={reload} />
+                ) : loading ? (
+                    <TableSkeleton rows={5} columns={6} />
+                ) : rows.length === 0 ? (
+                    <EmptyState icon={Wallet} title="Nobody is waiting to be paid" message="Listings appear here once a guest pays for a booking or a ticket." />
+                ) : (
+                    <Table label="Payouts owed">
+                        <THead>
+                            <Th>Listing</Th>
+                            <Th>Owner</Th>
+                            <Th className="text-right">Owner&apos;s share</Th>
+                            <Th className="text-right">Paid out</Th>
+                            <Th className="text-right">Ready to pay</Th>
+                            <Th className="text-right">Upcoming</Th>
+                            <Th>Pay to</Th>
+                            <Th><span className="sr-only">Action</span></Th>
+                        </THead>
+                        <TBody>
+                            {rows.map((row) => <PayoutRow key={`${row.kind}-${row.id}`} row={row} />)}
+                        </TBody>
+                    </Table>
                 )}
-            </FadeIn>
+            </Card>
+            {data?.generatedAt && (
+                <p className="mt-3 text-xs text-gray-500">Worked out {formatDateTime(data.generatedAt)}.</p>
+            )}
         </div>
     );
 }
 
 function PayoutRow({ row }) {
     const listing = (
-        <td className="px-5 py-4 align-top">
-            <Link to={detailPath(row)} className="text-white font-medium hover:text-violet-300">{row.name || 'Untitled'}</Link>
-            <div className="flex items-center gap-2 mt-1">
-                <span className={`text-[11px] px-2 py-0.5 rounded-full border ${row.kind === 'venue'
-                    ? 'bg-sky-500/10 text-sky-300 border-sky-500/20'
-                    : 'bg-pink-500/10 text-pink-300 border-pink-500/20'}`}
-                >
-                    {row.kind === 'venue' ? 'Venue' : 'Event'}
-                </span>
-                {row.deleted && <span className="text-[11px] text-gray-500">Deleted listing</span>}
+        <Td className="align-top">
+            <Link to={detailPath(row)} className="font-medium text-white hover:text-violet-300">{row.name || 'Untitled'}</Link>
+            <div className="mt-1 flex items-center gap-1.5">
+                <StatusBadge tone={row.kind === 'venue' ? 'info' : 'accent'}>{row.kind === 'venue' ? 'Venue' : 'Event'}</StatusBadge>
+                {row.deleted && <StatusBadge tone="neutral">Deleted listing</StatusBadge>}
             </div>
-        </td>
+        </Td>
     );
     const owner = (
-        <td className="px-5 py-4 align-top">
+        <Td className="align-top">
             {row.owner ? (
                 <>
-                    <Link to={`/users/${row.owner.id}`} className="text-gray-200 text-sm hover:text-white">{row.owner.name || 'Unnamed'}</Link>
-                    <div className="text-xs text-gray-500 break-all">{row.owner.email}</div>
+                    <Link to={`/users/${row.owner.id}`} className="text-gray-200 hover:text-white">{row.owner.name || 'Unnamed'}</Link>
+                    <div className="text-xs text-gray-500">{row.owner.email}</div>
                 </>
-            ) : <span className="text-sm text-gray-500">No owner</span>}
-        </td>
+            ) : <span className="text-gray-500">No owner</span>}
+        </Td>
     );
 
     if (row.error) {
@@ -182,12 +149,15 @@ function PayoutRow({ row }) {
             <tr className="bg-red-500/[0.04]">
                 {listing}
                 {owner}
-                <td colSpan={5} className="px-5 py-4 text-sm text-red-300">
-                    {row.error}. Open the listing to see why before paying anything.
-                </td>
-                <td className="px-5 py-4 align-top text-right">
-                    <Link to={detailPath(row)} className="text-sm text-violet-400 hover:text-violet-300">Open</Link>
-                </td>
+                <Td colSpan={5} className="align-top whitespace-normal text-red-300">
+                    <span className="inline-flex items-start gap-2">
+                        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                        {row.error}. Open the listing to see why before paying anything.
+                    </span>
+                </Td>
+                <Td className="align-top text-right">
+                    <Link to={detailPath(row)} className="text-violet-300 hover:text-violet-200">Open</Link>
+                </Td>
             </tr>
         );
     }
@@ -195,19 +165,19 @@ function PayoutRow({ row }) {
     const m = row.money;
     const owed = m.outstandingAmount > 0.01;
     return (
-        <tr className="hover:bg-white/[0.02]">
+        <tr>
             {listing}
             {owner}
-            <td className="px-5 py-4 align-top text-right tabular-nums text-sm text-gray-200">{formatInr(m.netPayable)}</td>
-            <td className="px-5 py-4 align-top text-right tabular-nums text-sm text-gray-400">
+            <Td className="align-top text-right tabular-nums text-gray-200">{formatInr(m.netPayable)}</Td>
+            <Td className="align-top text-right tabular-nums text-gray-400">
                 {formatInr(m.settledToDate)}
                 {m.excessAmount > 0.01 && <div className="text-xs text-red-300">Overpaid {formatInr(m.excessAmount)}</div>}
-            </td>
-            <td className={`px-5 py-4 align-top text-right tabular-nums text-sm font-semibold ${m.dueNow > 0.01 ? 'text-green-300' : 'text-gray-500'}`}>
+            </Td>
+            <Td className={cn('align-top text-right font-semibold tabular-nums', m.dueNow > 0.01 ? 'text-green-300' : 'text-gray-500')}>
                 {formatInr(m.dueNow)}
-            </td>
-            <td className="px-5 py-4 align-top text-right tabular-nums text-sm text-gray-400">{formatInr(m.upcoming)}</td>
-            <td className="px-5 py-4 align-top text-sm">
+            </Td>
+            <Td className="align-top text-right tabular-nums text-gray-400">{formatInr(m.upcoming)}</Td>
+            <Td className="align-top">
                 {row.blockedReason ? (
                     <BlockedNote row={row} />
                 ) : row.payTo ? (
@@ -216,19 +186,19 @@ function PayoutRow({ row }) {
                         <div className="text-xs text-gray-500">{row.payTo.accountName} · {row.payTo.ifscCode}</div>
                     </div>
                 ) : null}
-            </td>
-            <td className="px-5 py-4 align-top text-right">
+            </Td>
+            <Td className="align-top text-right">
                 {owed ? (
                     <Link
                         to={detailPath(row)}
-                        className="inline-block px-3 py-1.5 rounded-lg bg-violet-500/90 hover:bg-violet-500 text-white text-sm font-medium whitespace-nowrap"
+                        className="inline-flex h-8 items-center rounded-xl bg-violet-600 px-3 text-sm font-medium text-white hover:bg-violet-700"
                     >
                         Pay
                     </Link>
                 ) : (
-                    <Link to={detailPath(row)} className="text-sm text-gray-400 hover:text-white whitespace-nowrap">View</Link>
+                    <Link to={detailPath(row)} className="text-gray-400 hover:text-white">View</Link>
                 )}
-            </td>
+            </Td>
         </tr>
     );
 }
@@ -236,15 +206,15 @@ function PayoutRow({ row }) {
 function BlockedNote({ row }) {
     const fix = row.blockedReason === 'PAN not verified'
         ? (row.idCheck?.status === 'pending'
-            ? <Link to="/id-checks" className="text-violet-400 hover:text-violet-300">Review in ID Checks</Link>
+            ? <Link to="/id-checks" className="text-violet-300 hover:text-violet-200">Review in ID Checks</Link>
             : 'The organiser needs to add their PAN in Settings')
         : row.blockedReason === 'No bank account saved'
             ? 'Ask the owner to add a payout account in Settings'
             : null;
     return (
         <div>
-            <div className="text-amber-300 font-medium">{row.blockedReason}</div>
-            {fix && <div className="text-xs text-gray-400 mt-0.5">{fix}</div>}
+            <div className="font-medium text-amber-300">{row.blockedReason}</div>
+            {fix && <div className="mt-0.5 text-xs text-gray-400">{fix}</div>}
         </div>
     );
 }

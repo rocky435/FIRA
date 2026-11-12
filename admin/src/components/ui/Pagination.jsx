@@ -6,7 +6,9 @@
  * to jump around in was the one you could only walk through. One component instead.
  */
 
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { pageWindow } from '../../lib/pageWindow';
+import { cn } from '../../lib/cn';
 
 export function Pagination({ currentPage, totalPages, onChange, className = '' }) {
     if (totalPages <= 1) return null;
@@ -16,19 +18,19 @@ export function Pagination({ currentPage, totalPages, onChange, className = '' }
         if (next !== currentPage) onChange(next);
     };
 
+    const step = 'inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-sm text-gray-300 hover:bg-hover hover:text-white disabled:pointer-events-none disabled:opacity-40';
+
     return (
         <nav
             aria-label="Pagination"
-            className={`p-4 border-t border-white/[0.05] flex justify-center ${className}`}
+            className={cn('flex flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-3', className)}
         >
-            <div className="flex flex-wrap justify-center gap-2">
-                <button
-                    type="button"
-                    onClick={() => go(currentPage - 1)}
-                    disabled={currentPage <= 1}
-                    className="px-3 py-1 rounded-lg bg-white/5 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                    Previous
+            <span className="text-xs text-gray-500">Page {currentPage} of {totalPages}</span>
+            <div className="flex flex-wrap items-center gap-1">
+                <button type="button" onClick={() => go(currentPage - 1)} disabled={currentPage <= 1} className={step}>
+                    <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                    <span className="hidden sm:inline">Previous</span>
+                    <span className="sr-only sm:hidden">Previous page</span>
                 </button>
                 {pageWindow(currentPage, totalPages).map(page => (
                     <button
@@ -36,24 +38,21 @@ export function Pagination({ currentPage, totalPages, onChange, className = '' }
                         type="button"
                         onClick={() => go(page)}
                         // aria-current is how a screen reader announces which page you are
-                        // on; the violet fill only says it to people who can see it.
+                        // on; the fill only says it to people who can see it.
                         aria-current={currentPage === page ? 'page' : undefined}
                         aria-label={`Page ${page}`}
-                        className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-medium transition-colors ${currentPage === page
-                            ? 'bg-violet-500 text-white'
-                            : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                            }`}
+                        className={cn(
+                            'h-8 min-w-8 rounded-lg px-2 text-sm font-medium tabular-nums transition-colors',
+                            currentPage === page ? 'bg-white text-black' : 'text-gray-400 hover:bg-hover hover:text-white'
+                        )}
                     >
                         {page}
                     </button>
                 ))}
-                <button
-                    type="button"
-                    onClick={() => go(currentPage + 1)}
-                    disabled={currentPage >= totalPages}
-                    className="px-3 py-1 rounded-lg bg-white/5 text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                    Next
+                <button type="button" onClick={() => go(currentPage + 1)} disabled={currentPage >= totalPages} className={step}>
+                    <span className="hidden sm:inline">Next</span>
+                    <span className="sr-only sm:hidden">Next page</span>
+                    <ChevronRight className="h-4 w-4" aria-hidden="true" />
                 </button>
             </div>
         </nav>

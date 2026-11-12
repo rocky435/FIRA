@@ -107,7 +107,7 @@ export interface Venue {
         partialRefundPercentage: number;
         noCancellationHours: number;
     };
-    status: 'pending' | 'approved' | 'rejected' | 'suspended';
+    status: 'pending' | 'approved' | 'rejected' | 'blocked' | 'suspended';
     rating: {
         average: number;
         count: number;
