@@ -101,7 +101,7 @@ router.get('/conversations', async (req, res) => {
         const [total, found] = await Promise.all([
             Conversation.countDocuments(filter),
             Conversation.find(filter)
-                .populate('participants', 'name avatar email')
+                .populate('participants', 'name avatar email isVerified')
                 .populate('brand', 'name profilePhoto type user')
                 .sort({ updatedAt: -1 })
                 .skip((pageNum - 1) * pageSize)
@@ -112,6 +112,11 @@ router.get('/conversations', async (req, res) => {
         const conversationsWithUnread = found.map(conv => {
             const convObj = conv.toObject();
             convObj.unreadCount = conv.unreadCount?.get(userId.toString()) || 0;
+            // Always a boolean, so the client can test it directly. A participant
+            // whose account was deleted populates as null and is left as-is.
+            convObj.participants = (convObj.participants || []).map(p =>
+                p && typeof p === 'object' ? { ...p, isVerified: p.isVerified === true } : p
+            );
             return convObj;
         });
 
