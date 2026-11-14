@@ -34,6 +34,23 @@ function dispatchPush(userIds, { type, title, message, data }) {
         .catch(err => console.error('FCM dispatch failed:', err.message));
 }
 
+/**
+ * Live delivery to open website tabs (the pop-up), for notifications written
+ * in bulk. createNotification does this per notification; the bulk paths
+ * (followers, ticket holders, reminders) wrote to the inbox only, so the
+ * website showed nothing until a reload. Best-effort, never throws.
+ */
+function liveDeliver(userIds, { title, message, data }) {
+    const createdAt = new Date();
+    for (const userId of userIds || []) {
+        try {
+            sse.send(userId, { type: 'notification', title, message, actionUrl: data?.actionUrl || null, createdAt });
+        } catch (err) {
+            console.error('Live notification failed:', err.message);
+        }
+    }
+}
+
 const notificationService = {
     // Get user's notifications
     async getUserNotifications(userId, limit = 50) {
@@ -125,13 +142,15 @@ const notificationService = {
     },
 
     // Send bulk notifications (for events like new event from followed user)
-    async sendBulkNotifications(userIds, { type, title, message, data, channel = 'all' }) {
+    async sendBulkNotifications(userIds, { type, title, message, data, channel = 'all', priority = 'medium' }) {
+        if (!userIds || userIds.length === 0) return { message: 'Sent 0 notifications' };
         const notifications = userIds.map(userId => ({
             user: userId,
             type,
             title,
             message,
             data,
+            priority,
             channel
         }));
 
@@ -140,6 +159,8 @@ const notificationService = {
         if (PUSH_CHANNELS.has(channel)) {
             dispatchPush(userIds, { type, title, message, data });
         }
+        // Pop-up in any open website tab, as createNotification does.
+        liveDeliver(userIds, { title, message, data });
 
         return { message: `Sent ${userIds.length} notifications` };
     },
@@ -170,12 +191,20 @@ const notificationService = {
         if (userIds.length === 0) return { notified: 0 };
 
         // 16.2 - Build notification content
-        const fieldSummary = relevantChanges
-            .map(f => `${f}: ${event[f] ?? '(updated)'}`)
-            .join(', ');
+        // In words a guest reads - this used to print raw field names and values
+        // ("startDateTime: Sat Nov 22 2026 19:00:00 GMT+0530", a venue's id).
+        const when = (d) => (d ? new Date(d).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : null);
+        const describe = {
+            name: () => `new name "${event.name}"`,
+            startDateTime: () => `now starts ${when(event.startDateTime)}`,
+            endDateTime: () => `now ends ${when(event.endDateTime)}`,
+            venue: () => 'the venue changed',
+            description: () => 'the description was updated',
+        };
+        const fieldSummary = relevantChanges.map(f => describe[f]()).join('; ');
 
-        const title = `Event Updated: ${event.name}`;
-        const message = `The following details have been updated — ${fieldSummary}`;
+        const title = `Event updated: ${event.name}`;
+        const message = `Your event has changed: ${fieldSummary}. Check the event page for details.`;
         const data = {
             referenceId: event._id,
             referenceModel: 'Event',
@@ -201,6 +230,7 @@ const notificationService = {
 
                 // 16.3 - Dispatch push notifications
                 dispatchPush(batch, { type: 'event_update', title, message, data });
+                liveDeliver(batch, { title, message, data });
 
                 totalNotified += batch.length;
             } catch (err) {
@@ -268,6 +298,7 @@ const notificationService = {
                 extra: { brandId, brandName: brand.name }
             }
         });
+        liveDeliver(followers.map(f => f._id), { title: notificationData.title, message: notificationData.message, data: { actionUrl: notificationData.actionUrl } });
 
         // Send emails if enabled
         let emailsSent = 0;

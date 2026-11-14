@@ -82,7 +82,7 @@ const authService = {
     /**
      * Register new user and send OTP
      */
-    async register({ email, password, name, role = 'user', city = null, businessName = null, businessPhone = null, govIdType = null, govIdNumber = null, govIdDocument = null, bankDetails = null }) {
+    async register({ email, password, name, role = 'user', city = null, businessName = null, businessPhone = null, govIdType = null, govIdNumber = null, govIdDocument = null, bankDetails = null, signupDevice = null }) {
         // Reject spam payloads in the display name.
         //
         // A bot registered 48 accounts with names like
@@ -134,6 +134,8 @@ const authService = {
             city,
             emailVerified: false
         };
+        // The app's FCM token, if it sent one: held until the email is verified.
+        if (signupDevice && signupDevice.token) userData.signupDevice = signupDevice;
 
         // Add venue owner specific fields
         if (role === 'venue_owner') {
@@ -225,14 +227,21 @@ const authService = {
         }
 
         // Find user
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email }).select('+signupDevice');
         if (!user) {
             throw new Error('User not found. Please register again.');
         }
 
+        // The app install that signed up, handed back so the route can link it
+        // now that the email is proven. Cleared either way.
+        const signupDevice = user.signupDevice && user.signupDevice.token
+            ? { token: user.signupDevice.token, platform: user.signupDevice.platform, deviceId: user.signupDevice.deviceId, appVersion: user.signupDevice.appVersion }
+            : null;
+
         // Update user as verified
         user.emailVerified = true;
         user.emailVerifiedAt = new Date();
+        user.signupDevice = null;
         await user.save();
 
         // Mark OTP as verified and delete
@@ -256,7 +265,9 @@ const authService = {
                 emailVerified: user.emailVerified
             },
             token,
-            message: 'Email verified successfully! Welcome to FIRA!'
+            message: 'Email verified successfully! Welcome to FIRA!',
+            // For the route only (routes/auth.js strips it from the response).
+            signupDevice
         };
     },
 

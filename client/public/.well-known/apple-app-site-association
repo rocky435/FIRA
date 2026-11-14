@@ -1,0 +1,29 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "93L6J7LQUN.com.app.firaapp",
+        "paths": [
+          "/events/*",
+          "/venues/*",
+          "/dashboard/bookings/*"
+        ],
+        "components": [
+          {
+            "/": "/events/*",
+            "comment": "Matches any event link"
+          },
+          {
+            "/": "/venues/*",
+            "comment": "Matches any venue link"
+          },
+          {
+            "/": "/dashboard/bookings/*",
+            "comment": "Matches booking detail and payment links"
+          }
+        ]
+      }
+    ]
+  }
+}

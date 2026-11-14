@@ -40,6 +40,23 @@ const nextConfig: NextConfig = {
    * Session is held in localStorage, so a same-origin redirect keeps the user
    * signed in.
    */
+  /**
+   * App links: Android reads /.well-known/assetlinks.json and iOS reads
+   * /.well-known/apple-app-site-association (no extension) to let letsfira.com
+   * links open in the FIRA app. Both must be served as JSON with no redirect;
+   * without an extension the Apple file would otherwise go out as a binary
+   * download. Short cache so a changed app id or fingerprint takes effect.
+   */
+  async headers() {
+    const json = [
+      { key: 'Content-Type', value: 'application/json' },
+      { key: 'Cache-Control', value: 'public, max-age=3600' },
+    ];
+    return [
+      { source: '/.well-known/apple-app-site-association', headers: json },
+      { source: '/.well-known/assetlinks.json', headers: json },
+    ];
+  },
   async redirects() {
     return [
       { source: '/dashboard/venues', destination: '/venue-portal/venues', permanent: false },

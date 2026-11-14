@@ -59,6 +59,23 @@ const userSchema = new mongoose.Schema({
     enum: ['super_admin', 'admin', 'moderator'],
     default: null
   },
+  /**
+   * The app install that signed up (its FCM token, sent as `player_id`), held
+   * here until the email code is entered - only then is it linked as one of
+   * the user's devices (routes/auth.js verify-otp). Linking at signup would
+   * let someone who signs up with another person's email receive that
+   * person's notifications once they verify it. Cleared on verification.
+   */
+  signupDevice: {
+    type: {
+      token: { type: String },
+      platform: { type: String },
+      deviceId: { type: String },
+      appVersion: { type: String }
+    },
+    default: null,
+    select: false
+  },
   isVerified: {
     type: Boolean,
     default: false

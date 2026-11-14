@@ -7,7 +7,6 @@ const cron = require('node-cron');
 const Ticket = require('../models/Ticket');
 const Event = require('../models/Event');
 const User = require('../models/User');
-const Notification = require('../models/Notification');
 const Booking = require('../models/Booking');
 const Venue = require('../models/Venue');
 const emailService = require('../services/emailService');
@@ -72,26 +71,30 @@ async function sendEventReminders() {
 
         console.log(`  📧 Sending ${tickets.length} reminders across ${upcomingEvents.length} events`);
 
-        // Bulk-create notifications
-        const notifications = tickets.map(ticket => ({
-            user: ticket.user._id,
-            type: 'event_reminder_1h',
-            title: 'Your event starts in 1 hour',
-            message: `${eventMap.get(ticket.event.toString()).name} starts in 1 hour! Don't forget your ticket.`,
-            data: {
-                referenceId: ticket.event,
-                referenceModel: 'Event',
-                actionUrl: `/events/${ticket.event}`,
-                extra: { ticketId: ticket.ticketId }
-            },
-            priority: 'high',
-            channel: 'all'
-        }));
-
-        await Notification.insertMany(notifications, { ordered: false }).catch(err => {
-            // Log but don't abort — some may have succeeded
-            console.error('  ⚠️ Some notifications failed to insert:', err.message);
-        });
+        // One reminder per person per event (not per ticket), sent through the
+        // notification service so it reaches phones (FCM), browser push and
+        // open tabs. It used to be written straight into the inbox, so the
+        // "1 hour to go" alert never actually popped up anywhere.
+        const holdersByEvent = new Map();
+        for (const ticket of tickets) {
+            if (!ticket.user?._id) continue;
+            const key = ticket.event.toString();
+            if (!holdersByEvent.has(key)) holdersByEvent.set(key, new Set());
+            holdersByEvent.get(key).add(String(ticket.user._id));
+        }
+        for (const [eventKey, holders] of holdersByEvent) {
+            await notificationService.sendBulkNotifications([...holders], {
+                type: 'event_reminder_1h',
+                title: 'Your event starts in 1 hour',
+                message: `${eventMap.get(eventKey).name} starts in 1 hour! Don't forget your ticket.`,
+                data: { referenceId: eventKey, referenceModel: 'Event', actionUrl: `/events/${eventKey}` },
+                priority: 'high',
+                channel: 'all',
+            }).catch(err => {
+                // Log but don't abort - the emails below still go out.
+                console.error('  ⚠️ Reminder notifications failed for an event:', err.message);
+            });
+        }
 
         // Send emails (IO-bound, can't avoid per-ticket, but DB reads are done)
         for (const ticket of tickets) {

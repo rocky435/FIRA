@@ -558,7 +558,8 @@ const venueService = {
                 ? `Your booking at ${venue.name} on ${when} is cancelled. A refund of ₹${result.refundAmount} has been requested and will be sent once approved.`
                 : `Your booking at ${venue.name} on ${when} is cancelled.`,
             data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: '/dashboard/bookings' },
-            priority: 'medium'
+            priority: 'medium',
+            channel: 'all'
         }).catch(err => console.error('booking_cancelled notification failed:', err.message));
         notificationService.createNotification({
             userId: venue.owner,
@@ -566,7 +567,8 @@ const venueService = {
             title: 'Booking cancelled',
             message: `A booking at ${venue.name} on ${when} was cancelled by the guest. The date is free again.`,
             data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: `/venue-portal/bookings/${booking._id}` },
-            priority: 'medium'
+            priority: 'medium',
+            channel: 'all'
         }).catch(err => console.error('booking_cancelled owner notification failed:', err.message));
 
         return result;

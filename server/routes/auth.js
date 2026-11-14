@@ -22,14 +22,36 @@ const fcmService = require('../services/fcmService');
  * who signs up with another person's email receive that person's notifications
  * once they verify it.
  *
+ * Sign-up does take `player_id`, but only holds it on the unverified account
+ * (User.signupDevice); verify-otp links it once the code proves the email.
+ *
  * Best-effort: a missing or malformed token never fails the sign-in.
  */
-async function rememberAppDevice(userId, body) {
-    const token = body && (body.player_id ?? body.playerId);
-    if (!userId || !token) return false;
+
+/**
+ * The app install a request describes: `player_id` (FCM token), `device_type`
+ * ('android' | 'ios'), optional `device_id` (a stable install id, so a rotated
+ * token replaces the old row) and `app_version`. snake_case or camelCase.
+ * Null when there is no usable token - the same length rule fcmService applies.
+ */
+function appDeviceFrom(body) {
+    const raw = body && (body.player_id ?? body.playerId);
+    if (typeof raw !== 'string' || raw.trim().length < 20 || raw.length > 4096) return null;
     const type = String(body.device_type ?? body.deviceType ?? '').toLowerCase();
+    const deviceId = body.device_id ?? body.deviceId;
+    const appVersion = body.app_version ?? body.appVersion;
+    return {
+        token: raw.trim(),
+        platform: type === 'ios' || type === 'android' ? type : undefined,
+        deviceId: typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim().slice(0, 200) : undefined,
+        appVersion: typeof appVersion === 'string' && appVersion.trim() ? appVersion.trim().slice(0, 50) : undefined,
+    };
+}
+
+async function rememberAppDevice(userId, device) {
+    if (!userId || !device || !device.token) return false;
     try {
-        await fcmService.registerToken(userId, { token, platform: type === 'ios' || type === 'android' ? type : undefined });
+        await fcmService.registerToken(userId, device);
         return true;
     } catch (err) {
         console.warn('Could not save the app device at sign-in:', err.message);
@@ -43,7 +65,8 @@ router.post('/register', registerLimiter, /** @param {AuthenticatedRequest} req 
         // `city` is collected on the signup form and is what powers city-based
         // discovery, so it has to be forwarded to the service.
         const { email, password, name, city } = req.body;
-        const result = await authService.register({ email, password, name, city });
+        // The app's player_id is held until the email code is entered (see appDeviceFrom).
+        const result = await authService.register({ email, password, name, city, signupDevice: appDeviceFrom(req.body) });
         res.status(201).json(result);
     } catch (error) {
         res.status(400).json({ error: error.message });
@@ -82,7 +105,8 @@ router.post('/register-venue-owner', registerLimiter, /** @param {AuthenticatedR
                 accountNumber: bankAccountNumber,
                 ifscCode: bankIfscCode,
                 bankName: bankName
-            }
+            },
+            signupDevice: appDeviceFrom(req.body)
         });
         res.status(201).json(result);
     } catch (error) {
@@ -135,8 +159,9 @@ router.post('/verify-otp', otpLimiter, /** @param {AuthenticatedRequest} req @pa
             return res.status(400).json({ error: 'Email and verification code are required' });
         }
 
-        const result = await authService.verifyOTP({ email, code });
-        const deviceSaved = await rememberAppDevice(result.user && result.user._id, req.body);
+        const { signupDevice, ...result } = await authService.verifyOTP({ email, code });
+        // The device sending this code wins; otherwise the one that signed up.
+        const deviceSaved = await rememberAppDevice(result.user && result.user._id, appDeviceFrom(req.body) || signupDevice);
         res.json({ ...result, deviceSaved });
     } catch (error) {
         res.status(400).json({ error: error.message });
@@ -164,7 +189,7 @@ router.post('/login', loginLimiter, /** @param {AuthenticatedRequest} req @param
     try {
         const { email, password } = req.body;
         const result = await authService.login({ email, password });
-        const deviceSaved = await rememberAppDevice(result.user && result.user._id, req.body);
+        const deviceSaved = await rememberAppDevice(result.user && result.user._id, appDeviceFrom(req.body));
         res.json({ ...result, deviceSaved });
     } catch (error) {
         res.status(401).json({ error: error.message });

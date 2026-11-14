@@ -262,21 +262,21 @@ router.put('/:id', auth, /** @param {AuthenticatedRequest} req @param {Response}
         const event = await eventService.updateEvent(req.params.id, req.body);
         await invalidateCache('events');
 
-        // Detect changes to notifiable fields and fire notifications asynchronously
+        // Detect changes to notifiable fields and fire notifications asynchronously.
+        // Compared saved-before against saved-after, by value: dates by their
+        // time, references by id. Comparing String(oldDate) ("Sat Nov 22 ...")
+        // with the request's ISO string never matched, so every save of the edit
+        // form told ticket holders the times had changed when they had not.
         const trackedFields = ['name', 'startDateTime', 'endDateTime', 'venue', 'description'];
-        const changedFields = [];
-        for (const field of trackedFields) {
-            const oldVal = currentEvent[field];
-            const newVal = req.body[field];
-            if (newVal !== undefined) {
-                // Compare as strings to handle ObjectIds and Date objects
-                const oldStr = oldVal != null ? String(oldVal._id || oldVal) : '';
-                const newStr = newVal != null ? String(newVal) : '';
-                if (oldStr !== newStr) {
-                    changedFields.push(field);
-                }
-            }
-        }
+        const comparable = (v) => {
+            if (v == null) return '';
+            if (v instanceof Date) return String(v.getTime());
+            if (typeof v === 'object' && v._id) return String(v._id);
+            return String(v);
+        };
+        const changedFields = event
+            ? trackedFields.filter((field) => comparable(currentEvent[field]) !== comparable(event[field]))
+            : [];
 
         if (changedFields.length > 0) {
             // Fire-and-forget with error swallowing — don't block the response

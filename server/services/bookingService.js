@@ -148,6 +148,21 @@ async function applyAdvancePaid(booking, payment, schedule) {
                 priority: 'high',
                 channel: 'all'
             }).catch(err => console.error('Owner payment notification failed:', err.message));
+            // The guest who paid: a receipt-style confirmation. An event's venue
+            // booking is the organiser's, who hears when the event goes live.
+            if (!updated.event) {
+                notificationService.createNotification({
+                    userId: updated.user,
+                    type: 'payment_success',
+                    title: accepted ? 'Payment received - booking confirmed' : 'Payment received',
+                    message: accepted
+                        ? `We received ${what} for ${venue.name} on ${when}. Your booking is confirmed.`
+                        : `We received ${what} for ${venue.name} on ${when}. The venue will accept or decline your request soon.`,
+                    data: { referenceId: updated._id, referenceModel: 'Booking', actionUrl: `/dashboard/bookings/${updated._id}` },
+                    priority: 'medium',
+                    channel: 'all'
+                }).catch(err => console.error('Guest payment notification failed:', err.message));
+            }
         }
     } catch (err) {
         console.error('Owner notification failed:', err.message);
@@ -183,6 +198,37 @@ async function applyBalancePaid(booking, payment) {
     if (updated) {
         booking.paymentSchedule.balanceStatus = 'paid';
         booking.paymentSchedule.balancePayment = payment._id;
+        // The advance notified the owner; the balance - the booking now fully
+        // paid - told nobody, not even the guest who paid it.
+        try {
+            const Venue = require('../models/Venue');
+            const notificationService = require('./notificationService');
+            const venue = await Venue.findById(updated.venue).select('owner name').lean();
+            const when = new Date(updated.bookingDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+            const amount = updated.paymentSchedule?.balanceAmount;
+            notificationService.createNotification({
+                userId: updated.user,
+                type: 'payment_success',
+                title: 'Balance paid - booking fully paid',
+                message: `We received your balance${amount ? ` of ₹${amount}` : ''} for ${venue?.name || 'your venue'} on ${when}. Your booking is fully paid.`,
+                data: { referenceId: updated._id, referenceModel: 'Booking', actionUrl: `/dashboard/bookings/${updated._id}` },
+                priority: 'medium',
+                channel: 'all'
+            }).catch(err => console.error('Guest balance notification failed:', err.message));
+            if (venue?.owner) {
+                notificationService.createNotification({
+                    userId: venue.owner,
+                    type: 'payment_success',
+                    title: 'Booking fully paid',
+                    message: `The guest paid the balance${amount ? ` of ₹${amount}` : ''} for ${venue.name} on ${when}. The booking is fully paid.`,
+                    data: { referenceId: updated._id, referenceModel: 'Booking', actionUrl: `/venue-portal/bookings/${updated._id}` },
+                    priority: 'medium',
+                    channel: 'all'
+                }).catch(err => console.error('Owner balance notification failed:', err.message));
+            }
+        } catch (err) {
+            console.error('Balance notification failed:', err.message);
+        }
         return { applied: true };
     }
     const fresh = await Booking.findById(booking._id).lean();

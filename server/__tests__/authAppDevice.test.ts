@@ -56,6 +56,19 @@ describe('app device at login and logout', () => {
         expect(await DeviceToken.countDocuments({ user: userId })).toBe(0);
     });
 
+    it('login with device_id ties the token to the install: a rotated token replaces it, another phone is kept', async () => {
+        await login({ player_id: phone, device_type: 'android', device_id: 'install-A', app_version: '1.0.0' });
+        const rotated = `fcm-rotated-${'r'.repeat(40)}`;
+        await login({ player_id: rotated, device_type: 'android', device_id: 'install-A', app_version: '1.0.1' });
+        await login({ player_id: tablet, device_type: 'ios', device_id: 'install-B' });
+
+        const devices = await DeviceToken.find({ user: userId }).sort({ deviceId: 1 }).lean();
+        expect(devices.map((d: any) => [d.deviceId, d.token, d.appVersion])).toEqual([
+            ['install-A', rotated, '1.0.1'],
+            ['install-B', tablet, null],
+        ]);
+    });
+
     it('logout with player_id clears only that phone; logout without it (the website) clears nothing', async () => {
         const { body } = await login({ player_id: phone, device_type: 'ios' });
         await login({ player_id: tablet, device_type: 'android' });

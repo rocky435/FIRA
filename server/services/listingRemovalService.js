@@ -145,7 +145,8 @@ async function cancelVenueBookingsForRemoval(venueId) {
                 ? 'The venue for your booking is no longer on FIRA, so your booking is cancelled. What you paid will be refunded.'
                 : 'The venue for your booking is no longer on FIRA, so your booking is cancelled.',
             data: { referenceId: booking._id, referenceModel: 'Booking', actionUrl: '/dashboard/bookings' },
-            priority: 'high'
+            priority: 'high',
+            channel: 'all'
         }).catch(() => {});
     }
     return bookings.length;

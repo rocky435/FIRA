@@ -479,6 +479,25 @@ const adminService = {
             entityId: venueId,
             metadata: { name: before.name, field: 'status', from: before.status, to: status },
         });
+
+        // Tell the owner. Only on a real change; wording follows where it went.
+        if (before.status !== status) {
+            const wasHidden = ['blocked', 'suspended'].includes(before.status);
+            const text = {
+                approved: wasHidden
+                    ? { title: 'Your venue is visible again', message: `"${before.name}" has been unblocked and is listed on FIRA again.` }
+                    : { title: 'Your venue is live', message: `"${before.name}" was approved and is now listed on FIRA.` },
+                rejected: { title: 'Your venue was not approved', message: `"${before.name}" was not approved. Contact FIRA support to find out what to change.` },
+                blocked: { title: 'Your venue was blocked', message: `"${before.name}" was blocked by FIRA and is hidden from the site. Only FIRA can unblock it - please contact FIRA support.` },
+                pending: { title: 'Your venue is back in review', message: `"${before.name}" is being reviewed again by FIRA.` },
+            }[status];
+            if (text) {
+                await adminService.notifyUser(before.owner, {
+                    ...text,
+                    data: { referenceId: venueId, referenceModel: 'Venue', actionUrl: '/venue-portal/venues' },
+                });
+            }
+        }
         return venue;
     },
 
@@ -489,7 +508,7 @@ const adminService = {
     // tickets sold for them) have to be dealt with first. Its upcoming bookings
     // are cancelled and what the guests paid is raised as refunds to be done.
     async deleteVenue(venueId, adminUserId) {
-        const named = await Venue.findById(venueId).select('name').lean();
+        const named = await Venue.findById(venueId).select('name owner').lean();
         const removal = require('./listingRemovalService');
         const { events } = await removal.venueObligations(venueId);
         if (events.length) {
@@ -503,6 +522,11 @@ const adminService = {
             entityType: 'venue',
             entityId: venueId,
             metadata: { name: named?.name, cancelledBookings },
+        });
+        await adminService.notifyUser(named?.owner, {
+            title: 'Your venue was removed',
+            message: `"${named?.name || 'Your venue'}" was removed from FIRA.${cancelledBookings ? ` Its ${cancelledBookings} upcoming booking${cancelledBookings === 1 ? ' was' : 's were'} cancelled and the guests will be refunded.` : ''} Contact FIRA support if you have questions.`,
+            data: { referenceId: venueId, referenceModel: 'Venue', actionUrl: '/venue-portal/venues' },
         });
         return { ...result, cancelledBookings };
     },
@@ -653,20 +677,28 @@ const adminService = {
         return updated;
     },
 
-    /** Best-effort in-app message to an event's organiser; never fails the action. */
+    /** Best-effort message to an event's organiser; never fails the action. */
     async notifyOrganizer(event, { title, message }) {
         if (!event?.organizer) return;
+        await adminService.notifyUser(event.organizer, {
+            title,
+            message,
+            data: { referenceId: event._id, referenceModel: 'Event', actionUrl: `/dashboard/events/${event._id}` },
+        });
+    },
+
+    /**
+     * Tell the person an admin decision is about: inbox, phone (FCM), browser
+     * push and open tabs. Best-effort - a failed notification never undoes the
+     * decision. Venue owners and creators used to learn about approvals, blocks
+     * and removals only by noticing them in the portal.
+     */
+    async notifyUser(userId, { title, message, type = 'system', data = {} }) {
+        if (!userId) return;
         try {
-            const Notification = require('../models/Notification');
-            await Notification.create({
-                user: event.organizer,
-                title,
-                message,
-                type: 'system',
-                data: { referenceId: event._id, referenceModel: 'Event' },
-            });
+            await require('./notificationService').createNotification({ userId, type, title, message, data, priority: 'high', channel: 'all' });
         } catch (error) {
-            console.error('Organizer notification failed:', error.message);
+            console.error('Admin decision notification failed:', error.message);
         }
     },
 
@@ -677,7 +709,7 @@ const adminService = {
     // cancelled and refunds raised in "Refunds to be done" (eventService.cancelEvent).
     // Removing it quietly left buyers holding tickets for an event that was gone.
     async deleteEvent(eventId, adminUserId) {
-        const named = await Event.findById(eventId).select('name status').lean();
+        const named = await Event.findById(eventId).select('name status organizer').lean();
         const eventService = require('./eventService');
         const removal = require('./listingRemovalService');
         const hadSales = named && named.status !== 'cancelled' && await removal.eventHasSales(eventId);
@@ -690,6 +722,13 @@ const adminService = {
             entityType: 'event',
             entityId: eventId,
             metadata: { name: named?.name, ticketsCancelled: !!hadSales },
+        });
+        // Ticket holders hear about their refunds from the cancellation; the
+        // organiser has to be told why their event disappeared.
+        await adminService.notifyUser(named?.organizer, {
+            title: 'Your event was removed',
+            message: `"${named?.name || 'Your event'}" was removed from FIRA.${hadSales ? ' The tickets sold were cancelled and the buyers will be refunded.' : ''} Contact FIRA support if you have questions.`,
+            data: { referenceId: eventId, referenceModel: 'Event', actionUrl: '/dashboard/events' },
         });
         return result;
     },
@@ -873,6 +912,24 @@ const adminService = {
             },
         });
 
+        // Tell the creator, including what happened to their verified badge.
+        if (before.status !== status && brand.user) {
+            const text = {
+                approved: before.status === 'blocked'
+                    ? { type: 'verification_approved', title: 'Your creator profile is visible again', message: `"${before.name}" has been unblocked and your verified badge is back.` }
+                    : { type: 'verification_approved', title: 'Your creator profile is approved', message: `"${before.name}" is approved - you now have a verified badge on FIRA.` },
+                rejected: { type: 'verification_rejected', title: 'Your creator profile was not approved', message: `"${before.name}" was not approved. Contact FIRA support to find out what to change.` },
+                blocked: { type: 'system', title: 'Your creator profile was blocked', message: `"${before.name}" was blocked by FIRA and hidden from the site, and the verified badge was removed. Please contact FIRA support.` },
+                pending: { type: 'system', title: 'Your creator profile is back in review', message: `"${before.name}" is being reviewed again by FIRA.` },
+            }[status];
+            if (text) {
+                await adminService.notifyUser(brand.user, {
+                    ...text,
+                    data: { referenceId: brandId, referenceModel: 'BrandProfile', actionUrl: '/dashboard/brand' },
+                });
+            }
+        }
+
         return brand;
     },
 
@@ -925,6 +982,11 @@ const adminService = {
             entityType: 'creator',
             entityId: brandId,
             metadata: { name: brand.name, type: brand.type },
+        });
+        await adminService.notifyUser(brand.user, {
+            title: 'Your creator profile was removed',
+            message: `"${brand.name}" was removed from FIRA and its verified badge was reset. You can create a new creator profile from your dashboard.`,
+            data: { actionUrl: '/dashboard/brand' },
         });
 
         return { success: true };

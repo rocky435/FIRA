@@ -130,7 +130,7 @@ const postService = {
         // Notify all ticket holders about the new post
         try {
             const Ticket = require('../models/Ticket');
-            const Notification = require('../models/Notification');
+            const notificationService = require('./notificationService');
             
             // Find all active tickets for this event
             const tickets = await Ticket.find({ 
@@ -144,8 +144,9 @@ const postService = {
             
             if (userIds.length > 0) {
                 // Create notifications for all ticket holders
-                const notifications = userIds.map(uid => ({
-                    user: uid,
+                // Through the notification service so it pops up (phone, browser
+                // push, open tabs); it used to land in the inbox silently.
+                await notificationService.sendBulkNotifications(userIds, {
                     type: 'event_new_post',
                     title: `New update from ${event.name}`,
                     message: post.content.substring(0, 100) + (post.content.length > 100 ? '...' : ''),
@@ -158,10 +159,9 @@ const postService = {
                             eventName: event.name,
                             postId: post._id
                         }
-                    }
-                }));
-                
-                await Notification.insertMany(notifications);
+                    },
+                    channel: 'all',
+                });
                 console.log(`✅ Notified ${userIds.length} ticket holders about new event post for "${event.name}"`);
             }
         } catch (notifErr) {

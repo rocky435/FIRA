@@ -139,6 +139,17 @@ const refundService = {
                     // Just cancel the ticket
                     ticket.status = 'cancelled';
                     await ticket.save();
+                    // Paid holders hear through their refund notice below; free
+                    // holders were never told their event was off.
+                    notificationService.createNotification({
+                        userId: ticket.user._id || ticket.user,
+                        type: 'event_cancelled',
+                        title: 'Event cancelled',
+                        message: `"${event.name}" has been cancelled. Your free ticket is no longer valid.`,
+                        data: { referenceId: event._id, referenceModel: 'Event', actionUrl: `/events/${event._id}` },
+                        priority: 'high',
+                        channel: 'all'
+                    }).catch(err => console.error('Free ticket cancellation notice failed:', err.message));
                     results.successCount++;
                     continue;
                 }
@@ -168,8 +179,9 @@ const refundService = {
                     title: 'Event cancelled - refund requested',
                     message: `The event "${event.name}" has been cancelled. A refund of ₹${refund.amount} has been requested and will be sent once approved.`,
                     data: { eventId, refundId: refund._id, amount: refund.amount },
-                    priority: 'high'
-                });
+                    priority: 'high',
+                    channel: 'all'
+                }).catch(err => console.error('Refund notice failed:', err.message));
 
                 results.refunds.push(refund);
                 results.successCount++;
@@ -270,7 +282,8 @@ const refundService = {
                 ? `Your ticket for "${ticket.event.name}" has been cancelled. A refund of ₹${refund.amount} (${refundEligibility.policy}) has been requested and will be sent once approved.`
                 : `Your ticket for "${ticket.event.name}" has been cancelled. ${refundEligibility.policy}`,
             data: { ticketId, eventId: ticket.event._id, refundId: refund?._id },
-            priority: 'medium'
+            priority: 'medium',
+            channel: 'all'
         }).catch(err => console.error('Notification failed (non-fatal):', err.message));
 
         return {
@@ -546,7 +559,8 @@ const refundService = {
                     ? `Your refund of ₹${refund.amount} has been sent.${reference ? ` Reference: ${reference}.` : ''}`
                     : `Your refund request has been rejected. Reason: ${notes}`,
                 data: { refundId },
-                priority: 'high'
+                priority: 'high',
+                channel: 'all'
             }).catch(err => console.error('Notification failed (non-fatal):', err.message));
         }
 

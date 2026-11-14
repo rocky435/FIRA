@@ -557,6 +557,21 @@ const eventService = {
             } else {
                 console.log('⚠️ Skipping email - venue owner or organizer not found');
             }
+
+            // And in the app: inbox, phone, browser push. The request used to
+            // reach the owner by email only, so the portal and phone said nothing.
+            if (venueWithOwner?.owner?._id) {
+                await require('./notificationService').createNotification({
+                    userId: venueWithOwner.owner._id,
+                    type: 'booking_request',
+                    // A venue set to accept automatically has nothing to decide.
+                    title: event.venueApproval?.status === 'approved' ? 'New event at your venue' : 'New event request',
+                    message: `${organizer?.name || 'An organiser'} ${event.venueApproval?.status === 'approved' ? 'booked' : 'wants to hold'} "${event.name}" at ${venueWithOwner.name} on ${new Date(event.startDateTime).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })}.${event.venueApproval?.status === 'approved' ? ' It was accepted automatically.' : ' Approve or decline it.'}`,
+                    data: { referenceId: event._id, referenceModel: 'Event', actionUrl: `/venue-portal/events/${event._id}` },
+                    priority: 'high',
+                    channel: 'all',
+                }).catch(err => console.error('Event request notification failed:', err.message));
+            }
         }
 
         return event;
@@ -677,7 +692,7 @@ const eventService = {
             || +new Date(updatedEvent.startDateTime) !== +new Date(event.startDateTime)
             || +new Date(updatedEvent.endDateTime) !== +new Date(event.endDateTime));
         if (heldDays && moved) {
-            await this.releaseVenueForEvent(event);
+            await this.releaseVenueForEvent(event, { reason: 'The organiser moved the event to other dates or another venue' });
         }
         return updatedEvent;
     },
@@ -779,6 +794,19 @@ const eventService = {
             requestMessage: message
         });
 
+        // Tell the organiser someone is waiting - nothing did, so requests sat
+        // unseen until they happened to open the event.
+        const requester = await require('../models/User').findById(userId).select('name').lean();
+        await require('./notificationService').createNotification({
+            userId: event.organizer,
+            type: 'private_event_request',
+            title: 'New request to join your private event',
+            message: `${requester?.name || 'Someone'} asked to join "${event.name}".${message ? ` "${String(message).slice(0, 120)}"` : ''}`,
+            data: { referenceId: event._id, referenceModel: 'Event', actionUrl: `/dashboard/events/${event._id}` },
+            priority: 'medium',
+            channel: 'all',
+        }).catch(err => console.error('Access request notification failed:', err.message));
+
         return request;
     },
 
@@ -835,13 +863,26 @@ const eventService = {
         if (!request) {
             throw new Error('Access request not found');
         }
+
+        // Tell the person who asked how it went.
+        const ev = await Event.findById(request.event).select('name').lean();
+        await require('./notificationService').createNotification({
+            userId: request.user,
+            type: status === 'approved' ? 'private_event_approved' : 'private_event_rejected',
+            title: status === 'approved' ? "You're in!" : 'Request not accepted',
+            message: status === 'approved'
+                ? `Your request to join "${ev?.name || 'the event'}" was accepted. You can get your tickets now.`
+                : `Your request to join "${ev?.name || 'the event'}" was not accepted.`,
+            data: { referenceId: request.event, referenceModel: 'Event', actionUrl: `/events/${request.event}` },
+            priority: 'medium',
+            channel: 'all',
+        }).catch(err => console.error('Access decision notification failed:', err.message));
         return request;
     },
 
     // Venue owner approves/rejects event
     async venueApproveEvent(eventId, venueOwnerId, { status, rejectionReason }) {
         const Venue = require('../models/Venue');
-        const Notification = require('../models/Notification');
 
         if (!['approved', 'rejected'].includes(status)) {
             throw new Error('Status must be approved or rejected');
@@ -872,7 +913,8 @@ const eventService = {
         let booking = null;
         if (status === 'rejected') {
             event.status = 'rejected';
-            await this.releaseVenueForEvent(event, { refund: 'full', reason: 'The venue declined the event' });
+            // The owner declined it themselves - nothing to tell them.
+            await this.releaseVenueForEvent(event, { refund: 'full', reason: 'The venue declined the event', notifyOwner: false });
         }
         // Approved: the venue's days are held and the organiser is asked to pay
         // the full venue price. The event goes live only once that is paid and
@@ -887,9 +929,11 @@ const eventService = {
         if (status === 'approved') await this.goLiveIfReady(event);
 
         const unpaid = booking && booking.paymentStatus !== 'paid' && booking.totalAmount > 0;
-        // Notify organizer
-        await Notification.create({
-            user: event.organizer,
+        // Notify organizer - through notificationService so it also reaches their
+        // phone (FCM), browser push and any open tab, not just the inbox.
+        await require('./notificationService').createNotification({
+            userId: event.organizer,
+            channel: 'all',
             title: status === 'approved' ? 'The venue approved your event' : 'The venue declined your event',
             message: status !== 'approved'
                 ? `The venue has rejected your event "${event.name}". Reason: ${rejectionReason || 'Not specified'}`
@@ -900,7 +944,7 @@ const eventService = {
             data: {
                 referenceId: unpaid ? booking._id : event._id,
                 referenceModel: unpaid ? 'Booking' : 'Event',
-                ...(unpaid ? { actionUrl: `/dashboard/bookings/${booking._id}` } : {}),
+                actionUrl: unpaid ? `/dashboard/bookings/${booking._id}` : `/dashboard/events/${event._id}`,
             }
         });
 
@@ -909,8 +953,6 @@ const eventService = {
 
     // Admin approves/rejects event
     async adminApproveEvent(eventId, adminId, { status, rejectionReason }) {
-        const Notification = require('../models/Notification');
-
         if (!['approved', 'rejected'].includes(status)) {
             throw new Error('Status must be approved or rejected');
         }
@@ -968,9 +1010,10 @@ const eventService = {
                 : ' It goes live once the venue approves it and the venue booking is paid.';
         }
 
-        // Notify organizer
-        await Notification.create({
-            user: event.organizer,
+        // Notify organizer (inbox, phone, browser push and open tabs).
+        await require('./notificationService').createNotification({
+            userId: event.organizer,
+            channel: 'all',
             title: status === 'approved' ? 'Your event was approved' : 'Your event was not approved',
             message: status !== 'approved'
                 ? `Your event "${event.name}" was rejected by admin. Reason: ${rejectionReason || 'Not specified'}`
@@ -978,7 +1021,7 @@ const eventService = {
                     ? `Your event "${event.name}" has been approved and is now live!`
                     : `Your event "${event.name}" has been approved.${waitingFor}`,
             type: 'system',
-            data: { referenceId: event._id, referenceModel: 'Event' }
+            data: { referenceId: event._id, referenceModel: 'Event', actionUrl: `/dashboard/events/${event._id}` }
         });
 
         if (live) await this.announceEventLive(event);
@@ -1158,7 +1201,7 @@ const eventService = {
      * marked booked for good and nobody could book them. Best-effort: the
      * caller's change to the event already stands.
      */
-    async releaseVenueForEvent(event, { refund = 'policy', reason = 'The event was cancelled' } = {}) {
+    async releaseVenueForEvent(event, { refund = 'policy', reason = 'The event was cancelled', notifyOwner = true } = {}) {
         try {
             const Venue = require('../models/Venue');
             const Booking = require('../models/Booking');
@@ -1174,6 +1217,7 @@ const eventService = {
             // and under the venue's cancellation policy when the organiser called
             // it off (the same rule as a guest cancelling a booking).
             const live = await Booking.find({ event: event._id, status: { $in: ['pending', 'accepted'] } }).select('_id').lean();
+            let cancelledHere = 0;
             for (const { _id } of live) {
                 const booking = await Booking.findOneAndUpdate(
                     { _id, status: { $in: ['pending', 'accepted'] } },
@@ -1181,6 +1225,7 @@ const eventService = {
                     { new: true }
                 );
                 if (!booking) continue;
+                cancelledHere++;
                 // A paid booking also holds the days under its own id.
                 if (venue) require('../utils/venueAvailability').releaseBookingDays(venue, booking);
                 if (booking.paymentStatus !== 'paid') continue;
@@ -1191,6 +1236,20 @@ const eventService = {
                     reasonDetails: `${reason} - venue booking for "${event.name}" (${pct}% refunded)`,
                     userId: booking.user,
                 });
+            }
+
+            // The venue owner loses a booking they had agreed to (or were asked
+            // about): tell them, unless they made the call themselves.
+            if (notifyOwner && cancelledHere > 0 && venue?.owner) {
+                await require('./notificationService').createNotification({
+                    userId: venue.owner,
+                    type: 'booking_cancelled',
+                    title: 'Event at your venue cancelled',
+                    message: `The booking for "${event.name}" at ${venue.name} was cancelled: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}. The dates are free again.`,
+                    data: { referenceId: event._id, referenceModel: 'Event', actionUrl: `/venue-portal/events/${event._id}` },
+                    priority: 'medium',
+                    channel: 'all',
+                }).catch(err => console.error('Venue owner cancellation notice failed:', err.message));
             }
 
             if (!venue) return;
@@ -1582,13 +1641,13 @@ const eventService = {
         event.status = 'approved';
         if (listedVenue) await this.updateVenueAvailability(claimed);
         if (announce) {
-            const Notification = require('../models/Notification');
-            await Notification.create({
-                user: claimed.organizer,
+            await require('./notificationService').createNotification({
+                userId: claimed.organizer,
+                channel: 'all',
                 title: 'Your event is live',
                 message: `"${claimed.name}" is approved and the venue is paid. It is now live!`,
                 type: 'system',
-                data: { referenceId: claimed._id, referenceModel: 'Event' },
+                data: { referenceId: claimed._id, referenceModel: 'Event', actionUrl: `/dashboard/events/${claimed._id}` },
             }).catch(err => console.error('event-live notification failed:', err.message));
             await this.announceEventLive(claimed);
         }
@@ -1615,13 +1674,13 @@ const eventService = {
         );
         if (!event) return;
         await this.releaseVenueForEvent(event, { refund: 'full', reason: 'The venue was not paid for in time' });
-        const Notification = require('../models/Notification');
-        await Notification.create({
-            user: event.organizer,
+        await require('./notificationService').createNotification({
+            userId: event.organizer,
+            channel: 'all',
             title: 'Event cancelled - venue not paid',
             message: `The venue for "${event.name}" was not paid for by ${formatWhen(booking.paymentDueAt)}, so the event is cancelled and the dates are released.`,
             type: 'system',
-            data: { referenceId: event._id, referenceModel: 'Event' },
+            data: { referenceId: event._id, referenceModel: 'Event', actionUrl: `/dashboard/events/${event._id}` },
         }).catch(err => console.error('venue-lapsed notification failed:', err.message));
     }
 };
