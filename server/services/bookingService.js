@@ -499,8 +499,9 @@ const bookingService = {
                 await blockVenueCalendar(booking);
             }
 
-            // Send WhatsApp confirmation to booker if phone is available
-            if (booker?.phone) {
+            // WhatsApp confirmation, only where WhatsApp is set up. Without it this
+            // waited on a call to Meta that could only fail, on every booking.
+            if (booker?.phone && whatsappService.isConfigured()) {
                 try {
                     const template = whatsappTemplates.appointment_confirmation_1({
                         userName: booker.name,

@@ -4,8 +4,15 @@ const META_PHONE_ID = process.env.META_WHATSAPP_PHONE_ID;
 const META_TOKEN = process.env.META_WHATSAPP_TOKEN;
 const META_API_VERSION = process.env.META_API_VERSION || 'v21.0';
 
+// WhatsApp is optional: with no META_WHATSAPP_PHONE_ID / META_WHATSAPP_TOKEN set,
+// callers skip it (isConfigured) instead of attempting a send that can only fail.
 if (!META_PHONE_ID || !META_TOKEN) {
-    console.warn('⚠️ META WhatsApp env missing: META_WHATSAPP_PHONE_ID and/or META_WHATSAPP_TOKEN');
+    console.log('ℹ️  WhatsApp messages are off (META_WHATSAPP_PHONE_ID / META_WHATSAPP_TOKEN not set).');
+}
+
+/** Whether WhatsApp sending is set up on this server. */
+function isConfigured() {
+    return Boolean(META_PHONE_ID && META_TOKEN);
 }
 
 const client = axios.create({
@@ -71,6 +78,7 @@ async function sendTemplate({ to, template }) {
 }
 
 module.exports = {
+    isConfigured,
     sendText,
     sendTemplate,
     formatPhone
