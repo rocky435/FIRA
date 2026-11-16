@@ -21,15 +21,16 @@ export function Button({
     type,
     ...props
 }) {
-    const baseStyles = 'inline-flex items-center justify-center font-medium whitespace-nowrap rounded-xl transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed';
+    const baseStyles = 'inline-flex items-center justify-center font-medium whitespace-nowrap rounded-xl transition-[color,background-color,filter,transform] duration-150 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed';
 
     const variants = {
-        primary: 'bg-white text-black hover:bg-gray-200 focus-visible:outline-white',
+        // The website's main button: violet into pink.
+        primary: 'bg-brand-grad text-white shadow-lg shadow-violet-900/30 hover:brightness-110 focus-visible:outline-violet-300',
         secondary: 'bg-surface-raised text-white border border-line-strong hover:bg-white/[0.08] focus-visible:outline-violet-400',
         ghost: 'bg-transparent text-gray-300 hover:bg-hover hover:text-white focus-visible:outline-violet-400',
         danger: 'bg-red-500 text-white hover:bg-red-600 focus-visible:outline-red-400',
         success: 'bg-green-600 text-white hover:bg-green-700 focus-visible:outline-green-400',
-        violet: 'bg-violet-600 text-white hover:bg-violet-700 focus-visible:outline-violet-400',
+        violet: 'bg-brand-grad text-white shadow-lg shadow-violet-900/30 hover:brightness-110 focus-visible:outline-violet-300',
     };
 
     const sizes = {

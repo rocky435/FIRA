@@ -5,6 +5,14 @@
     <link rel="icon" type="image/png" href="/logo%20white.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0a0a0a" />
+    <!-- Installable app: Android/desktop read the manifest; iPhone reads the
+         apple-* tags when the admin is added to the home screen. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="FIRA Admin" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <meta name="robots" content="noindex, nofollow" />
     <title>FIRA Admin</title>
   </head>

@@ -89,6 +89,38 @@ const adminApi = {
         if (data?.token) localStorage.setItem(ADMIN_TOKEN_KEY, data.token);
         return data;
     },
+    // ================== ALERTS ON THIS DEVICE ==================
+    async getAlertsKey() {
+        const res = await fetch(`${API_BASE}/alerts/public-key`, { headers: authHeaders() });
+        return handle(res, 'Alerts are not available');
+    },
+    async subscribeAlerts(subscription) {
+        const res = await fetch(`${API_BASE}/alerts/subscribe`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ subscription }),
+        });
+        return handle(res, 'Could not turn on alerts');
+    },
+    async unsubscribeAlerts(endpoint) {
+        const res = await fetch(`${API_BASE}/alerts/unsubscribe`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ endpoint }),
+        });
+        return handle(res, 'Could not turn off alerts');
+    },
+    async testAlerts() {
+        const res = await fetch(`${API_BASE}/alerts/test`, { method: 'POST', headers: authHeaders() });
+        return handle(res, 'Could not send a test alert');
+    },
+
+    /** The signed-in admin and their level. */
+    async getMe() {
+        const res = await fetch(`${API_BASE}/me`, { headers: authHeaders() });
+        return handle(res, 'Failed to load your account');
+    },
+
     // ================== DASHBOARD ==================
     async getStats() {
         const res = await fetch(`${API_BASE}/stats`, { headers: authHeaders() });
@@ -309,6 +341,44 @@ const adminApi = {
             body: JSON.stringify({ reason })
         });
         return handle(res, 'Failed to reverse settlement');
+    },
+
+    /** Everyone who organises events, with their events. */
+    async getEventOrganisers(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        const res = await fetch(`${API_BASE}/event-organisers${query ? `?${query}` : ''}`, { headers: authHeaders() });
+        return handle(res, 'Failed to load event organisers');
+    },
+
+    // ================== FIRA COMMISSION (from owners) ==================
+    // The percentage of an organiser's / venue owner's share FIRA keeps when it
+    // pays them. `percentage` null clears it (a listing goes back to its owner's
+    // rate).
+
+    /** A person's rate and how each of their listings stands. */
+    async getOwnerCommission(userId) {
+        const res = await fetch(`${API_BASE}/users/${userId}/commission`, { headers: authHeaders() });
+        return handle(res, 'Failed to load the commission');
+    },
+
+    /** Set a person's rate. Answers { percentage, applied: [...], kept: [...] }. */
+    async setOwnerCommission(userId, percentage) {
+        const res = await fetch(`${API_BASE}/users/${userId}/commission`, {
+            method: 'PATCH',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ percentage })
+        });
+        return handle(res, 'Failed to save the commission');
+    },
+
+    /** Set one listing's rate. Answers the listing's settlement, like getListingSettlement. */
+    async setListingCommission(kind, listingId, percentage) {
+        const res = await fetch(`${API_BASE}/listings/${kind}/${listingId}/commission`, {
+            method: 'PATCH',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ percentage })
+        });
+        return handle(res, 'Failed to save the commission');
     },
 
     // ================== DISCOUNT CODES ==================

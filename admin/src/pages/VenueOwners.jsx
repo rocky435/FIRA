@@ -12,6 +12,7 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { EmptyState, ErrorState, TableSkeleton } from '../components/ui/States';
 import { IdentityReviewLoader } from '../components/IdentityReview';
 import BankDetails from '../components/BankDetails';
+import { OwnerCommissionCard } from '../components/Commission';
 
 const formatCapacity = (capacity) => {
     if (capacity == null) return '—';
@@ -93,6 +94,8 @@ export default function VenueOwners() {
                                     {isOpen && (
                                         <div className="space-y-4 border-t border-line bg-white/[0.015] px-5 pb-5 pt-4">
                                             <BankDetails bank={owner.bankDetails} />
+                                            {/* What FIRA keeps from this owner's venue payouts. */}
+                                            <OwnerCommissionCard userId={owner._id} name={owner.name} />
                                             {/* The ID must be verified before any of their venues can be approved. */}
                                             {/* Reload after a review so the row's ID badge follows it. */}
                                             <IdentityReviewLoader userId={owner._id} onChange={reload} />

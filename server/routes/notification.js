@@ -84,8 +84,14 @@ router.post('/push/test', auth, async (req, res) => {
             url: '/notifications'
         });
         if (result.sent === 0) {
-            return res.status(404).json({
-                error: 'No active push subscription found for this account on any device.'
+            // Say why: no device at all, or the device's push service (Apple,
+            // Google...) refused - a refusal used to read as "no subscription".
+            const refused = (result.results || []).find((r) => !r.ok);
+            return res.status(refused ? 502 : 404).json({
+                error: refused
+                    ? `${refused.service} refused the notification${refused.status ? ` (${refused.status})` : ''}: ${refused.reason}`
+                    : 'No active push subscription found for this account on any device.',
+                ...result,
             });
         }
         res.json({ success: true, ...result });

@@ -439,7 +439,9 @@ const { buildListingFigures } = earningsService;
 const listingMoney = {
     fullPriceTotal: 10000, grossCollected: 9600, platformFeeCollected: 500, gstRetained: 90,
     discountTotal: 990, discountByOwner: 990, discountByPlatform: 0, ownerShare: 9010,
-    ownerGross: 9000, platformCommission: 0, netPayable: 9000, refundedTotal: 250,
+    ownerGross: 9000, platformCommission: 0, netPayable: 8649, refundedTotal: 250,
+    // FIRA's commission on the owner's share: 4% of 9010 = 360.40, leaving 8649.
+    commissionPercentage: 4, commissionAmount: 360.4, netPayableBeforeCommission: 9010,
 };
 const listingActivity = {
     successfulPayments: 4, unitsSold: 7, confirmed: 6, cancelled: 1, refundedPayments: 1,
@@ -494,6 +496,7 @@ const listingActivity = {
             fullPriceTotal: 0, grossCollected: 0, platformFeeCollected: 0, gstRetained: 0,
             discountTotal: 0, discountByOwner: 0, discountByPlatform: 0, ownerShare: 0,
             ownerGross: 0, platformCommission: 0, netPayable: 0, refundedTotal: 0,
+            commissionPercentage: 0, commissionAmount: 0, netPayableBeforeCommission: 0,
         },
         activity: { successfulPayments: 0, unitsSold: 0, confirmed: 0, cancelled: 0, refundedPayments: 0, lastPaymentAt: null },
         payout: null,
@@ -522,7 +525,7 @@ for (const bad of [NaN, undefined, null, 'x', Infinity]) {
         payout: null,
     }), /finite/);
     // the discount and owner-share figures are a settlement reference too
-    for (const f of ['fullPriceTotal', 'discountTotal', 'ownerShare']) {
+    for (const f of ['fullPriceTotal', 'discountTotal', 'ownerShare', 'commissionPercentage', 'commissionAmount', 'netPayableBeforeCommission']) {
         assert.throws(() => buildListingFigures({
             money: { ...listingMoney, [f]: bad },
             activity: listingActivity,

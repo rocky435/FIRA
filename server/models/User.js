@@ -60,6 +60,22 @@ const userSchema = new mongoose.Schema({
     default: null
   },
   /**
+   * FIRA's commission on this person's events and venues, as a percentage of
+   * the owner's share, taken out of what FIRA pays them. Set by an admin; null
+   * means none has been set (0%). New listings copy it when they are created
+   * (Event/Venue.commissionPercentage). Admin-only: never sent to the owner or
+   * the website.
+   */
+  commissionPercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100,
+    // Left out of every normal read (/auth/me returns the whole user), so the
+    // owner's own profile can never carry it. Admin reads ask for it by name.
+    select: false
+  },
+  /**
    * The app install that signed up (its FCM token, sent as `player_id`), held
    * here until the email code is entered - only then is it linked as one of
    * the user's devices (routes/auth.js verify-otp). Linking at signup would

@@ -69,6 +69,24 @@ const venueSchema = new mongoose.Schema({
         min: 0,
         max: 100
     },
+    // FIRA's commission on this venue's bookings, as a percentage of the owner's
+    // share, taken out of what FIRA pays them. Not the buyer-side
+    // platformFeePercentage above. Copied from the owner's
+    // User.commissionPercentage at creation; null means 0%. `commissionCustom`
+    // marks a rate an admin set on this venue by hand. Admin-only: never sent
+    // to the owner or the website.
+    commissionPercentage: {
+        type: Number,
+        default: null,
+        min: 0,
+        max: 100,
+        select: false
+    },
+    commissionCustom: {
+        type: Boolean,
+        default: false,
+        select: false
+    },
     amenities: [{
         type: String
     }],
@@ -207,7 +225,16 @@ const venueSchema = new mongoose.Schema({
         noCancellationHours: { type: Number, min: 0, max: 720, default: 24 }
     }
 }, {
-    timestamps: true
+    timestamps: true,
+    // The commission is admin-only: kept out of a document sent as JSON (a
+    // just-created venue is returned to its owner). See Event.js.
+    toJSON: {
+        transform(_doc, ret) {
+            delete ret.commissionPercentage;
+            delete ret.commissionCustom;
+            return ret;
+        }
+    }
 });
 
 // Derives address.citySlug from address.city on every write path.

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>FIRA Admin - offline</title>
+    <!-- Shown by sw.js when the admin is opened with no connection. Self-contained:
+         nothing here may need the network. -->
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex; align-items: center; justify-content: center;
+        background: #0a0a0a; color: #fff; padding: 24px; text-align: center;
+        font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main { max-width: 22rem; }
+      h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 8px; }
+      p { color: #9ca3af; margin: 0 0 24px; }
+      button {
+        height: 40px; padding: 0 20px; border: 0; border-radius: 12px;
+        background: #fff; color: #000; font: inherit; font-weight: 500; cursor: pointer;
+      }
+      button:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>You're offline</h1>
+      <p>FIRA Admin needs an internet connection. Check your connection, then try again.</p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+    <script>
+      // Come back by itself when the admin is reachable again. The browser's
+      // "online" event alone is not enough: it can fire before the server
+      // answers, and then never fires again. So ask the server directly - now,
+      // on that event, whenever the app is brought back to the front, and
+      // every few seconds. (This request is not a page load, so the service
+      // worker leaves it alone and it really goes to the network.)
+      function tryReturn() {
+        fetch('/manifest.json', { cache: 'no-store' })
+          .then(function (res) { if (res.ok) location.reload(); })
+          .catch(function () { /* still offline */ });
+      }
+      window.addEventListener('online', tryReturn);
+      document.addEventListener('visibilitychange', function () { if (!document.hidden) tryReturn(); });
+      setInterval(tryReturn, 5000);
+    </script>
+  </body>
+</html>

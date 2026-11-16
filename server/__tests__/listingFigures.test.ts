@@ -123,6 +123,8 @@ describe('getListingFigures — fail closed rather than zeroed figures (Req 12.5
       fullPriceTotal: 1000, grossCollected: 1059, platformFeeCollected: 50, gstRetained: 9,
       discountTotal: 0, discountByOwner: 0, discountByPlatform: 0, ownerShare: 1000,
       ownerGross: 950, platformCommission: 0, netPayable: 950, refundedTotal: 0,
+      // FIRA's commission on the owner's share: none set on this listing.
+      commissionPercentage: 0, commissionAmount: 0, netPayableBeforeCommission: 1000,
     };
     const activity = {
       successfulPayments: 1, unitsSold: 1, confirmed: 1, cancelled: 0,

@@ -15,10 +15,34 @@ import { Table, THead, Th, TBody, Td } from '../components/ui/Table';
 import { Pagination } from '../components/ui/Pagination';
 import { EmptyState, ErrorState, TableSkeleton } from '../components/ui/States';
 
-const STATUSES = ['all', 'pending', 'accepted', 'completed', 'rejected', 'cancelled'];
-const STATUS_LABEL = { all: 'All', pending: 'Awaiting owner', accepted: 'Accepted', completed: 'Completed', rejected: 'Rejected', cancelled: 'Cancelled' };
+// Same strip as Events: what is coming up and what is on now, the rest under
+// "Others". Upcoming / ongoing / completed follow the booking's days on the
+// server (an accepted booking is "upcoming" until its first day).
+const MAIN_STATUSES = ['all', 'upcoming', 'ongoing'];
+const OTHER_STATUSES = ['pending', 'completed', 'rejected', 'cancelled'];
+const STATUSES = [...MAIN_STATUSES, ...OTHER_STATUSES];
+const STATUS_LABEL = {
+    all: 'All', upcoming: 'Upcoming', ongoing: 'Ongoing', pending: 'Awaiting owner',
+    accepted: 'Accepted', completed: 'Completed', rejected: 'Rejected', cancelled: 'Cancelled',
+};
 // Booking-specific shading: "completed" is history (blue), not a success state.
-const STATUS_TONE = { pending: 'warning', accepted: 'success', completed: 'info', rejected: 'danger', cancelled: 'neutral' };
+const STATUS_TONE = { pending: 'warning', upcoming: 'success', ongoing: 'accent', accepted: 'success', completed: 'info', rejected: 'danger', cancelled: 'neutral' };
+
+// Midnight UTC of today's local date: bookingDate / endDate are stored that way.
+const todayKey = () => {
+    const d = new Date();
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
+/** The row's badge: an accepted booking is labelled from its days, as the tabs group it. */
+function shownStatus(b, today = todayKey()) {
+    if (b.status !== 'accepted') return b.status;
+    const first = new Date(b.bookingDate).getTime();
+    const last = new Date(b.endDate || b.bookingDate).getTime();
+    if (last < today) return 'completed';
+    if (first <= today) return 'ongoing';
+    return 'upcoming';
+}
 const PAYMENTS = [
     { value: 'all', label: 'Any payment' },
     { value: 'paid', label: 'Paid' },
@@ -95,11 +119,10 @@ export default function Bookings() {
 
     const bookings = data?.bookings || [];
     const counts = data?.counts || {};
-    const allCount = Object.values(counts).reduce((a, n) => a + n, 0);
     const venueName = params.venue && bookings[0]?.venue?.name;
     const filtered = params.q || status !== 'all' || payment !== 'all';
 
-    const tabs = STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s], count: s === 'all' ? allCount : (counts[s] || 0) }));
+    const tab = (s) => ({ value: s, label: STATUS_LABEL[s], count: counts[s] || 0 });
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
@@ -108,7 +131,7 @@ export default function Bookings() {
                 description={(
                     <>
                         Every booking request across all venues, and what each guest has paid.{' '}
-                        <Link to="/payouts" className="text-violet-300 hover:text-violet-200">See who to pay</Link>
+                        <Link to="/payouts/venue-owners" className="text-violet-300 hover:text-violet-200">See who to pay</Link>
                     </>
                 )}
             />
@@ -125,7 +148,7 @@ export default function Bookings() {
             )}
 
             <div className="mb-4 flex flex-col gap-3">
-                <FilterTabs label="Booking status" options={tabs} value={status} onChange={(v) => set({ status: v })} />
+                <FilterTabs label="Booking status" options={MAIN_STATUSES.map(tab)} more={OTHER_STATUSES.map(tab)} value={status} onChange={(v) => set({ status: v })} />
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                     <div className="sm:w-48">
                         <Select aria-label="Payment" value={payment} onChange={(e) => set({ payment: e.target.value })} options={PAYMENTS} />
@@ -158,6 +181,7 @@ export default function Bookings() {
                         <TBody>
                             {bookings.map((b) => {
                                 const pay = paymentSummary(b);
+                                const shown = shownStatus(b);
                                 const venueId = b.venue?._id;
                                 return (
                                     <tr
@@ -183,7 +207,7 @@ export default function Bookings() {
                                             </div>
                                         </Td>
                                         <Td className="align-top">
-                                            <StatusBadge tone={STATUS_TONE[b.status] || 'neutral'}>{STATUS_LABEL[b.status] || b.status}</StatusBadge>
+                                            <StatusBadge tone={STATUS_TONE[shown] || 'neutral'}>{STATUS_LABEL[shown] || shown}</StatusBadge>
                                         </Td>
                                         <Td className="align-top">
                                             <div className={`tabular-nums ${pay.tone}`}>{pay.main}</div>

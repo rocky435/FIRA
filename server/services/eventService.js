@@ -508,8 +508,15 @@ const eventService = {
         // the payout path reads as "use my default".
         const { sanitizePayoutAccount } = require('../utils/payoutAccount');
         data.payoutAccount = await sanitizePayoutAccount(data.organizer, data.payoutAccount);
+        // Starts at the rate an admin set for this organiser (null = 0%).
+        data.commissionPercentage = await require('../utils/commission').ownerRate(data.organizer);
 
         const event = await Event.create(data);
+        // Waiting only on the admin already (its own venue, or a venue that
+        // accepts automatically): alert the admins now.
+        if (event.status === 'pending' && event.adminApproval?.status !== 'approved' && event.venueApproval?.status === 'approved') {
+            require('./adminAlertService').notify('event', { body: event.name, url: `/events/${event._id}` });
+        }
 
         // If fully approved (a custom venue for a fast-tracked organiser - a
         // listed venue always waits for its owner), hold any listed venue's days.
@@ -927,6 +934,10 @@ const eventService = {
 
         await event.save();
         if (status === 'approved') await this.goLiveIfReady(event);
+        // The venue said yes; now it waits for an admin.
+        if (status === 'approved' && event.adminApproval?.status !== 'approved') {
+            require('./adminAlertService').notify('event', { body: event.name, url: `/events/${event._id}` });
+        }
 
         const unpaid = booking && booking.paymentStatus !== 'paid' && booking.totalAmount > 0;
         // Notify organizer - through notificationService so it also reaches their

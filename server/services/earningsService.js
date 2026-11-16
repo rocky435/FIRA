@@ -19,6 +19,7 @@ const Venue = require('../models/Venue');
 const Booking = require('../models/Booking');
 const Ticket = require('../models/Ticket');
 const { roundMoney } = require('../utils/money');
+const { commissionOn } = require('../utils/commission');
 
 // --- Shared status constants (single source of truth for "what counts") ---
 // "Paid"/"collected" is stored as Payment.status === 'success' (there is no
@@ -82,7 +83,10 @@ const MASK_CHAR = '*';                         // character shown in place of a 
  *   ownerShare: number,            // Σ computePayeeGross      (success)
  *   ownerGross: number,            // Σ Payout.grossAmount
  *   platformCommission: number,    // Σ Payout.platformCommission
- *   netPayable: number,            // ⌊ownerShare⌋ (whole rupees)
+ *   netPayable: number,            // ⌊ownerShare − commissionAmount⌋ (whole rupees)
+ *   commissionPercentage: number,  // FIRA's commission rate on the owner's share (0 when none)
+ *   commissionAmount: number,      // ownerShare × rate, to paise
+ *   netPayableBeforeCommission: number, // ⌊ownerShare⌋ - what the owner-facing view shows
  *   refundedTotal: number,         // Σ Payment.totalAmount    (refunded)
  * }} ListingMoney */
 
@@ -887,7 +891,8 @@ const earningsService = {
     buildListingFigures({ money, activity, payout }) {
         const moneyFields = ['fullPriceTotal', 'grossCollected', 'platformFeeCollected', 'gstRetained',
             'discountTotal', 'discountByOwner', 'discountByPlatform', 'ownerShare',
-            'ownerGross', 'platformCommission', 'netPayable', 'refundedTotal'];
+            'ownerGross', 'platformCommission', 'netPayable', 'refundedTotal',
+            'commissionPercentage', 'commissionAmount', 'netPayableBeforeCommission'];
         for (const f of moneyFields) {
             const v = money && money[f];
             if (typeof v !== 'number' || !Number.isFinite(v)) {
@@ -929,6 +934,11 @@ const earningsService = {
                 platformCommission: money.platformCommission,
                 netPayable: money.netPayable,
                 refundedTotal: money.refundedTotal,
+                // FIRA's commission on the owner's share: the rate, the amount it
+                // takes, and what the owner would be owed without it.
+                commissionPercentage: money.commissionPercentage,
+                commissionAmount: money.commissionAmount,
+                netPayableBeforeCommission: money.netPayableBeforeCommission,
             },
             activity: {
                 successfulPayments: activity.successfulPayments,
@@ -995,12 +1005,15 @@ const earningsService = {
         let referenceModel;
         let referenceIds;
         let activity;
+        // FIRA's commission on the owner's share for this listing (null = 0%).
+        let commissionPercentage = null;
 
         if (kind === 'event') {
-            const event = await Event.findById(listingId).select('_id').lean();
+            const event = await Event.findById(listingId).select('_id +commissionPercentage').lean();
             if (!event) {
                 throw new Error(`getListingFigures: event ${String(listingId)} not found`);
             }
+            commissionPercentage = event.commissionPercentage;
             referenceModel = 'Event';
             referenceIds = [event._id];
 
@@ -1022,10 +1035,11 @@ const earningsService = {
                 cancelled: (t && t.cancelled) || 0,
             };
         } else {
-            const venue = await Venue.findById(listingId).select('_id').lean();
+            const venue = await Venue.findById(listingId).select('_id +commissionPercentage').lean();
             if (!venue) {
                 throw new Error(`getListingFigures: venue ${String(listingId)} not found`);
             }
+            commissionPercentage = venue.commissionPercentage;
             // The bookings are the payment/payout reference scope AND the
             // activity source, so one read serves both.
             const bookings = await Booking.find({ venue: venue._id }).select('status').lean();
@@ -1042,6 +1056,8 @@ const earningsService = {
             fullPriceTotal: 0, grossCollected: 0, platformFeeCollected: 0, gstRetained: 0,
             discountTotal: 0, discountByOwner: 0, discountByPlatform: 0, ownerShare: 0,
             ownerGross: 0, platformCommission: 0, netPayable: 0, refundedTotal: 0,
+            commissionPercentage: commissionOn(0, commissionPercentage).percentage,
+            commissionAmount: 0, netPayableBeforeCommission: 0,
         };
 
         // Includes legacy whole-venue payouts raised from the admin settlement
@@ -1102,7 +1118,11 @@ const earningsService = {
         // The owner is owed their share, in whole rupees because settlements are
         // recorded in whole rupees. Owners are paid by manual transfer and each
         // transfer is recorded as a settlement, so Payout records play no part.
-        const netPayable = Math.floor(roundMoney(p.ownerShare || 0));
+        const netPayableBeforeCommission = Math.floor(roundMoney(p.ownerShare || 0));
+        // FIRA's commission comes out of that share, at the rate set for this
+        // listing. With no rate set the two figures are the same, as before.
+        const commission = commissionOn(p.ownerShare || 0, commissionPercentage);
+        const netPayable = commission.netPayable;
 
         return earningsService.buildListingFigures({
             money: {
@@ -1118,6 +1138,9 @@ const earningsService = {
                 platformCommission: o.platformCommission || 0,
                 netPayable,
                 refundedTotal: p.refundedTotal || 0,
+                commissionPercentage: commission.percentage,
+                commissionAmount: commission.amount,
+                netPayableBeforeCommission,
             },
             activity: {
                 ...activity,

@@ -96,7 +96,7 @@ const refundService = {
             throw new Error('Refund amount must be more than zero and no more than the payment amount');
         }
 
-        return Refund.create({
+        const refund = await Refund.create({
             payment: paymentId,
             user: userId || payment.user,
             reason,
@@ -105,6 +105,11 @@ const refundService = {
             refundType: refundAmount === payment.amount ? 'full' : 'partial',
             status: 'pending'
         });
+        require('./adminAlertService').notify('refund', {
+            body: `₹${refundAmount.toLocaleString('en-IN')} to refund${reasonDetails ? ` — ${String(reasonDetails).slice(0, 80)}` : ''}`,
+            url: '/refunds',
+        });
+        return refund;
     },
 
     /**

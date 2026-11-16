@@ -275,7 +275,16 @@ const venueService = {
             ...safe,
             owner: data.owner,
             payoutAccount: await sanitizePayoutAccount(data.owner, data.payoutAccount),
+            // Starts at the rate an admin set for this owner (null = 0%).
+            commissionPercentage: await require('../utils/commission').ownerRate(data.owner),
         });
+        // A new listing waits for an admin's review: tell the admins' devices.
+        if (venue.status === 'pending') {
+            require('./adminAlertService').notify('venue', {
+                body: `${venue.name}${venue.address?.city ? `, ${venue.address.city}` : ''}`,
+                url: `/venues/${venue._id}`,
+            });
+        }
         return venue;
     },
 
@@ -292,7 +301,9 @@ const venueService = {
     // hold added since; owners change their own busy days through
     // setOwnerBlockedDays, which touches nothing else.
     PROTECTED_VENUE_FIELDS: ['status', 'isVerified', 'isDeleted', 'deletedAt', 'owner', 'rating',
-        'platformFeePercentage', '_id', 'createdAt', 'updatedAt', 'blockedDates', 'daySlots'],
+        'platformFeePercentage', '_id', 'createdAt', 'updatedAt', 'blockedDates', 'daySlots',
+        // FIRA's commission on the owner's earnings: set by an admin only.
+        'commissionPercentage', 'commissionCustom'],
 
     // Pure: return a copy of an update payload with owner-protected fields
     // removed (dotted paths like "rating.average" included). Kept separate so it

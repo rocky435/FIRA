@@ -15,6 +15,7 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { InfoList } from '../components/ui/InfoList';
 import { Button } from '../components/ui/Button';
 import { EmptyState, ErrorState, PageSkeleton } from '../components/ui/States';
+import { OwnerCommissionCard } from '../components/Commission';
 
 const formatDate = (value) => {
     if (!value) return null;
@@ -221,6 +222,9 @@ export default function BrandDetail() {
                             ]}
                         />
                     </Card>
+
+                    {/* The commission is the owner account's: it covers every event they organise. */}
+                    {owner._id && <OwnerCommissionCard userId={owner._id} name={owner.name} />}
 
                     {brand.members?.length > 0 && (
                         <Card title="Members" description={`${brand.members.length} ${brand.members.length === 1 ? 'person' : 'people'}`}>

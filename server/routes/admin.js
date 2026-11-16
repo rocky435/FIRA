@@ -4,6 +4,7 @@ const router = express.Router();
 const adminService = require('../services/adminService');
 const earningsService = require('../services/earningsService');
 const settlementService = require('../services/settlementService');
+const commissionService = require('../services/commissionService');
 const identityService = require('../services/identityService');
 const adminAuth = require('../middleware/adminAuth');
 const roleGuard = require('../middleware/roleGuard');
@@ -16,6 +17,68 @@ const User = require('../models/User');
 // accidentally ship unprotected - which is exactly how this whole router ended
 // up publicly readable in the first place.
 router.use(adminAuth);
+
+// The signed-in admin and their level (super_admin / admin / moderator), so the
+// admin app can show the menu that level is allowed. The login token does not
+// carry the level, and the level can change between logins; the server's own
+// checks (roleGuard) never rely on this.
+router.get('/me', (req, res) => {
+    const u = req.user;
+    res.json({ _id: u._id, name: u.name, email: u.email, adminRole: u.adminRole || null });
+});
+
+// ================== ALERTS ON ADMINS' DEVICES ==================
+// Web Push to the installed admin app (services/adminAlertService.js). The key
+// to subscribe with is the server's own VAPID public key, served here so the
+// admin app never carries a copy that could drift from it.
+const pushService = require('../services/pushService');
+
+router.get('/alerts/public-key', (req, res) => {
+    const publicKey = pushService.getPublicKey();
+    if (!publicKey || !pushService.isEnabled()) {
+        return res.status(503).json({ error: 'Alerts are not set up on this server (VAPID keys missing).' });
+    }
+    res.json({ publicKey });
+});
+
+// Turn alerts on for this device: { subscription } from PushManager.subscribe().
+router.post('/alerts/subscribe', async (req, res) => {
+    try {
+        await pushService.saveSubscription(req.user._id, req.body && req.body.subscription, req.header('User-Agent') || null, 'admin');
+        res.status(201).json({ success: true });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Turn alerts off for this device: { endpoint }.
+router.post('/alerts/unsubscribe', async (req, res) => {
+    try {
+        res.json({ success: true, ...(await pushService.removeSubscription(req.body && req.body.endpoint)) });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Send a test alert to every device this admin turned alerts on for, and say
+// what each device's push service (Apple, Google...) answered.
+router.post('/alerts/test', async (req, res) => {
+    try {
+        const result = await pushService.sendToUser(req.user._id, {
+            title: 'FIRA Admin alerts are on',
+            body: "You'll get alerts like this when something needs you.",
+            url: '/',
+            tag: 'fira-admin-test',
+        }, { app: 'admin' });
+        if (result.skipped) return res.status(503).json({ error: 'Alerts are not set up on this server (VAPID keys missing).', ...result });
+        if (!result.results || result.results.length === 0) {
+            return res.status(404).json({ error: 'Alerts are not turned on for any of your devices yet.', ...result });
+        }
+        res.json({ success: result.sent > 0, ...result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // ================== DASHBOARD ==================
 router.get('/stats', async (req, res) => {
@@ -137,6 +200,16 @@ router.get('/venue-owners', async (req, res) => {
     try {
         const result = await adminService.getVenueOwners(req.query);
         res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Everyone who organises events, with their events, PAN status and bank details.
+// Bank details and PAN: admins and super admins only.
+router.get('/event-organisers', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        res.json(await adminService.getEventOrganisers(req.query));
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -505,6 +578,56 @@ router.get('/listings/:kind/:id/settlement', roleGuard(['super_admin', 'admin'])
         const [payoutCheck, payTo] = await Promise.all([
             payoutCheckFor(req.params.kind, req.params.id),
             // The full account, for the admin making the transfer.
+            settlementService.getPayTo(req.params.kind, req.params.id),
+        ]);
+        res.json({ ...settlement, payoutCheck, payTo });
+    } catch (error) {
+        sendSettlementError(res, error);
+    }
+});
+
+// ================== FIRA COMMISSION (from owners) ==================
+// The percentage of an organiser's or venue owner's share that FIRA keeps when
+// it pays them (services/commissionService.js). Separate from the platform fee
+// buyers pay. Admin-only - nothing here reaches owners or the website. Setting
+// a rate changes what is owed, so it takes the same strict role check as
+// recording a settlement.
+
+// A person's rate and how each of their listings stands.
+router.get('/users/:id/commission', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        res.json(await commissionService.describeOwner(req.params.id));
+    } catch (error) {
+        sendSettlementError(res, error);
+    }
+});
+
+// Set a person's rate: { percentage: number | null }.
+router.patch('/users/:id/commission', settlementRoleGuard, async (req, res) => {
+    try {
+        res.json(await commissionService.setOwnerRate({
+            userId: req.params.id,
+            percentage: req.body ? req.body.percentage : undefined,
+            adminUserId: req.user._id,
+        }));
+    } catch (error) {
+        sendSettlementError(res, error);
+    }
+});
+
+// Set one listing's rate: { percentage: number | null } (null = back to the
+// owner's rate). Answers with the listing's settlement, as the GET above does,
+// so the panel shows the new figures at once.
+router.patch('/listings/:kind/:id/commission', settlementRoleGuard, async (req, res) => {
+    try {
+        const settlement = await commissionService.setListingRate({
+            kind: req.params.kind,
+            listingId: req.params.id,
+            percentage: req.body ? req.body.percentage : undefined,
+            adminUserId: req.user._id,
+        });
+        const [payoutCheck, payTo] = await Promise.all([
+            payoutCheckFor(req.params.kind, req.params.id),
             settlementService.getPayTo(req.params.kind, req.params.id),
         ]);
         res.json({ ...settlement, payoutCheck, payTo });

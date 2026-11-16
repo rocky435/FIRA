@@ -17,6 +17,7 @@ import { Button } from '../components/ui/Button';
 import { ErrorState, EmptyState, PageSkeleton } from '../components/ui/States';
 import { useConfirm } from '../components/ui/confirmContext';
 import { useToast } from '../components/ui/toastContext';
+import { OwnerCommissionCard } from '../components/Commission';
 
 const formatDate = (value) => {
     if (!value) return null;
@@ -181,6 +182,9 @@ export default function UserDetail() {
                             </dl>
                         </Card>
                     )}
+
+                    {/* What FIRA keeps from this person's event and venue payouts. */}
+                    <OwnerCommissionCard userId={user._id} name={user.name} />
 
                     <div className="grid gap-6 xl:grid-cols-2">
                         <Card title="Recent bookings" padded={false}>

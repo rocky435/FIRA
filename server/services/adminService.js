@@ -10,6 +10,47 @@ const { escapeRegex } = require('../utils/escapeRegex');
 /** Case-insensitive "contains" match on a user-supplied search term. */
 const searchRegex = (value) => new RegExp(escapeRegex(value), 'i');
 
+// Admin Events filters that follow the clock. `approved` and `upcoming` both
+// mean "live, admin-approved"; the lifecycle job (jobs/scheduledJobs.js) moves
+// them to ongoing / completed, but only when it next runs.
+const LIVE_EVENT = ['approved', 'upcoming'];
+const TIME_GROUPS = {
+    upcoming: {
+        filter: (now) => ({ status: { $in: LIVE_EVENT }, startDateTime: { $gt: now } }),
+        sort: { startDateTime: 1 },
+    },
+    ongoing: {
+        filter: (now) => ({ status: { $in: [...LIVE_EVENT, 'ongoing'] }, startDateTime: { $lte: now }, endDateTime: { $gt: now } }),
+        sort: { endDateTime: 1 },
+    },
+    completed: {
+        filter: (now) => ({
+            $or: [
+                { status: 'completed' },
+                { status: { $in: [...LIVE_EVENT, 'ongoing'] }, endDateTime: { $lte: now } },
+            ],
+        }),
+        sort: { endDateTime: -1 },
+    },
+};
+
+// The same three groups for venue bookings, by day: bookingDate / endDate are
+// UTC midnights of the local (IST) day, and endDate is null for a one-day
+// booking. Only an accepted booking is confirmed, and "completed" is only ever
+// set by hand, so an accepted booking whose last day has gone counts as done.
+const BOOKING_LAST_DAY = (cmp, day) => ({
+    $or: [{ endDate: { [cmp]: day } }, { endDate: null, bookingDate: { [cmp]: day } }],
+});
+const BOOKING_TIME_GROUPS = {
+    upcoming: (today) => ({ status: 'accepted', bookingDate: { $gt: today } }),
+    ongoing: (today) => ({ status: 'accepted', bookingDate: { $lte: today }, ...BOOKING_LAST_DAY('$gte', today) }),
+    completed: (today) => ({ $or: [{ status: 'completed' }, { status: 'accepted', ...BOOKING_LAST_DAY('$lt', today) }] }),
+};
+function bookingToday() {
+    const { localDayKey } = require('../utils/venueAvailability');
+    return new Date(`${localDayKey(new Date())}T00:00:00Z`);
+}
+
 // What a paid booking has received, as an aggregation expression: the same rule
 // as venueService.computeRefund (advance, plus the rest once that is paid; or
 // the full amount).
@@ -95,7 +136,61 @@ const adminService = {
             totalRevenue: ticketRev + bookingRev,
             ticketRevenue: ticketRev,
             venueRevenue: bookingRev,
+            trends: await adminService.getTrends(),
         };
+    },
+
+    /**
+     * The last six calendar months (this one included), oldest first, for the
+     * dashboard charts: new sign-ups, money collected (successful payments,
+     * split into tickets and venue bookings) and tickets sold. Months with
+     * nothing in them are present as zeros, so the chart always has six bars.
+     * Months are counted in India time.
+     */
+    async getTrends(now = new Date()) {
+        const Payment = require('../models/Payment');
+        const TZ = 'Asia/Kolkata';
+        const ist = new Date(now.getTime() + 5.5 * 3600 * 1000);
+        const months = [];
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth() - i, 1));
+            months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+        }
+        // Start of the first month in India time, as an instant.
+        const [y, m] = months[0].split('-').map(Number);
+        const since = new Date(Date.UTC(y, m - 1, 1) - 5.5 * 3600 * 1000);
+        const monthOf = (field) => ({ $dateToString: { format: '%Y-%m', date: field, timezone: TZ } });
+
+        const [users, payments, tickets] = await Promise.all([
+            User.aggregate([
+                { $match: { createdAt: { $gte: since } } },
+                { $group: { _id: monthOf('$createdAt'), n: { $sum: 1 } } },
+            ]),
+            Payment.aggregate([
+                { $match: { status: 'success', $or: [{ paidAt: { $gte: since } }, { paidAt: null, createdAt: { $gte: since } }] } },
+                { $group: {
+                    _id: { month: monthOf({ $ifNull: ['$paidAt', '$createdAt'] }), venue: { $eq: ['$referenceModel', 'Booking'] } },
+                    total: { $sum: { $ifNull: ['$totalAmount', '$amount'] } },
+                } },
+            ]),
+            Ticket.aggregate([
+                { $match: { createdAt: { $gte: since }, status: { $ne: 'cancelled' } } },
+                { $group: { _id: monthOf('$createdAt'), n: { $sum: { $ifNull: ['$quantity', 1] } } } },
+            ]),
+        ]);
+
+        const pick = (rows, month) => rows.find((r) => r._id === month)?.n || 0;
+        const money = (month, venue) => {
+            const row = payments.find((r) => r._id.month === month && r._id.venue === venue);
+            return row ? Math.round(row.total * 100) / 100 : 0;
+        };
+        return months.map((month) => ({
+            month,
+            newUsers: pick(users, month),
+            ticketRevenue: money(month, false),
+            venueRevenue: money(month, true),
+            ticketsSold: pick(tickets, month),
+        }));
     },
 
     // ================== USERS ==================
@@ -301,7 +396,10 @@ const adminService = {
                 { 'address.city': searchRegex(search) }
             ];
         }
-        if (status && status !== 'all') filter.status = status;
+        // The status route stores 'blocked'; the Venue model's own word is
+        // 'suspended'. Both mean the same to an admin, so Blocked lists both.
+        if (status === 'blocked') filter.status = { $in: ['blocked', 'suspended'] };
+        else if (status && status !== 'all') filter.status = status;
 
         const venues = await Venue.find(filter)
             // govIdStatus: a venue cannot be approved until its owner's ID is
@@ -354,8 +452,21 @@ const adminService = {
             { $group: { _id: '$status', n: { $sum: 1 } } },
         ]);
         const counts = Object.fromEntries(countRows.map((r) => [r._id, r.n]));
+        counts.all = countRows.reduce((sum, r) => sum + r.n, 0);
+        const today = bookingToday();
+        const withGroup = (group) => ({ ...filter, $and: [...(filter.$and || []), BOOKING_TIME_GROUPS[group](today)] });
+        const [upcoming, ongoing, completed] = await Promise.all(
+            ['upcoming', 'ongoing', 'completed'].map((g) => Booking.countDocuments(withGroup(g)))
+        );
+        Object.assign(counts, { upcoming, ongoing, completed });
 
-        if (status && status !== 'all') filter.status = status;
+        let sort = { createdAt: -1 };
+        if (status && BOOKING_TIME_GROUPS[status]) {
+            Object.assign(filter, withGroup(status));
+            sort = status === 'completed' ? { bookingDate: -1 } : { bookingDate: 1 };
+        } else if (status && status !== 'all') {
+            filter.status = status;
+        }
         if (paymentStatus && paymentStatus !== 'all') filter.paymentStatus = paymentStatus;
 
         const [rows, total] = await Promise.all([
@@ -363,7 +474,7 @@ const adminService = {
                 .select('venue user bookingDate endDate startTime endTime status paymentStatus totalAmount paymentSchedule expectedGuests createdAt')
                 .populate({ path: 'venue', select: 'name address.city owner', populate: { path: 'owner', select: 'name email' } })
                 .populate('user', 'name email phone')
-                .sort({ createdAt: -1 })
+                .sort(sort)
                 .skip((pageNum - 1) * limitNum)
                 .limit(limitNum)
                 .lean(),
@@ -424,6 +535,59 @@ const adminService = {
                 venues: venuesByOwner[String(o._id)] || []
             }))
         };
+    },
+
+    /**
+     * Everyone who has organised an event, with their events. The organiser
+     * counterpart of getVenueOwners: PAN status (event earnings are paid out
+     * only once it is verified), bank details (admin-only read, Flow 8.6),
+     * creator profile and verified badge.
+     */
+    async getEventOrganisers(query = {}) {
+        const { search } = query;
+        const events = await Event.find({ isDeleted: { $ne: true }, organizer: { $ne: null } })
+            .select('name status startDateTime endDateTime currentAttendees maxAttendees organizer eventType createdAt')
+            .sort({ startDateTime: -1 })
+            .lean();
+        const organiserIds = [...new Set(events.map((e) => String(e.organizer)).filter(Boolean))];
+        if (organiserIds.length === 0) return { organisers: [] };
+
+        const filter = { _id: { $in: organiserIds } };
+        if (search) filter.$or = [{ name: searchRegex(search) }, { email: searchRegex(search) }];
+
+        const [people, brands] = await Promise.all([
+            User.find(filter)
+                .select('name email phone isVerified verificationBadge panStatus bankDetails isBlocked createdAt')
+                .lean(),
+            BrandProfile.find({ user: { $in: organiserIds } }).select('name user status').lean(),
+        ]);
+        const brandByUser = new Map(brands.map((b) => [String(b.user), b]));
+        const eventsBy = events.reduce((acc, e) => {
+            (acc[String(e.organizer)] = acc[String(e.organizer)] || []).push(e);
+            return acc;
+        }, {});
+        const LIVE = ['approved', 'upcoming', 'ongoing'];
+
+        const organisers = people.map((p) => {
+            const list = eventsBy[String(p._id)] || [];
+            const brand = brandByUser.get(String(p._id));
+            return {
+                ...p,
+                panStatus: p.panStatus || 'none',
+                brand: brand ? { _id: brand._id, name: brand.name, status: brand.status } : null,
+                events: list,
+                counts: {
+                    total: list.length,
+                    live: list.filter((e) => LIVE.includes(e.status)).length,
+                    pending: list.filter((e) => e.status === 'pending').length,
+                    completed: list.filter((e) => e.status === 'completed').length,
+                    ticketsSold: list.reduce((n, e) => n + (e.currentAttendees || 0), 0),
+                },
+            };
+        });
+        // Busiest first.
+        organisers.sort((a, b) => b.counts.total - a.counts.total || String(a.name).localeCompare(String(b.name)));
+        return { organisers };
     },
 
     async getVenueById(id) {
@@ -552,7 +716,19 @@ const adminService = {
                 { venue: { $in: matchingVenues.map(v => v._id) } }
             ];
         }
-        if (status && status !== 'all') filter.status = status;
+        // Upcoming / ongoing / completed are decided by the event's dates, not
+        // by the stored word alone: approval stores `approved` and nothing ever
+        // stores `upcoming`, so matching that literal listed nothing. The dates
+        // also keep the groups right before the lifecycle job next runs.
+        let sort = { createdAt: -1 };
+        const timeGroup = status && TIME_GROUPS[status];
+        if (timeGroup) {
+            const now = new Date();
+            filter.$and = [...(filter.$and || []), timeGroup.filter(now)];
+            sort = timeGroup.sort;
+        } else if (status && status !== 'all') {
+            filter.status = status;
+        }
         if (eventType && (eventType === 'public' || eventType === 'private')) {
             filter.eventType = eventType;
         }
@@ -562,7 +738,7 @@ const adminService = {
             .populate('venue', 'name address')
             .limit(parseInt(limit))
             .skip((parseInt(page) - 1) * parseInt(limit))
-            .sort({ createdAt: -1 });
+            .sort(sort);
 
         const total = await Event.countDocuments(filter);
 

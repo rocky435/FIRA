@@ -27,6 +27,7 @@ const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
 const Venues = lazyWithRetry(() => import('./pages/Venues'));
 const VenueDetail = lazyWithRetry(() => import('./pages/VenueDetail'));
 const VenueOwners = lazyWithRetry(() => import('./pages/VenueOwners'));
+const EventOrganisers = lazyWithRetry(() => import('./pages/EventOrganisers'));
 const Events = lazyWithRetry(() => import('./pages/Events'));
 const EventDetail = lazyWithRetry(() => import('./pages/EventDetail'));
 const Brands = lazyWithRetry(() => import('./pages/Brands'));
@@ -149,6 +150,9 @@ function App() {
                 <Route path="/id-checks" element={<ErrorBoundary fallbackMessage="Failed to load ID Checks."><IdChecks /></ErrorBoundary>} />
                 <Route path="/bookings" element={<ErrorBoundary fallbackMessage="Failed to load Venue Bookings."><Bookings /></ErrorBoundary>} />
                 <Route path="/payouts" element={<ErrorBoundary fallbackMessage="Failed to load Payouts."><Payouts /></ErrorBoundary>} />
+                <Route path="/payouts/organisers" element={<ErrorBoundary fallbackMessage="Failed to load Payouts."><Payouts key="event" fixedKind="event" /></ErrorBoundary>} />
+                <Route path="/payouts/venue-owners" element={<ErrorBoundary fallbackMessage="Failed to load Payouts."><Payouts key="venue" fixedKind="venue" /></ErrorBoundary>} />
+                <Route path="/organisers" element={<ErrorBoundary fallbackMessage="Failed to load Event Organisers."><EventOrganisers /></ErrorBoundary>} />
                 <Route path="*" element={<Navigate to="/" />} />
               </Routes>
             </Suspense>

@@ -19,7 +19,48 @@ import { useAuth } from '@/contexts/AuthContext';
  *    has to change it in browser settings. Hence the distinct 'denied' state.
  */
 
-const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '';
+// The key the server signs pushes with. Read from the server rather than baked
+// into the build: a build-time copy (NEXT_PUBLIC_VAPID_PUBLIC_KEY) that differs
+// from the server's - e.g. after the keys were rotated - makes every push fail
+// while the toggle still says "on". The env value is only a fallback for when
+// the server cannot be asked.
+const BUILD_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '';
+let keyRequest: Promise<string> | null = null;
+function serverKey(): Promise<string> {
+    if (!keyRequest) {
+        keyRequest = notificationsApi.getPushPublicKey()
+            .then((r) => r.publicKey || BUILD_KEY)
+            .catch(() => {
+                keyRequest = null; // ask again next time
+                return BUILD_KEY;
+            });
+    }
+    return keyRequest;
+}
+
+/**
+ * Make sure this browser has a subscription made with the server's current key,
+ * and that the server has it. Replaces a stale one. Needs permission already
+ * granted; returns null when there is no usable key.
+ */
+async function ensureSubscription(registration: ServiceWorkerRegistration): Promise<PushSubscription | null> {
+    const key = await serverKey();
+    if (!key) return null;
+    const applicationServerKey = urlBase64ToUint8Array(key);
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription && !keyMatches(subscription, applicationServerKey)) {
+        await subscription.unsubscribe().catch(() => undefined);
+        subscription = null;
+    }
+    if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: applicationServerKey as BufferSource,
+        });
+    }
+    await notificationsApi.subscribePush(subscription.toJSON());
+    return subscription;
+}
 
 /** VAPID keys are base64url; PushManager wants a Uint8Array. */
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
@@ -71,23 +112,25 @@ export function usePushNotifications() {
 
         navigator.serviceWorker
             .getRegistration()
-            .then(reg => reg?.pushManager.getSubscription())
-            .then(sub => {
+            .then(async (reg) => {
+                const sub = await reg?.pushManager.getSubscription();
                 setIsSubscribed(Boolean(sub));
 
-                // Re-sync the browser's subscription to the server.
+                // Re-sync this browser with the server.
                 //
                 // The toggle used to read the browser only, so it showed "on"
                 // while the server had no matching record - and pushes had
-                // nowhere to go ("No active push subscription found for this
-                // account on any device"). That happens whenever the record was
-                // created under a different account, pruned as expired, or lost.
-                // The endpoint upserts, so re-sending is idempotent and also
-                // re-points the device at whoever is signed in now.
-                if (sub && isAuthenticated) {
-                    notificationsApi.subscribePush(sub.toJSON()).catch(() => {
-                        // Non-fatal; the toggle still reflects the browser.
-                    });
+                // nowhere to go. That happens when the record was created under a
+                // different account, pruned as expired, or lost. Phones (iPhones
+                // especially) also drop the subscription itself while permission
+                // stays granted, which silently stopped every notification.
+                //
+                // So with permission granted: replace a missing or stale
+                // subscription and hand it to the server (the endpoint upserts,
+                // which also re-points the device at whoever is signed in now).
+                if (reg && isAuthenticated && Notification.permission === 'granted') {
+                    const fresh = await ensureSubscription(reg).catch(() => null);
+                    if (fresh) setIsSubscribed(true);
                 }
             })
             .catch(() => setIsSubscribed(false));
@@ -102,10 +145,6 @@ export function usePushNotifications() {
         }
         if (!isAuthenticated) {
             setError('Sign in to enable notifications.');
-            return false;
-        }
-        if (!VAPID_PUBLIC_KEY) {
-            setError('Push is not configured. NEXT_PUBLIC_VAPID_PUBLIC_KEY is missing.');
             return false;
         }
 
@@ -135,28 +174,14 @@ export function usePushNotifications() {
             // is only usable once one is active.
             const registration = await navigator.serviceWorker.ready;
 
-            const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
-
-            // An existing subscription may have been created with a previous
-            // VAPID key (or by a different deployment). Re-subscribing with a
-            // different key throws, and keeping the stale one means the server
-            // can never actually deliver to this device - so drop it.
-            const existing = await registration.pushManager.getSubscription();
-            let subscription = existing;
-
-            if (existing && !keyMatches(existing, applicationServerKey)) {
-                await existing.unsubscribe().catch(() => undefined);
-                subscription = null;
-            }
-
+            // Subscribes with the server's current key, dropping a subscription
+            // made with an old one (re-subscribing with a different key throws,
+            // and a stale one can never be delivered to).
+            const subscription = await ensureSubscription(registration);
             if (!subscription) {
-                subscription = await registration.pushManager.subscribe({
-                    userVisibleOnly: true,
-                    applicationServerKey: applicationServerKey as BufferSource,
-                });
+                setError('Push notifications are not set up on the server yet.');
+                return false;
             }
-
-            await notificationsApi.subscribePush(subscription.toJSON());
             setIsSubscribed(true);
             return true;
         } catch (err) {

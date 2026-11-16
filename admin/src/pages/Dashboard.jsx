@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import {
-    Building2, Ticket, Star, IdCard, Undo2, Users, ArrowRight, CircleCheck, Ban,
+    Building2, Ticket, Star, IdCard, Undo2, Users, ArrowRight, CircleCheck, Ban, IndianRupee, ClipboardCheck,
 } from 'lucide-react';
 import adminApi from '../api/adminApi';
 import { getAdminRoleFromToken } from '../lib/adminRole';
@@ -10,8 +10,28 @@ import { PageHeader } from '../components/ui/PageHeader';
 import { StatCard } from '../components/ui/StatCard';
 import { Card } from '../components/ui/Card';
 import { ErrorState, Skeleton } from '../components/ui/States';
+import { BarChart } from '../components/ui/BarChart';
 
 const num = (n) => Number(n || 0).toLocaleString('en-IN');
+// Whole rupees for headline figures and chart labels.
+const rupees = (n) => `₹${Math.round(n || 0).toLocaleString('en-IN')}`;
+// Short form for the chart axis: ₹1.2L, ₹45K.
+const shortRupees = (n) => {
+    if (n >= 1e7) return `₹${+(n / 1e7).toFixed(1)}Cr`;
+    if (n >= 1e5) return `₹${+(n / 1e5).toFixed(1)}L`;
+    if (n >= 1e3) return `₹${+(n / 1e3).toFixed(1)}K`;
+    return `₹${Math.round(n)}`;
+};
+const monthName = (key) => new Date(`${key}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'short' });
+
+/** % change from last month to this one; null when there is no last month to compare with. */
+function change(series, pick) {
+    if (!series || series.length < 2) return null;
+    const now = pick(series[series.length - 1]);
+    const before = pick(series[series.length - 2]);
+    if (!before) return now ? null : 0;
+    return ((now - before) / before) * 100;
+}
 
 // What can be waiting for an admin, and where to go to deal with it. `hideFor`
 // mirrors the nav: moderators cannot act on refunds or ID checks.
@@ -33,6 +53,10 @@ function DashboardSkeleton() {
                 <Skeleton className="h-72 rounded-2xl lg:col-span-3" />
                 <Skeleton className="h-72 rounded-2xl lg:col-span-2" />
             </div>
+            <div className="grid gap-6 lg:grid-cols-5">
+                <Skeleton className="h-64 rounded-2xl lg:col-span-3" />
+                <Skeleton className="h-64 rounded-2xl lg:col-span-2" />
+            </div>
         </div>
     );
 }
@@ -46,6 +70,8 @@ export default function Dashboard() {
     const adminRole = getAdminRoleFromToken();
 
     const queues = QUEUES.filter((q) => !(q.hideFor || []).includes(adminRole));
+    const trends = stats?.trends || [];
+    const thisMonth = trends[trends.length - 1];
     const waiting = queues.filter((q) => (stats?.[q.key] || 0) > 0);
 
     return (
@@ -59,16 +85,46 @@ export default function Dashboard() {
             ) : loading || !stats ? (
                 <DashboardSkeleton />
             ) : (
-                <div className="space-y-6 animate-fade-in">
-                    {/* Headline numbers - each opens the list behind it */}
-                    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-                        <StatCard label="Pending venues" value={num(stats.pendingVenues)} icon={Building2} accent="amber" to="/venues?status=pending" hint="Waiting for approval" />
-                        <StatCard label="Pending events" value={num(stats.pendingEvents)} icon={Ticket} accent="amber" to="/events?tab=pending" hint="Waiting for approval" />
-                        <StatCard label="Pending brands" value={num(stats.pendingBrands)} icon={Star} accent="pink" to="/brands?status=pending" hint="Waiting for approval" />
-                        <StatCard label="Total users" value={num(stats.totalUsers)} icon={Users} accent="violet" to={adminRole === 'moderator' ? undefined : '/users'} hint={`${num(stats.blockedUsers)} blocked`} />
+                <div className="space-y-6">
+                    {/* This month at a glance, each compared with last month */}
+                    <div className="stagger grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+                        <StatCard
+                            label="Collected this month"
+                            countTo={thisMonth ? thisMonth.ticketRevenue + thisMonth.venueRevenue : 0}
+                            format={rupees}
+                            trend={change(trends, (m) => m.ticketRevenue + m.venueRevenue)}
+                            icon={IndianRupee}
+                            accent="green"
+                            hint={`${rupees(stats.totalRevenue)} all time`}
+                        />
+                        <StatCard
+                            label="Tickets sold this month"
+                            countTo={thisMonth?.ticketsSold || 0}
+                            trend={change(trends, (m) => m.ticketsSold)}
+                            icon={Ticket}
+                            accent="pink"
+                            hint={`${num(stats.totalTickets)} all time`}
+                        />
+                        <StatCard
+                            label="New users this month"
+                            countTo={thisMonth?.newUsers || 0}
+                            trend={change(trends, (m) => m.newUsers)}
+                            icon={Users}
+                            accent="blue"
+                            to={adminRole === 'moderator' ? undefined : '/users'}
+                            hint={`${num(stats.totalUsers)} in total`}
+                        />
+                        <StatCard
+                            label="Waiting for review"
+                            countTo={(stats.pendingVenues || 0) + (stats.pendingEvents || 0) + (stats.pendingBrands || 0)}
+                            icon={ClipboardCheck}
+                            accent="amber"
+                            to={stats.pendingEvents ? '/events?tab=pending' : stats.pendingVenues ? '/venues?status=pending' : '/brands?status=pending'}
+                            hint={`${num(stats.pendingVenues)} venues · ${num(stats.pendingEvents)} events · ${num(stats.pendingBrands)} creators`}
+                        />
                     </div>
 
-                    <div className="grid gap-6 lg:grid-cols-5">
+                    <div className="stagger grid gap-6 lg:grid-cols-5">
                         {/* Work queue */}
                         <Card
                             className="lg:col-span-3"
@@ -92,7 +148,9 @@ export default function Dashboard() {
                                                     to={q.to}
                                                     className="group flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-hover"
                                                 >
-                                                    <Icon className="h-[18px] w-[18px] shrink-0 text-gray-400" aria-hidden="true" />
+                                                    <span className={count ? 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-300' : 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-gray-500'}>
+                                                        <Icon className="h-4 w-4" aria-hidden="true" />
+                                                    </span>
                                                     <span className={count ? 'flex-1 text-sm text-white' : 'flex-1 text-sm text-gray-500'}>{q.label}</span>
                                                     <span className={count
                                                         ? 'rounded-full bg-amber-400/15 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-300'
@@ -110,7 +168,7 @@ export default function Dashboard() {
 
                         {/* Revenue */}
                         <Card className="lg:col-span-2" title="Platform revenue" description="Ticket sales and paid venue bookings">
-                            <div className="text-3xl font-semibold tabular-nums text-white">{formatInr(stats.totalRevenue || 0)}</div>
+                            <div className="text-brand-grad text-3xl font-semibold tabular-nums">{formatInr(stats.totalRevenue || 0)}</div>
                             <dl className="mt-5 grid grid-cols-2 gap-3">
                                 <div className="rounded-xl border border-line bg-surface-raised p-3.5">
                                     <dt className="text-xs text-gray-400">Tickets</dt>
@@ -126,23 +184,67 @@ export default function Dashboard() {
                         </Card>
                     </div>
 
+                    {/* Six months of activity */}
+                    {trends.length > 0 && (
+                        <div className="stagger grid gap-6 lg:grid-cols-5">
+                            <Card className="lg:col-span-3" title="Money collected" description="Ticket sales and venue bookings paid, per month">
+                                <BarChart
+                                    label="Money collected per month"
+                                    data={trends.map((m) => ({
+                                        label: monthName(m.month),
+                                        value: m.ticketRevenue + m.venueRevenue,
+                                        detail: `Tickets ${rupees(m.ticketRevenue)} · Venues ${rupees(m.venueRevenue)}`,
+                                    }))}
+                                    format={rupees}
+                                    axisFormat={shortRupees}
+                                />
+                            </Card>
+                            <Card className="lg:col-span-2" title="New users" description="Sign-ups per month">
+                                <BarChart
+                                    label="New users per month"
+                                    data={trends.map((m) => ({ label: monthName(m.month), value: m.newUsers, detail: `${num(m.ticketsSold)} tickets sold` }))}
+                                    format={num}
+                                    wholeNumbers
+                                    axisFormat={(n) => (n >= 1000 ? `${+(n / 1000).toFixed(1)}k` : String(Math.round(n)))}
+                                />
+                            </Card>
+                        </div>
+                    )}
+
                     {/* Platform totals */}
                     <Card title="Platform totals" padded={false}>
-                        <dl className="grid grid-cols-2 divide-line border-t border-line sm:grid-cols-4 sm:divide-x">
+                        <ul className="grid grid-cols-2 divide-line border-t border-line sm:grid-cols-4 sm:divide-x">
                             {[
                                 { label: 'Venues', value: stats.totalVenues, to: '/venues' },
                                 { label: 'Events', value: stats.totalEvents, to: '/events' },
                                 { label: 'Brands', value: stats.totalBrands, to: '/brands' },
                                 { label: 'Tickets sold', value: stats.totalTickets },
-                            ].map((t) => (
-                                <div key={t.label} className="px-5 py-4">
-                                    <dt className="text-xs text-gray-400">{t.label}</dt>
-                                    <dd className="mt-1 text-xl font-semibold tabular-nums text-white">
-                                        {t.to ? <Link to={t.to} className="hover:text-violet-300">{num(t.value)}</Link> : num(t.value)}
-                                    </dd>
-                                </div>
-                            ))}
-                        </dl>
+                            ].map((t) => {
+                                const body = (
+                                    <>
+                                        <span className="flex items-center justify-between text-xs text-gray-400">
+                                            {t.label}
+                                            {t.to && <ArrowRight className="h-3.5 w-3.5 text-gray-600 transition-transform group-hover:translate-x-0.5 group-hover:text-white" aria-hidden="true" />}
+                                        </span>
+                                        <span className="mt-1 block text-xl font-semibold tabular-nums text-white">{num(t.value)}</span>
+                                    </>
+                                );
+                                return (
+                                    <li key={t.label}>
+                                        {t.to ? (
+                                            <Link
+                                                to={t.to}
+                                                className="group block h-full px-5 py-4 transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+                                            >
+                                                {body}
+                                            </Link>
+                                        ) : (
+                                            <div className="px-5 py-4">{body}</div>
+                                        )}
+                                    </li>
+                                );
+                            })}
+                        </ul>
                         {stats.blockedUsers > 0 && (
                             <div className="flex items-center gap-2 border-t border-line px-5 py-3 text-sm text-red-300">
                                 <Ban className="h-4 w-4" aria-hidden="true" />

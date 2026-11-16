@@ -24,6 +24,7 @@ const AuditLog = require('../models/AuditLog');
 const earningsService = require('./earningsService');
 const notificationService = require('./notificationService');
 const { roundMoney } = require('../utils/money');
+const { commissionOn } = require('../utils/commission');
 const { formatInr } = require('../utils/formatInr');
 
 // Every money comparison uses the same tolerance earningsService.buildOverview
@@ -381,6 +382,9 @@ const settlementService = {
             activity: figures.activity,
             state: ledger.state,
             payout: figures.payout,
+            // FIRA's commission on this listing: its rate, whether it was set
+            // here by hand, and the owner's own rate. Admin-only.
+            commission: await require('./commissionService').describeListing(kind, listingId),
             // One row per stored entry, newest first, admin-internal fields and
             // reversal linkage included (Requirements 1.2, 1.3, 7.4).
             entries: rows.map((row) => settlementService.toAdminRow(row, reversalByTarget)),
@@ -415,7 +419,13 @@ const settlementService = {
             throw denied();
         }
 
-        const { rows, figures, reversalByTarget, ledger } = await readListingLedger(kind, listingId);
+        const { rows, figures, reversalByTarget } = await readListingLedger(kind, listingId);
+        // FIRA's commission is admin-only for now: the owner is shown their share
+        // before it, exactly as before the commission existed, and no commission
+        // field is part of this DTO. (So an owner whose listing carries a rate
+        // sees the commission as still outstanding until an owner-facing view of
+        // it is added.) With no rate set, this is the same ledger the admin sees.
+        const ledger = ownerLedger(rows, figures);
 
         return {
             listing,
@@ -424,7 +434,7 @@ const settlementService = {
             money: {
                 ownerGross: figures.money.ownerGross,
                 platformCommission: figures.money.platformCommission,
-                netPayable: figures.money.netPayable,
+                netPayable: ownerNetPayable(figures),
                 settledToDate: ledger.settledToDate,
                 outstandingAmount: ledger.outstandingAmount,
                 refundedTotal: figures.money.refundedTotal,
@@ -572,6 +582,12 @@ const settlementService = {
                 // not only on the row it waved through.
                 overrideReason: pending.overrideReason,
                 idempotencyKey: pending.idempotencyKey,
+                // FIRA's commission in force when this was recorded, so the trail
+                // shows what the payout was measured against even if the rate is
+                // changed later.
+                commissionPercentage: figures.money.commissionPercentage ?? 0,
+                commissionAmount: figures.money.commissionAmount ?? 0,
+                netPayable: figures.money.netPayable,
             },
         });
 
@@ -590,6 +606,9 @@ const settlementService = {
         // 10 — refolded to include the new entry (Requirement 4.2). Pure, over
         // rows already in hand, so the updated figures cost no second read.
         const updated = settlementService.buildLedger([...rows, row], figures.money.netPayable);
+        // What the owner is told: measured before FIRA's commission, like the
+        // owner read (getOwnerSettlement).
+        const ownerView = ownerLedger([...rows, row], figures);
 
         // 9 — best-effort delivery. Nothing admin-internal in the payload: no
         // notes, no override reason, no administrator identity (Req 10.3).
@@ -601,7 +620,7 @@ const settlementService = {
                 referenceId: listingId,
                 referenceModel: spec.modelName,
                 actionUrl: spec.ownerUrl(listing.id),
-                extra: { settledToDate: updated.settledToDate, outstandingAmount: updated.outstandingAmount },
+                extra: { settledToDate: ownerView.settledToDate, outstandingAmount: ownerView.outstandingAmount },
             },
         });
 
@@ -769,6 +788,7 @@ const settlementService = {
 
         const row = created.toObject();
         const updated = settlementService.buildLedger([...rows, row], figures.money.netPayable);
+        const ownerView = ownerLedger([...rows, row], figures);
 
         // 10 — best-effort delivery: the reversal and the updated Settled_To_Date,
         // no reason, no notes, no administrator identity (Requirements 10.2, 10.3).
@@ -780,7 +800,7 @@ const settlementService = {
                 referenceId: listingId,
                 referenceModel: spec.modelName,
                 actionUrl: spec.ownerUrl(listing.id),
-                extra: { settledToDate: updated.settledToDate, outstandingAmount: updated.outstandingAmount },
+                extra: { settledToDate: ownerView.settledToDate, outstandingAmount: ownerView.outstandingAmount },
             },
         });
 
@@ -944,6 +964,24 @@ async function readListingLedger(kind, listingId) {
         reversalByTarget,
         ledger: settlementService.buildLedger(rows, figures.money.netPayable),
     };
+}
+
+/**
+ * What the owner-facing surfaces measure against: the owner's share before
+ * FIRA's commission. The commission is admin-only for now, so the owner read and
+ * the owner's notifications use this rather than the admin's net payable.
+ *
+ * @param {any} figures
+ * @returns {number}
+ */
+function ownerNetPayable(figures) {
+    const before = figures.money.netPayableBeforeCommission;
+    return typeof before === 'number' && Number.isFinite(before) ? before : figures.money.netPayable;
+}
+
+/** The ledger as the owner sees it (see ownerNetPayable). */
+function ownerLedger(rows, figures) {
+    return settlementService.buildLedger(rows, ownerNetPayable(figures));
 }
 
 /**
@@ -1322,7 +1360,10 @@ async function queueRow({ kind, id, finishedShare }) {
     }
 
     const { figures, ledger } = read;
-    const finishedOwed = Math.max(0, Math.floor(roundMoney(finishedShare)) - ledger.settledToDate);
+    // The share from dates already past, after FIRA's commission at this
+    // listing's rate - the same deduction the listing's net payable carries.
+    const finishedNet = commissionOn(finishedShare, figures.money.commissionPercentage).netPayable;
+    const finishedOwed = Math.max(0, finishedNet - ledger.settledToDate);
     const dueNow = roundMoney(Math.min(ledger.outstandingAmount, finishedOwed));
 
     const payTo = resolvePayTo(doc, owner);
@@ -1341,6 +1382,8 @@ async function queueRow({ kind, id, finishedShare }) {
         money: {
             grossCollected: figures.money.grossCollected,
             netPayable: figures.money.netPayable,
+            commissionPercentage: figures.money.commissionPercentage ?? 0,
+            commissionAmount: figures.money.commissionAmount ?? 0,
             settledToDate: ledger.settledToDate,
             outstandingAmount: ledger.outstandingAmount,
             excessAmount: ledger.excessAmount,

@@ -25,6 +25,21 @@
   --admin-warning: #fbbf24;
   --admin-danger: #f87171;
   --admin-info: #60a5fa;
+
+  /* The website's signature: violet into pink (client/ uses from-violet-500
+     to-pink-500 for its main buttons and highlights). */
+  --admin-grad-from: #8b5cf6;
+  --admin-grad-to: #ec4899;
+  --admin-grad: linear-gradient(135deg, var(--admin-grad-from), var(--admin-grad-to));
+
+  /* One colour per area of the admin; the current area's colour is set on
+     <main> as --section by the layout and tints the page title. */
+  --section-overview: #a78bfa;
+  --section-review: #c084fc;
+  --section-money: #34d399;
+  --section-people: #38bdf8;
+  --section-system: #fbbf24;
+  --section: var(--section-overview);
 }
 
 @theme inline {
@@ -158,6 +173,45 @@ body {
  * (e.g. Events' reject dialog) would be pinned to the page, not the window.
  */
 .animate-slide-up { animation: slideUp 0.25s ease-out backwards; }
+
+/* Cards rise into place one after another when a page opens. Applied to a
+   grid/list: each direct child waits a little longer than the one before. */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.stagger > * { animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+.stagger > *:nth-child(2) { animation-delay: 60ms; }
+.stagger > *:nth-child(3) { animation-delay: 120ms; }
+.stagger > *:nth-child(4) { animation-delay: 180ms; }
+.stagger > *:nth-child(5) { animation-delay: 240ms; }
+.stagger > *:nth-child(6) { animation-delay: 300ms; }
+.stagger > *:nth-child(n+7) { animation-delay: 340ms; }
+
+/* Chart bars grow up from the axis. */
+@keyframes barGrow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+.bar-grow { transform-origin: bottom; animation: barGrow 0.7s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+
+/* A card that responds to the pointer: a small lift and a brighter border. */
+.lift { transition: transform 160ms ease, border-color 160ms ease, background-color 160ms ease; }
+.lift:hover { transform: translateY(-2px); border-color: var(--admin-border-strong); }
+
+/* Past-month bars in the charts: soft diagonal stripes, like the reference. */
+.bar-hatch {
+  background-color: rgb(196 181 253 / 0.18);
+  background-image: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.10) 0 2px, transparent 2px 7px);
+}
+
+.bg-brand-grad { background-image: var(--admin-grad); }
+.text-brand-grad {
+  background-image: linear-gradient(90deg, #c4b5fd, #f9a8d4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 .animate-fade-in { animation: fadeIn 0.2s ease-out backwards; }
 .animate-toast-in { animation: toastIn 0.2s ease-out backwards; }
 

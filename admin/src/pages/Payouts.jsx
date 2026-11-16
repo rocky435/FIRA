@@ -4,6 +4,7 @@ import { RefreshCw, Wallet, TriangleAlert } from 'lucide-react';
 import adminApi from '../api/adminApi';
 import { formatInr } from '../lib/formatInr';
 import { formatDateTime } from '../lib/formatDateTime';
+import { formatRate } from '../lib/settlementView';
 import { useListParams } from '../lib/useListParams';
 import { useRemote } from '../lib/useRemote';
 import { cn } from '../lib/cn';
@@ -32,10 +33,18 @@ const detailPath = (row) => `/${row.kind === 'venue' ? 'venues' : 'events'}/${ro
  * is still recorded there (the "Pay" link opens it), so every transfer keeps
  * its UTR and audit entry. This page reads and links only - no money moves here.
  */
-export default function Payouts() {
+// `fixedKind` comes from the two menu entries (Payouts to organisers / to venue
+// owners): the page shows only that kind and drops the kind tabs.
+const FIXED = {
+    event: { title: 'Payouts to organisers', description: 'What each event organiser is owed from ticket sales, most owed first.' },
+    venue: { title: 'Payouts to venue owners', description: 'What each venue owner is owed from bookings, most owed first.' },
+};
+
+export default function Payouts({ fixedKind }) {
     // Kind and the "show fully paid" switch live in the URL, so back/refresh keep them.
     const { params, set } = useListParams({ kind: 'all', settled: '' });
-    const kind = KINDS.some((k) => k.value === params.kind) ? params.kind : 'all';
+    const kind = FIXED[fixedKind] ? fixedKind : (KINDS.some((k) => k.value === params.kind) ? params.kind : 'all');
+    const heading = FIXED[fixedKind] || { title: 'Payouts', description: 'What each venue owner and organiser is owed, most owed first.' };
     const showSettled = params.settled === '1';
 
     const load = useCallback(() => adminApi.getPayoutQueue(kind), [kind]);
@@ -51,8 +60,8 @@ export default function Payouts() {
     return (
         <div className="p-4 sm:p-6 lg:p-8">
             <PageHeader
-                title="Payouts"
-                description="What each venue owner and organiser is owed, most owed first."
+                title={heading.title}
+                description={heading.description}
                 actions={(
                     <Button variant="secondary" onClick={reload} isLoading={refreshing} disabled={loading} leftIcon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}>
                         Refresh
@@ -75,11 +84,11 @@ export default function Payouts() {
             <p className="mb-6 max-w-3xl text-sm text-gray-400">
                 <span className="text-gray-200">Ready to pay</span> is money from bookings and events that have already happened.
                 {' '}<span className="text-gray-200">Upcoming</span> is for dates still to come, and goes back to the guest if they cancel, so wait until the date has passed.
-                {' '}Amounts are the owner&apos;s share: what guests paid, minus FIRA&apos;s fee and GST.
+                {' '}Amounts are the owner&apos;s share: what guests paid, minus FIRA&apos;s fee and GST, and minus FIRA&apos;s commission where one is set.
             </p>
 
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <FilterTabs label="Listing type" options={KINDS} value={kind} onChange={(v) => set({ kind: v })} />
+                {FIXED[fixedKind] ? <span /> : <FilterTabs label="Listing type" options={KINDS} value={kind} onChange={(v) => set({ kind: v })} />}
                 <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-gray-300">
                     <input
                         type="checkbox"
@@ -168,7 +177,13 @@ function PayoutRow({ row }) {
         <tr>
             {listing}
             {owner}
-            <Td className="align-top text-right tabular-nums text-gray-200">{formatInr(m.netPayable)}</Td>
+            <Td className="align-top text-right tabular-nums text-gray-200">
+                {formatInr(m.netPayable)}
+                {/* FIRA's commission is already taken off this figure. */}
+                {m.commissionPercentage > 0 && (
+                    <div className="text-xs text-gray-500">after {formatRate(m.commissionPercentage)}% commission ({formatInr(m.commissionAmount)})</div>
+                )}
+            </Td>
             <Td className="align-top text-right tabular-nums text-gray-400">
                 {formatInr(m.settledToDate)}
                 {m.excessAmount > 0.01 && <div className="text-xs text-red-300">Overpaid {formatInr(m.excessAmount)}</div>}

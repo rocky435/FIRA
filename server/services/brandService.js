@@ -227,6 +227,14 @@ const brandService = {
             { new: true, upsert: true, setDefaultsOnInsert: true }
         );
 
+        // A new application, or a rejected one sent back: it is in the admin queue.
+        if (profile.status === 'pending' && (!existing || existing.status === 'rejected')) {
+            require('./adminAlertService').notify('creator', {
+                body: existing ? `${profile.name} applied again` : profile.name,
+                url: `/brands/${profile._id}`,
+            });
+        }
+
         // The badge is granted by ADMIN APPROVAL, never by creating the profile.
         //
         // This used to set `verificationBadge` here unconditionally, which meant the

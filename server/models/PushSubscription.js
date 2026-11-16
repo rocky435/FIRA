@@ -29,6 +29,16 @@ const pushSubscriptionSchema = new mongoose.Schema({
         // Client auth secret
         auth: { type: String, required: true }
     },
+    // Which app subscribed: the customer website ('web') or the installed admin
+    // app ('admin'). Website notifications go only to 'web' subscriptions and
+    // admin alerts only to 'admin' ones, so a tap always opens the right app.
+    // Rows from before this field read as 'web'.
+    app: {
+        type: String,
+        enum: ['web', 'admin'],
+        default: 'web',
+        index: true
+    },
     // Helps a user recognise which device a subscription belongs to
     userAgent: {
         type: String,

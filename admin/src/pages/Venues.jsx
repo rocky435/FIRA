@@ -6,7 +6,7 @@ import { useListParams } from '../lib/useListParams';
 import { useRemote } from '../lib/useRemote';
 import { useBulkSelection } from '../lib/useBulkSelection';
 import { useBulkRunner } from '../lib/useBulkRunner';
-import { venueActions, venueAvailable, VENUE_DELETE_MESSAGE, useConfirmedAction } from '../lib/listingActions';
+import { venueActions, venueAvailable, isVenueBlocked, VENUE_DELETE_MESSAGE, useConfirmedAction } from '../lib/listingActions';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Card } from '../components/ui/Card';
 import { FilterTabs } from '../components/ui/FilterTabs';
@@ -177,7 +177,7 @@ export default function Venues() {
                                     </Td>
                                     <Td>{venue.address?.city || '—'}</Td>
                                     <Td className="tabular-nums">{formatCapacity(venue.capacity)}</Td>
-                                    <Td><StatusBadge value={venue.status} /></Td>
+                                    <Td><StatusBadge value={isVenueBlocked(venue.status) ? 'blocked' : venue.status} /></Td>
                                     <Td>{formatDate(venue.createdAt)}</Td>
                                     <Td className="text-right" onClick={(e) => e.stopPropagation()}>
                                         <div className="flex items-center justify-end gap-1">

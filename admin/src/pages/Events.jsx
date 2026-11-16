@@ -26,7 +26,33 @@ import TicketTiers, { TierPriceRange } from '../components/TicketTiers';
 import EventRejectDialog from '../components/EventRejectDialog';
 
 const ITEMS_PER_PAGE = 10;
-const STATUSES = ['all', 'upcoming', 'approved', 'ongoing', 'completed', 'cancelled', 'rejected', 'pending', 'blocked'];
+// Upcoming and ongoing are what an admin checks day to day, so they sit on the
+// strip; the rest fold into "Others". These three follow the event's dates on
+// the server (an approved event is "upcoming" until it starts).
+const MAIN_STATUSES = [
+    { value: 'all', label: 'All' },
+    { value: 'upcoming', label: 'Upcoming' },
+    { value: 'ongoing', label: 'Ongoing' },
+];
+const OTHER_STATUSES = [
+    { value: 'completed', label: 'Completed' },
+    { value: 'pending', label: 'Pending' },
+    { value: 'cancelled', label: 'Cancelled' },
+    { value: 'rejected', label: 'Rejected' },
+    { value: 'blocked', label: 'Blocked' },
+];
+const STATUSES = [...MAIN_STATUSES, ...OTHER_STATUSES].map((s) => s.value);
+
+// What the row's badge says. Approval stores `approved`, and the lifecycle job
+// only moves it on when it runs, so a live event is labelled from its dates.
+function shownStatus(event, now = Date.now()) {
+    if (!['approved', 'upcoming', 'ongoing'].includes(event.status)) return event.status;
+    const start = new Date(event.startDateTime).getTime();
+    const end = new Date(event.endDateTime).getTime();
+    if (end <= now) return 'completed';
+    if (start <= now) return 'ongoing';
+    return 'upcoming';
+}
 const TYPES = [
     { value: 'all', label: 'Public and private' },
     { value: 'public', label: 'Public only' },
@@ -205,7 +231,6 @@ export default function Events() {
         { label: 'Delete', variant: 'danger', onClick: () => run({ verb: 'Delete', past: 'Deleted', danger: true, message: EVENT_DELETE_MESSAGE, requireText: 'DELETE', fn: (id) => adminApi.deleteEvent(id) }) },
     ];
 
-    const statusTabs = STATUSES.map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) }));
     const filtered = params.q || status !== 'all' || type !== 'all';
 
     return (
@@ -264,7 +289,7 @@ export default function Events() {
             ) : (
                 <>
                     <div className="mb-4 flex flex-col gap-3">
-                        <FilterTabs label="Event status" options={statusTabs} value={status} onChange={(v) => set({ status: v })} />
+                        <FilterTabs label="Event status" options={MAIN_STATUSES} more={OTHER_STATUSES} value={status} onChange={(v) => set({ status: v })} />
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                             <div className="sm:w-52">
                                 <Select aria-label="Event type" value={type} onChange={(e) => set({ type: e.target.value })} options={TYPES} />
@@ -342,7 +367,7 @@ export default function Events() {
                                             <Td><TierPriceRange event={event} className="tabular-nums" /></Td>
                                             <Td><TicketsSold event={event} /></Td>
                                             <Td><ApprovalSteps event={event} /></Td>
-                                            <Td><StatusBadge value={event.status} /></Td>
+                                            <Td><StatusBadge value={shownStatus(event)} /></Td>
                                             <Td className="text-right" onClick={(e) => e.stopPropagation()}>
                                                 <div className="flex items-center justify-end gap-1">
                                                     {eventAwaitsAdmin(event) && (

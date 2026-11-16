@@ -85,6 +85,39 @@ export function nothingToSettle(money = {}) {
     return !((money.netPayable ?? 0) > 0);
 }
 
+/** Whether FIRA's commission applies to this listing (a rate above 0). */
+export function hasCommission(money = {}) {
+    return (money.commissionPercentage ?? 0) > 0;
+}
+
+/** "FIRA commission (4%)" - the rate without trailing zeros. */
+export function commissionLabel(money = {}) {
+    return `FIRA commission (${formatRate(money.commissionPercentage)}%)`;
+}
+
+/** 4 -> "4", 2.5 -> "2.5", 2.50 -> "2.5". */
+export function formatRate(percentage) {
+    const n = Number(percentage);
+    return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : '0';
+}
+
+/**
+ * What a rate would deduct from an owner's share and leave to pay - the same
+ * rule the server applies (server/utils/commission.js): commission to paise,
+ * what is left in whole rupees. Used for the live preview while an admin types
+ * a rate; the figures actually shown afterwards always come from the server.
+ *
+ * @param {number} ownerShare
+ * @param {number} percentage
+ * @returns {{ amount: number, netPayable: number }}
+ */
+export function previewCommission(ownerShare, percentage) {
+    const share = Number.isFinite(ownerShare) ? ownerShare : 0;
+    const pct = Number.isFinite(percentage) && percentage > 0 ? Math.min(100, percentage) : 0;
+    const amount = Math.round((share * pct / 100) * 100) / 100;
+    return { amount, netPayable: Math.max(0, Math.floor(Math.round((share - amount) * 100) / 100)) };
+}
+
 /**
  * Requirement 2.3 + 5.6: the supporting breakdown as two labeled groups, with
  * an over-settled listing pinning Outstanding at ₹0 and adding an Excess row.
@@ -96,9 +129,11 @@ export function nothingToSettle(money = {}) {
  *   full price + platform fee + GST − discounts = collected
  * with the discount split by who funded it, shown only when non-zero.
  *
- * The owner side has no commission. Net payable is the owner's share (full
- * price less their own discounts) in whole rupees; each manual transfer is
- * recorded against it as a settlement.
+ * The owner side starts from the owner's share (full price less their own
+ * discounts). When FIRA's commission is set for this listing it is taken off
+ * that share, and the row only appears then - a listing with no rate reads
+ * exactly as it did before the commission existed. Net payable is what is left,
+ * in whole rupees; each manual transfer is recorded against it as a settlement.
  *
  * `sign` is the operator the row contributes to its group's sum; `indent`
  * marks a row that splits the row above it rather than adding to the sum.
@@ -135,11 +170,18 @@ export function moneyGroups({ kind, money = {}, state }) {
                     value: money.ownerShare,
                     hint: `Full price minus the ${ownerNoun(kind)}'s own discounts`,
                 },
+                ...(hasCommission(money) ? [{
+                    label: commissionLabel(money),
+                    value: money.commissionAmount,
+                    sign: '−',
+                    hint: `Kept by FIRA from the ${ownerNoun(kind)}'s payout`,
+                }] : []),
                 {
                     label: 'Net payable',
                     value: money.netPayable,
                     emphasis: true,
-                    hint: 'The share above in whole rupees',
+                    ...(hasCommission(money) ? { sign: '=' } : {}),
+                    hint: hasCommission(money) ? 'The share minus the commission, in whole rupees' : 'The share above in whole rupees',
                 },
                 { label: 'Settled to date', value: money.settledToDate },
                 { label: 'Outstanding', value: pinnedOutstanding(money, state), emphasis: true },

@@ -18,6 +18,7 @@ import {
 import { Landmark } from 'lucide-react';
 import { Button } from './ui/Button';
 import { FigureCard } from './ui/FigureCard';
+import { ListingCommission } from './Commission';
 import { EmptyState, ErrorState, Skeleton } from './ui/States';
 import { useConfirm } from './ui/confirmContext';
 import { useToast } from './ui/toastContext';
@@ -631,6 +632,21 @@ export default function ListingSettlementPanel({ kind, listingId }) {
                     failure never shows a stale state here. */}
                 {view.data && <StateBadge state={view.data.state} />}
             </div>
+
+            {/* FIRA's commission on this listing. Shown whenever the figures are
+                in - including a listing with no sales yet, so a rate can be set
+                before the first payment. The server answers a change with the
+                whole settlement, which replaces the figures below at once. */}
+            {view.data && (
+                <div className="px-4 pt-4 sm:px-6 sm:pt-6">
+                    <ListingCommission
+                        kind={kind}
+                        listingId={listingId}
+                        settlement={view.data}
+                        onChanged={(data) => dispatch({ type: 'resolved', data })}
+                    />
+                </div>
+            )}
 
             {/* Requirement 13.1: loading, and nothing else. */}
             {view.status === 'loading' && (

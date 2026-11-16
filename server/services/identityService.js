@@ -164,6 +164,10 @@ const identityService = {
             [spec.reviewedBy]: null,
         });
         await user.save();
+        require('./adminAlertService').notify('idCheck', {
+            body: `${user.name || 'Someone'} sent their ${kind === 'pan' ? 'PAN' : 'government ID'}`,
+            url: '/id-checks',
+        });
         return identityService.ownView(user);
     },
 

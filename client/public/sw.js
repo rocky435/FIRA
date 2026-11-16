@@ -35,7 +35,7 @@ self.addEventListener('push', (event) => {
         // instead of stacking five reminders for the same event.
         tag: payload.tag || undefined,
         renotify: Boolean(payload.tag),
-        data: { url: payload.url || '/inbox', ...(payload.data || {}) },
+        data: { url: payload.url || '/notifications', ...(payload.data || {}) },
         vibrate: [100, 50, 100],
     };
 
@@ -45,22 +45,23 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
     event.notification.close();
 
-    const targetUrl = event.notification.data?.url || '/inbox';
+    // /notifications, not /inbox: there is no /inbox page.
+    const targetUrl = new URL(event.notification.data?.url || '/notifications', self.location.origin).href;
 
-    event.waitUntil(
-        self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-            // Focus an existing tab if one is already open, rather than piling
-            // up a new tab every time a notification is tapped.
-            for (const client of clientList) {
-                if ('focus' in client) {
-                    client.navigate(targetUrl);
-                    return client.focus();
-                }
+    event.waitUntil((async () => {
+        const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        // Reuse an open FIRA tab rather than piling up a new one per tap. navigate()
+        // only works on a window this worker controls and rejects otherwise (common
+        // on iPhone), which left the tap doing nothing - so on failure, open a window.
+        const open = clientList.find((c) => c.url.startsWith(self.location.origin));
+        if (open) {
+            try {
+                const moved = open.url === targetUrl ? open : await open.navigate(targetUrl);
+                if (moved) return moved.focus();
+            } catch {
+                // fall through
             }
-            if (self.clients.openWindow) {
-                return self.clients.openWindow(targetUrl);
-            }
-            return undefined;
-        })
-    );
+        }
+        return self.clients.openWindow ? self.clients.openWindow(targetUrl) : undefined;
+    })());
 });

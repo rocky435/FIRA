@@ -67,6 +67,24 @@ const eventSchema = new mongoose.Schema({
         min: 0,
         max: 100
     },
+    // FIRA's commission on this event, as a percentage of the organiser's share,
+    // taken out of what FIRA pays them. Not the buyer-side platformFeePercentage
+    // above. Copied from the organiser's User.commissionPercentage at creation;
+    // null means 0%. `commissionCustom` marks a rate an admin set on this event
+    // by hand, so changing the organiser's rate later leaves it alone.
+    // Admin-only: never sent to the organiser or the website.
+    commissionPercentage: {
+        type: Number,
+        default: null,
+        min: 0,
+        max: 100,
+        select: false
+    },
+    commissionCustom: {
+        type: Boolean,
+        default: false,
+        select: false
+    },
     maxAttendees: {
         type: Number,
         required: true
@@ -187,7 +205,18 @@ const eventSchema = new mongoose.Schema({
         soldCount: { type: Number, default: 0 }
     }]
 }, {
-    timestamps: true
+    timestamps: true,
+    // The commission is admin-only. `select: false` keeps it out of queries;
+    // this keeps it out of a document sent as JSON too (a just-created event
+    // is returned to its organiser and carries every field). Admin reads use
+    // lean()/toObject() and ask for the fields by name.
+    toJSON: {
+        transform(_doc, ret) {
+            delete ret.commissionPercentage;
+            delete ret.commissionCustom;
+            return ret;
+        }
+    }
 });
 
 // Generate private code for private events

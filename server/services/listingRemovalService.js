@@ -75,11 +75,19 @@ async function venueObligations(venueId) {
 
 /** Record an owner's request to remove a listing, for admin review. */
 async function requestRemoval(Model, id, userId, reason) {
-    return Model.findByIdAndUpdate(
+    const doc = await Model.findByIdAndUpdate(
         id,
         { $set: { deletionRequest: { requestedAt: new Date(), requestedBy: userId, reason: reason || null } } },
         { new: true }
     );
+    if (doc) {
+        const isVenue = Model.modelName === 'Venue';
+        require('./adminAlertService').notify('removal', {
+            body: `${doc.name} — the ${isVenue ? 'owner' : 'organiser'} asked to remove it${reason ? `: ${String(reason).slice(0, 80)}` : ''}`,
+            url: `/${isVenue ? 'venues' : 'events'}/${doc._id}`,
+        });
+    }
+    return doc;
 }
 
 /**

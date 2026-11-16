@@ -13,14 +13,17 @@
 import assert from 'node:assert/strict';
 import {
     STATE_BADGES,
+    commissionLabel,
     emptyLedgerMessage,
     formatLastPayment,
+    formatRate,
     grossLabel,
     isModeratorHidden,
     isOverSettled,
     moneyGroups,
     nothingToSettle,
     pinnedOutstanding,
+    previewCommission,
     stateBadge,
 } from './settlementView.js';
 import { formatInr } from './formatInr.js';
@@ -171,6 +174,32 @@ const MONEY = {
     assert.equal(formatInr(null), '₹0.00');
     assert.equal(formatInr(undefined), '₹0.00');
     assert.equal(formatInr(NaN), '₹0.00');
+}
+
+/* ---- FIRA's commission on the owner's share: shown only when a rate is set ---- */
+{
+    const withRate = { ...MONEY, ownerShare: 20000, commissionPercentage: 4, commissionAmount: 800, netPayable: 19200, settledToDate: 0, outstandingAmount: 19200 };
+    const rows = moneyGroups({ kind: 'event', money: withRate, state: 'not_settled' })[1].rows;
+    assert.deepEqual(rows.map((r) => r.label), ["Organizer's share", 'FIRA commission (4%)', 'Net payable', 'Settled to date', 'Outstanding']);
+    assert.equal(rows[1].value, 800);
+    assert.equal(rows[1].sign, '−', 'the commission is taken off the share');
+    assert.equal(rows[2].sign, '=', 'net payable is the result');
+    // The owner rows add up: share − commission = net payable.
+    assert.equal(rows[0].value - rows[1].value, rows[2].value);
+    // A rate of 0 or none shows no commission row at all.
+    for (const none of [0, null, undefined]) {
+        const labels = moneyGroups({ kind: 'event', money: { ...MONEY, commissionPercentage: none }, state: 'not_settled' })[1].rows.map((r) => r.label);
+        assert.ok(!labels.some((l) => /commission/i.test(l)));
+    }
+    assert.equal(commissionLabel({ commissionPercentage: 2.5 }), 'FIRA commission (2.5%)');
+    assert.equal(formatRate(4), '4');
+    assert.equal(formatRate(2.50), '2.5');
+    // The live preview follows the server's rule (server/utils/commission.js).
+    assert.deepEqual(previewCommission(20000, 4), { amount: 800, netPayable: 19200 });
+    assert.deepEqual(previewCommission(9010, 4), { amount: 360.4, netPayable: 8649 });
+    assert.deepEqual(previewCommission(999, 2.5), { amount: 24.98, netPayable: 974 });
+    assert.deepEqual(previewCommission(20000, 0), { amount: 0, netPayable: 20000 });
+    assert.deepEqual(previewCommission(20000, NaN), { amount: 0, netPayable: 20000 });
 }
 
 console.log('settlementView.check.mjs: all assertions passed');

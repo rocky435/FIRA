@@ -1,13 +1,15 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
-    LayoutDashboard, Building2, CalendarDays, Ticket, Star, IdCard, Wallet, Undo2, Tag,
-    Users, UsersRound, ClipboardList, LogOut, PanelLeftClose, PanelLeftOpen, Menu, X, ChevronDown,
+    LayoutDashboard, Building2, CalendarDays, Ticket, Star, IdCard, Wallet, Undo2, Tag, Megaphone, HandCoins,
+    Users, UsersRound, ClipboardList, LogOut, PanelLeftClose, PanelLeftOpen, Menu, X, ChevronDown, Search,
 } from 'lucide-react';
 import logo from '../assets/logo.png';
 import ErrorBoundary from './ErrorBoundary';
 import adminApi from '../api/adminApi';
-import { getAdminRoleFromToken } from '../lib/adminRole';
+import { getAdminRoleFromToken, storeAdminRole, ROLE_EVENT } from '../lib/adminRole';
+import InstallApp from './InstallApp';
+import AlertsControl from './AlertsControl';
 import { humanize } from '../lib/statusStyles';
 import { cn } from '../lib/cn';
 
@@ -19,10 +21,12 @@ import { cn } from '../lib/cn';
 const navGroups = [
     {
         label: 'Overview',
+        color: 'var(--section-overview)',
         items: [{ href: '/', icon: LayoutDashboard, label: 'Dashboard' }],
     },
     {
         label: 'Review',
+        color: 'var(--section-review)',
         items: [
             { href: '/venues', icon: Building2, label: 'Venues', pendingKey: 'pendingVenues' },
             { href: '/events', icon: Ticket, label: 'Events', pendingKey: 'pendingEvents' },
@@ -32,22 +36,27 @@ const navGroups = [
     },
     {
         label: 'Money',
+        color: 'var(--section-money)',
         items: [
             { href: '/bookings', icon: CalendarDays, label: 'Venue Bookings' },
-            { href: '/payouts', icon: Wallet, label: 'Payouts to owners' },
+            { href: '/payouts/organisers', icon: HandCoins, label: 'Organiser payouts' },
+            { href: '/payouts/venue-owners', icon: Wallet, label: 'Venue owner payouts' },
             { href: '/refunds', icon: Undo2, label: 'Refunds to be done', pendingKey: 'pendingRefunds' },
             { href: '/discount-codes', icon: Tag, label: 'Discount Codes' },
         ],
     },
     {
         label: 'People',
+        color: 'var(--section-people)',
         items: [
             { href: '/users', icon: Users, label: 'Users' },
+            { href: '/organisers', icon: Megaphone, label: 'Event Organisers' },
             { href: '/venue-owners', icon: UsersRound, label: 'Venue Owners' },
         ],
     },
     {
         label: 'System',
+        color: 'var(--section-system)',
         items: [{ href: '/audit-trail', icon: ClipboardList, label: 'Audit Trail' }],
     },
 ];
@@ -61,7 +70,7 @@ const navGroups = [
  *   money), ID Checks or Payouts - the server limits all of those to admin and
  *   super_admin.
  */
-const MODERATOR_HIDDEN = new Set(['/users', '/audit-trail', '/refunds', '/id-checks', '/payouts']);
+const MODERATOR_HIDDEN = new Set(['/users', '/audit-trail', '/refunds', '/id-checks', '/payouts/organisers', '/payouts/venue-owners', '/organisers']);
 
 function getVisibleNavGroups(adminRole) {
     if (adminRole !== 'moderator') return navGroups;
@@ -79,8 +88,10 @@ function isActivePath(pathname, href) {
 function findCurrent(pathname, groups) {
     for (const group of groups) {
         const item = group.items.find((i) => isActivePath(pathname, i.href));
-        if (item) return { group: group.label, item };
+        if (item) return { group: group.label, color: group.color, item };
     }
+    // Pages reached from inside a list (/payouts with every kind).
+    if (pathname.startsWith('/payouts')) return { group: 'Money', color: 'var(--section-money)', item: { label: 'Payouts' } };
     return null;
 }
 
@@ -199,8 +210,25 @@ export default function AdminDashboardLayout({ children, onLogout }) {
     const [stats, setStats] = useState(null);
     const [user] = useState(readStoredUser);
 
-    const adminRole = useMemo(() => getAdminRoleFromToken(), []);
+    const [adminRole, setAdminRole] = useState(getAdminRoleFromToken);
+    // The level comes from the server (the token does not carry it): refreshed
+    // when the app opens, and the menu follows if it changed.
+    useEffect(() => {
+        const onRole = (e) => setAdminRole(e.detail);
+        window.addEventListener(ROLE_EVENT, onRole);
+        adminApi.getMe().then((me) => storeAdminRole(me?.adminRole ?? null)).catch(() => {});
+        return () => window.removeEventListener(ROLE_EVENT, onRole);
+    }, []);
+    const [navQuery, setNavQuery] = useState('');
     const visibleGroups = useMemo(() => getVisibleNavGroups(adminRole), [adminRole]);
+    // The sidebar search narrows the menu to matching pages.
+    const shownGroups = useMemo(() => {
+        const q = navQuery.trim().toLowerCase();
+        if (!q) return visibleGroups;
+        return visibleGroups
+            .map((g) => ({ ...g, items: g.items.filter((i) => i.label.toLowerCase().includes(q) || g.label.toLowerCase().includes(q)) }))
+            .filter((g) => g.items.length > 0);
+    }, [visibleGroups, navQuery]);
     const roleLabel = adminRole ? humanize(adminRole) : 'Admin';
 
     useEffect(() => {
@@ -254,7 +282,21 @@ export default function AdminDashboardLayout({ children, onLogout }) {
 
     const nav = (
         <nav aria-label="Admin navigation" className="flex-1 overflow-y-auto px-3 py-4">
-            {visibleGroups.map((group) => (
+            {!rail && (
+                <div className="relative mb-4">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden="true" />
+                    <input
+                        type="search"
+                        value={navQuery}
+                        onChange={(e) => setNavQuery(e.target.value)}
+                        placeholder="Search"
+                        aria-label="Search the menu"
+                        className="h-9 w-full rounded-xl border border-line bg-surface-raised pl-9 pr-3 text-sm text-white placeholder-gray-500 focus:border-violet-500/60 focus:outline-none focus:ring-2 focus:ring-violet-500/25"
+                    />
+                </div>
+            )}
+            {shownGroups.length === 0 && <p className="px-3 text-sm text-gray-500">No page matches "{navQuery}".</p>}
+            {shownGroups.map((group) => (
                 <div key={group.label} className="mb-5 last:mb-0">
                     {rail ? (
                         <div className="mx-auto mb-2 h-px w-6 bg-line" aria-hidden="true" />
@@ -273,15 +315,15 @@ export default function AdminDashboardLayout({ children, onLogout }) {
                                         aria-current={active ? 'page' : undefined}
                                         title={rail ? `${item.label}${count ? ` (${count} pending)` : ''}` : undefined}
                                         className={cn(
-                                            'relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                                            'relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150',
                                             rail && 'justify-center px-0',
                                             active
-                                                ? 'bg-white/[0.08] text-white'
+                                                ? 'bg-brand-grad text-white shadow-lg shadow-violet-900/40'
                                                 : 'text-gray-400 hover:bg-hover hover:text-white'
                                         )}
                                     >
-                                        {active && <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-violet-400" aria-hidden="true" />}
-                                        <Icon className={cn('h-[18px] w-[18px] shrink-0', active && 'text-violet-300')} aria-hidden="true" />
+                                        {/* Inactive icons wear their area's colour; the active one is white on the gradient. */}
+                                        <Icon className="h-[18px] w-[18px] shrink-0" style={active ? undefined : { color: group.color }} aria-hidden="true" />
                                         {!rail && <span className="truncate">{item.label}</span>}
                                         {rail && <span className="sr-only">{item.label}</span>}
                                         <CountBadge count={count} collapsed={rail} />
@@ -381,20 +423,23 @@ export default function AdminDashboardLayout({ children, onLogout }) {
                     </button>
                     <div className="min-w-0 flex-1">
                         {current && (
-                            <p className="truncate text-sm">
+                            <p className="flex min-w-0 items-center gap-2 truncate text-sm">
+                                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: current.color }} aria-hidden="true" />
                                 <span className="text-gray-500">{current.group}</span>
-                                <span className="mx-1.5 text-gray-600" aria-hidden="true">/</span>
-                                <span className="font-medium text-white">{current.item.label}</span>
+                                <span className="text-gray-600" aria-hidden="true">/</span>
+                                <span className="truncate font-medium text-white">{current.item.label}</span>
                             </p>
                         )}
                     </div>
+                    <InstallApp />
+                    <AlertsControl />
                     <UserMenu user={user} roleLabel={roleLabel} onLogout={handleLogout} />
                 </header>
 
                 {/* min-w-0 matters on phones: a flex child's min-width defaults to
                     its content, so a wide table would stretch <main> past the
                     screen instead of scrolling inside its own wrapper. */}
-                <main className="relative min-w-0 flex-1 pb-16">
+                <main className="relative min-w-0 flex-1 pb-16" style={current?.color ? { '--section': current.color } : undefined}>
                     <div className="admin-content mx-auto w-full">
                         <ErrorBoundary fallbackMessage="Something went wrong in the admin panel.">
                             {children}
