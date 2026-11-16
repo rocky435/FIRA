@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import {
-    Building2, Ticket, Star, IdCard, Undo2, Users, ArrowRight, CircleCheck, Ban, IndianRupee, ClipboardCheck,
+    Building2, Ticket, Star, Wallet, IdCard, Undo2, Users, ArrowRight, CircleCheck, Ban, IndianRupee, ClipboardCheck,
 } from 'lucide-react';
 import adminApi from '../api/adminApi';
 import { getAdminRoleFromToken } from '../lib/adminRole';
@@ -34,10 +34,13 @@ function change(series, pick) {
 }
 
 // What can be waiting for an admin, and where to go to deal with it. `hideFor`
-// mirrors the nav: moderators cannot act on refunds or ID checks.
+// mirrors the nav: moderators cannot act on refunds or ID checks. `watch` rows
+// are not admin work (someone else's step is due) but are worth keeping an eye
+// on: shown in blue, and left out of the "work waiting" count.
 const QUEUES = [
     { key: 'pendingVenues', label: 'Venues waiting for approval', to: '/venues?status=pending', icon: Building2 },
     { key: 'pendingEvents', label: 'Events waiting for approval', to: '/events?tab=pending', icon: Ticket },
+    { key: 'eventsVenueUnpaid', label: 'Approved events waiting for venue payment', hint: 'The organiser has to pay', to: '/events?status=venue_unpaid', icon: Wallet, watch: true },
     { key: 'pendingBrands', label: 'Brands waiting for approval', to: '/brands?status=pending', icon: Star },
     { key: 'pendingIdChecks', label: 'ID documents to review', to: '/id-checks', icon: IdCard, hideFor: ['moderator'] },
     { key: 'pendingRefunds', label: 'Refunds to pay', to: '/refunds', icon: Undo2, hideFor: ['moderator'] },
@@ -72,7 +75,8 @@ export default function Dashboard() {
     const queues = QUEUES.filter((q) => !(q.hideFor || []).includes(adminRole));
     const trends = stats?.trends || [];
     const thisMonth = trends[trends.length - 1];
-    const waiting = queues.filter((q) => (stats?.[q.key] || 0) > 0);
+    const waiting = queues.filter((q) => !q.watch && (stats?.[q.key] || 0) > 0);
+    const watching = queues.filter((q) => q.watch && (stats?.[q.key] || 0) > 0);
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
@@ -129,10 +133,10 @@ export default function Dashboard() {
                         <Card
                             className="lg:col-span-3"
                             title="Needs attention"
-                            description={waiting.length ? `${waiting.length} ${waiting.length === 1 ? 'queue has' : 'queues have'} work waiting` : 'Nothing is waiting'}
+                            description={waiting.length ? `${waiting.length} ${waiting.length === 1 ? 'queue has' : 'queues have'} work waiting` : 'Nothing needs your action'}
                             padded={false}
                         >
-                            {waiting.length === 0 ? (
+                            {waiting.length === 0 && watching.length === 0 ? (
                                 <div className="flex items-center gap-3 px-5 pb-6 pt-1 text-sm text-gray-300">
                                     <CircleCheck className="h-5 w-5 text-green-400" aria-hidden="true" />
                                     All caught up. New approvals, ID checks and refunds will show up here.
@@ -142,18 +146,25 @@ export default function Dashboard() {
                                     {queues.map((q) => {
                                         const count = stats?.[q.key] || 0;
                                         const Icon = q.icon;
+                                        // Amber: admin work. Blue: waiting on someone else.
+                                        const tone = q.watch
+                                            ? { icon: 'bg-blue-500/15 text-blue-300', pill: 'bg-blue-400/15 text-blue-300' }
+                                            : { icon: 'bg-amber-500/15 text-amber-300', pill: 'bg-amber-400/15 text-amber-300' };
                                         return (
                                             <li key={q.key}>
                                                 <Link
                                                     to={q.to}
                                                     className="group flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-hover"
                                                 >
-                                                    <span className={count ? 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-300' : 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] text-gray-500'}>
+                                                    <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${count ? tone.icon : 'bg-white/[0.04] text-gray-500'}`}>
                                                         <Icon className="h-4 w-4" aria-hidden="true" />
                                                     </span>
-                                                    <span className={count ? 'flex-1 text-sm text-white' : 'flex-1 text-sm text-gray-500'}>{q.label}</span>
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className={count ? 'block text-sm text-white' : 'block text-sm text-gray-500'}>{q.label}</span>
+                                                        {q.hint && count > 0 && <span className="block text-xs text-gray-500">{q.hint}</span>}
+                                                    </span>
                                                     <span className={count
-                                                        ? 'rounded-full bg-amber-400/15 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-300'
+                                                        ? `rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${tone.pill}`
                                                         : 'text-xs tabular-nums text-gray-600'}>
                                                         {num(count)}
                                                     </span>

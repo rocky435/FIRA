@@ -14,6 +14,39 @@ const { escapeRegex } = require('../utils/escapeRegex');
  * silently invisible with no indication why.
  */
 const PUBLICLY_VISIBLE_STATUSES = ['approved', 'upcoming', 'ongoing'];
+
+/**
+ * Events waiting for the admin's decision: the Pending approvals tab lists
+ * these, and the dashboard and nav badge count them (adminService.getStats),
+ * so the two always agree.
+ *
+ * An event the admin has already approved can still be `pending` while the
+ * organiser has not paid for the venue (goLiveIfReady). That is not admin work,
+ * so it is left out. Venue-less events are left out too (8.1), and deleted ones.
+ */
+function adminQueueFilter() {
+    return {
+        venue: { $exists: true, $ne: null },
+        status: 'pending',
+        isDeleted: { $ne: true },
+        'adminApproval.status': { $ne: 'approved' },
+    };
+}
+
+/**
+ * Events with both approvals in that are still `pending` because the organiser
+ * has not paid for the venue (goLiveIfReady). Not admin work, but the admin
+ * dashboard shows them so they are not lost track of. A missing venueApproval
+ * counts as approved, as in goLiveIfReady.
+ */
+function venueUnpaidFilter() {
+    return {
+        status: 'pending',
+        isDeleted: { $ne: true },
+        'adminApproval.status': 'approved',
+        'venueApproval.status': { $in: ['approved', null] },
+    };
+}
 const formatWhen = (date) => new Date(date).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 /**
@@ -1122,20 +1155,8 @@ const eventService = {
 
     // Get events pending admin approval
     async getPendingAdminApproval(query = {}) {
-        const { page = 1, limit = 10, status = 'pending' } = query;
-
-        // Show all events that need admin review
-        // Events are pending if they're not already approved/cancelled/rejected
-        // Exclude venue-less events so they aren't counted/listed as pending (8.1).
-        const filter = {
-            venue: { $exists: true, $ne: null },
-            status: { $nin: ['approved', 'cancelled', 'rejected', 'blocked'] },
-            $or: [
-                { 'adminApproval.status': { $ne: 'approved' } },
-                { 'adminApproval.status': { $exists: false } },
-                { adminApproval: { $exists: false } }
-            ]
-        };
+        const { page = 1, limit = 10 } = query;
+        const filter = adminQueueFilter();
 
         const events = await Event.find(filter)
             .populate('organizer', 'name email avatar verificationBadge')
@@ -1695,5 +1716,8 @@ const eventService = {
         }).catch(err => console.error('venue-lapsed notification failed:', err.message));
     }
 };
+
+eventService.adminQueueFilter = adminQueueFilter;
+eventService.venueUnpaidFilter = venueUnpaidFilter;
 
 module.exports = eventService;

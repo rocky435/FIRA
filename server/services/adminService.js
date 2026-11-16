@@ -87,7 +87,8 @@ const adminService = {
             ticketRevenue,
             bookingRevenue,
             pendingRefunds,
-            pendingIdChecks
+            pendingIdChecks,
+            eventsVenueUnpaid
         ] = await Promise.all([
             User.countDocuments(),
             // Deleted listings are excluded here so the headline counts agree
@@ -96,9 +97,10 @@ const adminService = {
             Event.countDocuments({ isDeleted: { $ne: true } }),
             BrandProfile.countDocuments(),
             Venue.countDocuments({ status: 'pending', isDeleted: { $ne: true } }),
-            // Exclude venue-less events from the pending count (8.1). A genuinely
-            // pending event that HAS a venue still counts (preservation 3.11).
-            Event.countDocuments({ status: 'pending', venue: { $exists: true, $ne: null }, isDeleted: { $ne: true } }),
+            // The same filter the Pending approvals tab lists with, so the
+            // badge and the tab agree. An event only waiting for its venue to
+            // be paid is not counted: that is the organiser's step, not admin work.
+            Event.countDocuments(require('./eventService').adminQueueFilter()),
             BrandProfile.countDocuments({ status: 'pending' }),
             User.countDocuments({ isBlocked: true }),
             Ticket.countDocuments(),
@@ -115,7 +117,9 @@ const adminService = {
             // The two queues that need an admin's hand: refunds raised but not
             // yet paid, and ID documents waiting for review.
             Refund.countDocuments({ status: 'pending' }),
-            identityService.countPending()
+            identityService.countPending(),
+            // Approved, but not live until the organiser pays for the venue.
+            Event.countDocuments(require('./eventService').venueUnpaidFilter())
         ]);
 
         const ticketRev = ticketRevenue[0]?.total || 0;
@@ -133,6 +137,7 @@ const adminService = {
             totalTickets,
             pendingRefunds,
             pendingIdChecks,
+            eventsVenueUnpaid,
             totalRevenue: ticketRev + bookingRev,
             ticketRevenue: ticketRev,
             venueRevenue: bookingRev,
@@ -722,7 +727,9 @@ const adminService = {
         // also keep the groups right before the lifecycle job next runs.
         let sort = { createdAt: -1 };
         const timeGroup = status && TIME_GROUPS[status];
-        if (timeGroup) {
+        if (status === 'venue_unpaid') {
+            filter.$and = [...(filter.$and || []), require('./eventService').venueUnpaidFilter()];
+        } else if (timeGroup) {
             const now = new Date();
             filter.$and = [...(filter.$and || []), timeGroup.filter(now)];
             sort = timeGroup.sort;

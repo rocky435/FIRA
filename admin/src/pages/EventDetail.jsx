@@ -27,6 +27,7 @@ import { useToast } from '../components/ui/toastContext';
 import TicketTiers, { TierPriceRange } from '../components/TicketTiers';
 import BankDetails from '../components/BankDetails';
 import EventRejectDialog from '../components/EventRejectDialog';
+import EventStatusBadge from '../components/EventStatusBadge';
 import ListingSettlementPanel from '../components/ListingSettlementPanel';
 
 const BUYERS_PER_PAGE = 10;
@@ -170,7 +171,7 @@ export default function EventDetail() {
                 )}
             >
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                    <StatusBadge value={event.status} />
+                    <EventStatusBadge event={event} />
                     {event.eventType === 'private' && <StatusBadge value="private" icon={Lock}>Private{event.privateCode ? ` · code ${event.privateCode}` : ''}</StatusBadge>}
                     {event.category && <StatusBadge tone="neutral">{humanize(event.category)}</StatusBadge>}
                     {event.isFeatured && <StatusBadge tone="warning" icon={Star}>Featured</StatusBadge>}

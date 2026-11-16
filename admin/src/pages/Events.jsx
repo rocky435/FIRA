@@ -24,6 +24,7 @@ import { useToast } from '../components/ui/toastContext';
 import BulkActionBar from '../components/BulkActionBar';
 import TicketTiers, { TierPriceRange } from '../components/TicketTiers';
 import EventRejectDialog from '../components/EventRejectDialog';
+import EventStatusBadge from '../components/EventStatusBadge';
 
 const ITEMS_PER_PAGE = 10;
 // Upcoming and ongoing are what an admin checks day to day, so they sit on the
@@ -37,22 +38,13 @@ const MAIN_STATUSES = [
 const OTHER_STATUSES = [
     { value: 'completed', label: 'Completed' },
     { value: 'pending', label: 'Pending' },
+    // Approved, not live until the organiser pays for the venue.
+    { value: 'venue_unpaid', label: 'Venue not paid' },
     { value: 'cancelled', label: 'Cancelled' },
     { value: 'rejected', label: 'Rejected' },
     { value: 'blocked', label: 'Blocked' },
 ];
 const STATUSES = [...MAIN_STATUSES, ...OTHER_STATUSES].map((s) => s.value);
-
-// What the row's badge says. Approval stores `approved`, and the lifecycle job
-// only moves it on when it runs, so a live event is labelled from its dates.
-function shownStatus(event, now = Date.now()) {
-    if (!['approved', 'upcoming', 'ongoing'].includes(event.status)) return event.status;
-    const start = new Date(event.startDateTime).getTime();
-    const end = new Date(event.endDateTime).getTime();
-    if (end <= now) return 'completed';
-    if (start <= now) return 'ongoing';
-    return 'upcoming';
-}
 const TYPES = [
     { value: 'all', label: 'Public and private' },
     { value: 'public', label: 'Public only' },
@@ -308,7 +300,7 @@ export default function Events() {
                         ) : events.length === 0 ? (
                             <EmptyState
                                 icon={Ticket}
-                                title={filtered ? (status !== 'all' ? `No ${status} events found` : 'No events match these filters') : 'No events yet'}
+                                title={filtered ? (status !== 'all' ? `No events under "${[...MAIN_STATUSES, ...OTHER_STATUSES].find((s) => s.value === status)?.label}"` : 'No events match these filters') : 'No events yet'}
                                 message={params.q ? `Nothing found for "${params.q}".` : undefined}
                             />
                         ) : (
@@ -367,7 +359,7 @@ export default function Events() {
                                             <Td><TierPriceRange event={event} className="tabular-nums" /></Td>
                                             <Td><TicketsSold event={event} /></Td>
                                             <Td><ApprovalSteps event={event} /></Td>
-                                            <Td><StatusBadge value={shownStatus(event)} /></Td>
+                                            <Td><EventStatusBadge event={event} /></Td>
                                             <Td className="text-right" onClick={(e) => e.stopPropagation()}>
                                                 <div className="flex items-center justify-end gap-1">
                                                     {eventAwaitsAdmin(event) && (
