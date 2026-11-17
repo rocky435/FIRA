@@ -90,11 +90,25 @@ router.get('/stats', async (req, res) => {
     }
 });
 
+// The Razorpay fee rate the admin panel shows deductions with (estimate).
+router.get('/gateway-fee', (req, res) => {
+    res.json(adminService.getGatewayFee());
+});
+
 // ================== USERS ==================
 router.get('/users', async (req, res) => {
     try {
         const result = await adminService.getAllUsers(req.query);
         res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Before /users/:id, which would otherwise take "signups" as an id.
+router.get('/users/signups', async (req, res) => {
+    try {
+        res.json(await adminService.getSignups());
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

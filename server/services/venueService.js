@@ -284,6 +284,12 @@ const venueService = {
                 body: `${venue.name}${venue.address?.city ? `, ${venue.address.city}` : ''}`,
                 url: `/venues/${venue._id}`,
             });
+        } else {
+            // Listed without needing review (no such path today): still announced.
+            require('./adminAlertService').notify('venueListed', {
+                body: `${venue.name}${venue.address?.city ? `, ${venue.address.city}` : ''}`,
+                url: `/venues/${venue._id}`,
+            });
         }
         return venue;
     },

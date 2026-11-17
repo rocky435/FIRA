@@ -46,9 +46,52 @@ const BOOKING_TIME_GROUPS = {
     ongoing: (today) => ({ status: 'accepted', bookingDate: { $lte: today }, ...BOOKING_LAST_DAY('$gte', today) }),
     completed: (today) => ({ $or: [{ status: 'completed' }, { status: 'accepted', ...BOOKING_LAST_DAY('$lt', today) }] }),
 };
-function bookingToday() {
+function bookingToday(now = new Date()) {
     const { localDayKey } = require('../utils/venueAvailability');
-    return new Date(`${localDayKey(new Date())}T00:00:00Z`);
+    return new Date(`${localDayKey(now)}T00:00:00Z`);
+}
+
+// Events that actually ran (or are running) - not pending, rejected, cancelled.
+const HELD_EVENT = ['approved', 'upcoming', 'ongoing', 'completed'];
+
+// Razorpay keeps a share of every payment before it reaches FIRA. It is not
+// stored per payment, so the admin panel estimates it at this rate: 2% on UPI,
+// Indian cards, netbanking and wallets, plus 18% GST on that fee = 2.36%.
+// RAZORPAY_FEE_PERCENT overrides it. Admin figures only - nothing a customer,
+// organiser or venue owner sees, and no payout, uses it.
+const gatewayFeePercent = () => {
+    const n = Number(process.env.RAZORPAY_FEE_PERCENT);
+    return process.env.RAZORPAY_FEE_PERCENT && Number.isFinite(n) && n >= 0 ? n : 2.36;
+};
+const round2 = (n) => Math.round(n * 100) / 100;
+/** The estimated Razorpay fee on `amount`, and what is left after it. */
+function withGatewayFee(amount) {
+    const gatewayFeePercent_ = gatewayFeePercent();
+    const gatewayFee = round2(((amount || 0) * gatewayFeePercent_) / 100);
+    return { gatewayFeePercent: gatewayFeePercent_, gatewayFee, afterGateway: round2((amount || 0) - gatewayFee) };
+}
+/** What buyers actually paid for these events: successful payments, after discounts, fee and GST included. */
+async function paidForEvents(eventIds) {
+    if (!eventIds.length) return 0;
+    const Payment = require('../models/Payment');
+    const [row] = await Payment.aggregate([
+        { $match: { status: 'success', referenceModel: 'Event', referenceId: { $in: eventIds } } },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$totalAmount', '$amount'] } } } },
+    ]);
+    return round2(row?.total || 0);
+}
+
+/** `count` month keys ending with `now`'s month, oldest first, in India time. */
+function monthKeys(now, count) {
+    const ist = new Date(now.getTime() + 5.5 * 3600 * 1000);
+    const months = [];
+    for (let i = count - 1; i >= 0; i--) {
+        const d = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth() - i, 1));
+        months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+    }
+    const [y, m] = months[0].split('-').map(Number);
+    // Start of the first month in India time, as an instant.
+    return { months, since: new Date(Date.UTC(y, m - 1, 1) - 5.5 * 3600 * 1000) };
 }
 
 // What a paid booking has received, as an aggregation expression: the same rule
@@ -124,6 +167,9 @@ const adminService = {
 
         const ticketRev = ticketRevenue[0]?.total || 0;
         const bookingRev = bookingRevenue[0]?.total || 0;
+        const collected = ticketRev + bookingRev;
+        const feePercent = gatewayFeePercent();
+        const gatewayFee = round2((collected * feePercent) / 100);
 
         return {
             totalUsers,
@@ -138,7 +184,11 @@ const adminService = {
             pendingRefunds,
             pendingIdChecks,
             eventsVenueUnpaid,
-            totalRevenue: ticketRev + bookingRev,
+            totalRevenue: collected,
+            // Estimated Razorpay share and what is left after it.
+            gatewayFeePercent: feePercent,
+            gatewayFee,
+            netRevenue: round2(collected - gatewayFee),
             ticketRevenue: ticketRev,
             venueRevenue: bookingRev,
             trends: await adminService.getTrends(),
@@ -155,18 +205,10 @@ const adminService = {
     async getTrends(now = new Date()) {
         const Payment = require('../models/Payment');
         const TZ = 'Asia/Kolkata';
-        const ist = new Date(now.getTime() + 5.5 * 3600 * 1000);
-        const months = [];
-        for (let i = 5; i >= 0; i--) {
-            const d = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth() - i, 1));
-            months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
-        }
-        // Start of the first month in India time, as an instant.
-        const [y, m] = months[0].split('-').map(Number);
-        const since = new Date(Date.UTC(y, m - 1, 1) - 5.5 * 3600 * 1000);
+        const { months, since } = monthKeys(now, 6);
         const monthOf = (field) => ({ $dateToString: { format: '%Y-%m', date: field, timezone: TZ } });
 
-        const [users, payments, tickets] = await Promise.all([
+        const [users, payments, tickets, events, bookings] = await Promise.all([
             User.aggregate([
                 { $match: { createdAt: { $gte: since } } },
                 { $group: { _id: monthOf('$createdAt'), n: { $sum: 1 } } },
@@ -182,6 +224,18 @@ const adminService = {
                 { $match: { createdAt: { $gte: since }, status: { $ne: 'cancelled' } } },
                 { $group: { _id: monthOf('$createdAt'), n: { $sum: { $ifNull: ['$quantity', 1] } } } },
             ]),
+            // Events held: started in the month, up to now (later this month
+            // has not happened yet).
+            Event.aggregate([
+                { $match: { status: { $in: HELD_EVENT }, isDeleted: { $ne: true }, startDateTime: { $gte: since, $lte: now } } },
+                { $group: { _id: monthOf('$startDateTime'), n: { $sum: 1 } } },
+            ]),
+            // Venue bookings used in the month (by their first day, up to
+            // today), and how many different venues they were at.
+            Booking.aggregate([
+                { $match: { status: { $in: ['accepted', 'completed'] }, bookingDate: { $gte: since, $lte: bookingToday(now) } } },
+                { $group: { _id: monthOf('$bookingDate'), n: { $sum: 1 }, venues: { $addToSet: '$venue' } } },
+            ]),
         ]);
 
         const pick = (rows, month) => rows.find((r) => r._id === month)?.n || 0;
@@ -195,7 +249,31 @@ const adminService = {
             ticketRevenue: money(month, false),
             venueRevenue: money(month, true),
             ticketsSold: pick(tickets, month),
+            eventsHeld: pick(events, month),
+            venueBookings: pick(bookings, month),
+            venuesBooked: bookings.find((r) => r._id === month)?.venues.length || 0,
         }));
+    },
+
+    /** The Razorpay fee rate the admin panel estimates with. */
+    getGatewayFee() {
+        return { percent: gatewayFeePercent() };
+    },
+
+    /** Twelve months of sign-ups (oldest first) and the all-time total, for the Users page. */
+    async getSignups(now = new Date()) {
+        const { months, since } = monthKeys(now, 12);
+        const [rows, total] = await Promise.all([
+            User.aggregate([
+                { $match: { createdAt: { $gte: since } } },
+                { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Kolkata' } }, n: { $sum: 1 } } },
+            ]),
+            User.countDocuments(),
+        ]);
+        return {
+            months: months.map((month) => ({ month, newUsers: rows.find((r) => r._id === month)?.n || 0 })),
+            total,
+        };
     },
 
     // ================== USERS ==================
@@ -613,6 +691,7 @@ const adminService = {
             stats: {
                 totalBookings: bookings.length,
                 totalRevenue,
+                ...withGatewayFee(totalRevenue),
                 completedBookings: bookings.filter(b => b.status === 'completed').length
             }
         };
@@ -769,6 +848,8 @@ const adminService = {
         const tickets = await Ticket.find({ event: id }).populate('user', 'name email phone');
         const totalRevenue = tickets.reduce((sum, t) => sum + (t.price || 0), 0);
         const ticketsSold = tickets.reduce((sum, t) => sum + (t.quantity || 1), 0);
+        // totalRevenue is full price; Razorpay's fee is on what buyers paid.
+        const collected = await paidForEvents([event._id]);
 
         return {
             ...event.toObject(),
@@ -776,6 +857,8 @@ const adminService = {
             stats: {
                 ticketsSold,
                 totalRevenue,
+                collected,
+                ...withGatewayFee(collected),
                 totalBookings: tickets.length
             }
         };
@@ -1024,6 +1107,7 @@ const adminService = {
         // Same rule as the Creators list count (getBrands), so both pages agree.
         const HOSTED = ['approved', 'upcoming', 'ongoing', 'completed'];
         const eventsHosted = events.filter(e => !e.isDeleted && HOSTED.includes(e.status)).length;
+        const collected = await paidForEvents(eventIds);
 
         return {
             ...brand.toObject(),
@@ -1036,7 +1120,9 @@ const adminService = {
                 ...(brand.stats || {}),
                 eventsHosted,
                 totalEvents: events.length,
-                totalRevenue: ticketRevenue[0]?.total || 0
+                totalRevenue: ticketRevenue[0]?.total || 0,
+                collected,
+                ...withGatewayFee(collected),
             }
         };
     },

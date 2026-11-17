@@ -19,6 +19,7 @@ import { EmptyState, ErrorState, TableSkeleton } from '../components/ui/States';
 import { useConfirm } from '../components/ui/confirmContext';
 import { useToast } from '../components/ui/toastContext';
 import BulkActionBar from '../components/BulkActionBar';
+import SignupsCard from '../components/SignupsCard';
 
 const ITEMS_PER_PAGE = 10;
 const STATUSES = ['all', 'active', 'blocked'];
@@ -109,7 +110,9 @@ export default function Users() {
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
-            <PageHeader title="Users" description="Manage user accounts" count={loading ? null : total} />
+            <PageHeader title="Users" description="Who is on FIRA, how fast it is growing, and every account" count={loading ? null : total} />
+
+            <SignupsCard />
 
             <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <FilterTabs label="Account status" options={STATUSES} value={status} onChange={(v) => set({ status: v })} />

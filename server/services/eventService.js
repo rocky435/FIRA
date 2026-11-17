@@ -512,9 +512,11 @@ const eventService = {
         }
 
         // --- NEW: Auto-approval for Tagged Organizers ---
+        let organizerName = null;
         try {
             const User = require('../models/User');
             const organizerUser = await User.findById(data.organizer);
+            organizerName = organizerUser?.name || null;
             
             if (organizerUser && (organizerUser.isVerified === true || (organizerUser.verificationBadge && organizerUser.verificationBadge !== 'none'))) {
                 console.log(`🚀 Fast Track: Auto-approving admin part for tagged organizer: ${organizerUser.name} (${organizerUser.verificationBadge})`);
@@ -549,6 +551,15 @@ const eventService = {
         // accepts automatically): alert the admins now.
         if (event.status === 'pending' && event.adminApproval?.status !== 'approved' && event.venueApproval?.status === 'approved') {
             require('./adminAlertService').notify('event', { body: event.name, url: `/events/${event._id}` });
+        }
+        // Fast-tracked (the admin's approval was given automatically): there is
+        // nothing to approve, but the admins still hear that it went up.
+        if (event.adminApproval?.status === 'approved') {
+            const where = event.status === 'approved' ? 'live now' : 'no admin approval needed; waiting for the venue';
+            require('./adminAlertService').notify('eventPosted', {
+                body: `${event.name}${organizerName ? ` by ${organizerName}` : ''} - ${where}`,
+                url: `/events/${event._id}`,
+            });
         }
 
         // If fully approved (a custom venue for a fast-tracked organiser - a

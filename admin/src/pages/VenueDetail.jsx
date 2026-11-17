@@ -12,6 +12,7 @@ import { venueActions, venueAvailable, useConfirmedAction } from '../lib/listing
 import { PageHeader } from '../components/ui/PageHeader';
 import { Card } from '../components/ui/Card';
 import { StatCard } from '../components/ui/StatCard';
+import AfterRazorpay from '../components/AfterRazorpay';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { InfoList } from '../components/ui/InfoList';
 import { Button } from '../components/ui/Button';
@@ -119,7 +120,13 @@ export default function VenueDetail() {
 
             <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
                 <StatCard label="Bookings" value={(stats.totalBookings || 0).toLocaleString('en-IN')} icon={CalendarDays} accent="blue" to={`/bookings?venue=${venue._id}`} hint={`${stats.completedBookings || 0} completed`} />
-                <StatCard label="Received from guests" value={formatInr(stats.totalRevenue || 0)} icon={IndianRupee} accent="green" hint="Paid bookings" />
+                <StatCard
+                    label="Received from guests"
+                    value={formatInr(stats.totalRevenue || 0)}
+                    icon={IndianRupee}
+                    accent="green"
+                    hint={<>Paid bookings<AfterRazorpay amount={stats.totalRevenue} after={stats.afterGateway} fee={stats.gatewayFee} percent={stats.gatewayFeePercent} /></>}
+                />
                 <StatCard label="Day rate" value={rate != null ? formatInr(rate) : '—'} icon={IndianRupee} accent="violet" hint={weekend ? `Weekend ${formatInr(weekend)}` : 'Same every day'} />
                 <StatCard
                     label="Rating"

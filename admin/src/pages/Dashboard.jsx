@@ -11,6 +11,8 @@ import { StatCard } from '../components/ui/StatCard';
 import { Card } from '../components/ui/Card';
 import { ErrorState, Skeleton } from '../components/ui/States';
 import { BarChart } from '../components/ui/BarChart';
+import AfterRazorpay from '../components/AfterRazorpay';
+import { gatewaySplit } from '../lib/useGatewayFee';
 
 const num = (n) => Number(n || 0).toLocaleString('en-IN');
 // Whole rupees for headline figures and chart labels.
@@ -22,6 +24,7 @@ const shortRupees = (n) => {
     if (n >= 1e3) return `₹${+(n / 1e3).toFixed(1)}K`;
     return `₹${Math.round(n)}`;
 };
+const countAxis = (n) => (n >= 1000 ? `${+(n / 1000).toFixed(1)}k` : String(Math.round(n)));
 const monthName = (key) => new Date(`${key}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'short' });
 
 /** % change from last month to this one; null when there is no last month to compare with. */
@@ -31,6 +34,20 @@ function change(series, pick) {
     const before = pick(series[series.length - 2]);
     if (!before) return now ? null : 0;
     return ((now - before) / before) * 100;
+}
+
+/** One count per month as a short chart, titled with this month's figure. */
+function MiniChart({ title, label, data }) {
+    const latest = data[data.length - 1]?.value || 0;
+    return (
+        <div>
+            <div className="mb-2 flex items-baseline justify-between gap-2">
+                <h3 className="text-sm text-gray-300">{title}</h3>
+                <p className="text-xs text-gray-500"><span className="font-semibold tabular-nums text-white">{num(latest)}</span> this month</p>
+            </div>
+            <BarChart label={label} data={data} format={num} axisFormat={countAxis} wholeNumbers steps={2} height={72} />
+        </div>
+    );
 }
 
 // What can be waiting for an admin, and where to go to deal with it. `hideFor`
@@ -56,9 +73,8 @@ function DashboardSkeleton() {
                 <Skeleton className="h-72 rounded-2xl lg:col-span-3" />
                 <Skeleton className="h-72 rounded-2xl lg:col-span-2" />
             </div>
-            <div className="grid gap-6 lg:grid-cols-5">
-                <Skeleton className="h-64 rounded-2xl lg:col-span-3" />
-                <Skeleton className="h-64 rounded-2xl lg:col-span-2" />
+            <div className="grid gap-6 lg:grid-cols-3">
+                {[0, 1, 2].map((i) => <Skeleton key={i} className="h-80 rounded-2xl" />)}
             </div>
         </div>
     );
@@ -99,7 +115,16 @@ export default function Dashboard() {
                             trend={change(trends, (m) => m.ticketRevenue + m.venueRevenue)}
                             icon={IndianRupee}
                             accent="green"
-                            hint={`${rupees(stats.totalRevenue)} all time`}
+                            hint={(() => {
+                                const month = thisMonth ? thisMonth.ticketRevenue + thisMonth.venueRevenue : 0;
+                                const split = gatewaySplit(month, stats.gatewayFeePercent);
+                                return (
+                                    <>
+                                        {rupees(stats.totalRevenue)} all time
+                                        <AfterRazorpay amount={month} after={split.after} fee={split.fee} percent={stats.gatewayFeePercent} />
+                                    </>
+                                );
+                            })()}
                         />
                         <StatCard
                             label="Tickets sold this month"
@@ -124,7 +149,7 @@ export default function Dashboard() {
                             icon={ClipboardCheck}
                             accent="amber"
                             to={stats.pendingEvents ? '/events?tab=pending' : stats.pendingVenues ? '/venues?status=pending' : '/brands?status=pending'}
-                            hint={`${num(stats.pendingVenues)} venues · ${num(stats.pendingEvents)} events · ${num(stats.pendingBrands)} creators`}
+                            hint={[[stats.pendingVenues, 'venue'], [stats.pendingEvents, 'event'], [stats.pendingBrands, 'creator']].map(([n, w]) => `${num(n)} ${w}${n === 1 ? '' : 's'}`).join(' · ')}
                         />
                     </div>
 
@@ -177,46 +202,61 @@ export default function Dashboard() {
                             )}
                         </Card>
 
-                        {/* Revenue */}
+                        {/* Revenue: what guests paid, what Razorpay keeps, what is left */}
                         <Card className="lg:col-span-2" title="Platform revenue" description="Ticket sales and paid venue bookings">
+                            <p className="text-xs text-gray-400">Collected from guests</p>
                             <div className="text-brand-grad text-3xl font-semibold tabular-nums">{formatInr(stats.totalRevenue || 0)}</div>
-                            <dl className="mt-5 grid grid-cols-2 gap-3">
-                                <div className="rounded-xl border border-line bg-surface-raised p-3.5">
-                                    <dt className="text-xs text-gray-400">Tickets</dt>
-                                    <dd className="mt-1 text-base font-semibold tabular-nums text-white">{formatInr(stats.ticketRevenue || 0)}</dd>
-                                    <dd className="mt-0.5 text-xs text-gray-500">{num(stats.totalTickets)} sold</dd>
+                            <dl className="mt-5 divide-y divide-line rounded-xl border border-line bg-surface-raised text-sm">
+                                <div className="flex items-baseline justify-between gap-3 px-3.5 py-2.5">
+                                    <dt className="text-gray-300">Tickets <span className="text-xs text-gray-500">· {num(stats.totalTickets)} sold</span></dt>
+                                    <dd className="tabular-nums text-white">{formatInr(stats.ticketRevenue || 0)}</dd>
                                 </div>
-                                <div className="rounded-xl border border-line bg-surface-raised p-3.5">
-                                    <dt className="text-xs text-gray-400">Venue bookings</dt>
-                                    <dd className="mt-1 text-base font-semibold tabular-nums text-white">{formatInr(stats.venueRevenue || 0)}</dd>
-                                    <dd className="mt-0.5 text-xs text-gray-500">received so far</dd>
+                                <div className="flex items-baseline justify-between gap-3 px-3.5 py-2.5">
+                                    <dt className="text-gray-300">Venue bookings <span className="text-xs text-gray-500">· received so far</span></dt>
+                                    <dd className="tabular-nums text-white">{formatInr(stats.venueRevenue || 0)}</dd>
+                                </div>
+                                <div className="flex items-baseline justify-between gap-3 px-3.5 py-2.5">
+                                    <dt className="text-gray-300">
+                                        Razorpay fee <span className="text-xs text-gray-500">· {stats.gatewayFeePercent ?? 2}%, estimated</span>
+                                    </dt>
+                                    <dd className="tabular-nums text-red-300">−{formatInr(stats.gatewayFee || 0)}</dd>
+                                </div>
+                                <div className="flex items-baseline justify-between gap-3 px-3.5 py-3">
+                                    <dt className="font-medium text-white">After Razorpay</dt>
+                                    <dd className="text-base font-semibold tabular-nums text-white">{formatInr(stats.netRevenue || 0)}</dd>
                                 </div>
                             </dl>
                         </Card>
                     </div>
 
-                    {/* Six months of activity */}
+                    {/* Six months of activity. Two counts on very different scales
+                        (a handful of events, dozens of tickets) get a small chart each
+                        rather than sharing one axis. */}
                     {trends.length > 0 && (
-                        <div className="stagger grid gap-6 lg:grid-cols-5">
-                            <Card className="lg:col-span-3" title="Money collected" description="Ticket sales and venue bookings paid, per month">
+                        <div className="stagger grid gap-6 lg:grid-cols-3">
+                            <Card title="Events & tickets" description="Events held and tickets sold, per month">
+                                <div className="space-y-5">
+                                    <MiniChart title="Events held" label="Events held per month" data={trends.map((m) => ({ label: monthName(m.month), value: m.eventsHeld || 0 }))} />
+                                    <MiniChart title="Tickets sold" label="Tickets sold per month" data={trends.map((m) => ({ label: monthName(m.month), value: m.ticketsSold || 0 }))} />
+                                </div>
+                            </Card>
+                            <Card title="Venue bookings" description="Bookings used and venues booked, per month">
+                                <div className="space-y-5">
+                                    <MiniChart title="Bookings" label="Venue bookings per month" data={trends.map((m) => ({ label: monthName(m.month), value: m.venueBookings || 0 }))} />
+                                    <MiniChart title="Venues booked" label="Different venues booked per month" data={trends.map((m) => ({ label: monthName(m.month), value: m.venuesBooked || 0 }))} />
+                                </div>
+                            </Card>
+                            <Card title="Money collected" description="Ticket sales and venue bookings paid, per month">
                                 <BarChart
                                     label="Money collected per month"
                                     data={trends.map((m) => ({
                                         label: monthName(m.month),
                                         value: m.ticketRevenue + m.venueRevenue,
-                                        detail: `Tickets ${rupees(m.ticketRevenue)} · Venues ${rupees(m.venueRevenue)}`,
+                                        detail: `Tickets ${rupees(m.ticketRevenue)} · Venues ${rupees(m.venueRevenue)} · After Razorpay ${rupees(gatewaySplit(m.ticketRevenue + m.venueRevenue, stats.gatewayFeePercent).after)}`,
                                     }))}
                                     format={rupees}
                                     axisFormat={shortRupees}
-                                />
-                            </Card>
-                            <Card className="lg:col-span-2" title="New users" description="Sign-ups per month">
-                                <BarChart
-                                    label="New users per month"
-                                    data={trends.map((m) => ({ label: monthName(m.month), value: m.newUsers, detail: `${num(m.ticketsSold)} tickets sold` }))}
-                                    format={num}
-                                    wholeNumbers
-                                    axisFormat={(n) => (n >= 1000 ? `${+(n / 1000).toFixed(1)}k` : String(Math.round(n)))}
+                                    height={236}
                                 />
                             </Card>
                         </div>

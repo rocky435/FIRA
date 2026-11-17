@@ -4,6 +4,7 @@ import adminApi from '../api/adminApi';
 import { getAdminRoleFromToken } from '../lib/adminRole';
 import { formatDateTime } from '../lib/formatDateTime';
 import { formatInr } from '../lib/formatInr';
+import { useGatewayFeePercent, gatewaySplit } from '../lib/useGatewayFee';
 import { buildEntryBody, initialSettlementState, settlementReducer } from '../lib/listingSettlementState';
 import {
     emptyLedgerMessage,
@@ -287,6 +288,10 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
     const overSettled = isOverSettled(data?.state);
     const outstanding = pinnedOutstanding(money, data?.state);
     const groups = moneyGroups({ kind, money, state: data?.state });
+    // Razorpay's estimated share of what buyers paid. Shown for the admin only:
+    // FIRA bears it, so it does not change what the owner is owed below.
+    const feePercent = useGatewayFeePercent();
+    const razorpay = gatewaySplit(money.grossCollected, feePercent);
 
     // Requirement 1.3: newest first. Sorted here rather than trusted from the
     // wire, so the displayed order holds whatever the transport does.
@@ -324,6 +329,20 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
 
             {/* Requirement 2.1/2.2: Refunded_Total is a figure of its own — it
                 belongs to neither group named in 2.3. */}
+            {feePercent != null && money.grossCollected > 0 && (
+                <div className="rounded-xl border border-line bg-surface-raised px-5 py-3 text-sm">
+                    <div className="flex items-baseline justify-between gap-4">
+                        <span className="text-gray-400">Razorpay fee <span className="text-xs text-gray-500">· {feePercent}% of {formatInr(money.grossCollected)}, estimated</span></span>
+                        <span className="tabular-nums text-red-300">−{formatInr(razorpay.fee)}</span>
+                    </div>
+                    <div className="mt-1.5 flex items-baseline justify-between gap-4">
+                        <span className="text-gray-300">Reaches FIRA after Razorpay</span>
+                        <span className="tabular-nums font-medium text-white">{formatInr(razorpay.after)}</span>
+                    </div>
+                    <p className="mt-1.5 text-xs text-gray-500">Paid by FIRA. It does not change what the {kind === 'venue' ? 'owner' : 'organiser'} is owed.</p>
+                </div>
+            )}
+
             <div className="flex items-baseline justify-between gap-4 rounded-xl border border-line bg-surface-raised px-5 py-3">
                 <span className="text-sm text-gray-400">Refunded to buyers</span>
                 <span className="text-sm text-gray-200 tabular-nums">{formatInr(money.refundedTotal)}</span>

@@ -127,11 +127,23 @@ const adminApi = {
         return handle(res, 'Failed to fetch stats');
     },
 
+    /** The Razorpay fee rate (percent) the admin panel estimates deductions with. */
+    async getGatewayFee() {
+        const res = await fetch(`${API_BASE}/gateway-fee`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch the Razorpay fee rate');
+    },
+
     // ================== USERS ==================
     async getUsers(params = {}) {
         const query = new URLSearchParams(params).toString();
         const res = await fetch(`${API_BASE}/users?${query}`, { headers: authHeaders() });
         return handle(res, 'Failed to fetch users');
+    },
+
+    /** Twelve months of sign-ups and the all-time total, for the Users page. */
+    async getSignups() {
+        const res = await fetch(`${API_BASE}/users/signups`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch sign-ups');
     },
 
     async getUserById(userId) {

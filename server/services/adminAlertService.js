@@ -1,7 +1,8 @@
 /**
  * Alerts to admins' phones and desktops when something is waiting for them:
  * a venue, event or creator to review, an ID check, a refund to pay, a removal
- * request. Delivered as Web Push to the installed admin app only
+ * request - and, for the record, events and venues that went up without
+ * needing an admin's approval. Delivered as Web Push to the installed admin app only
  * (PushSubscription.app = 'admin'), never to the customer website.
  *
  * Who gets what:
@@ -23,6 +24,10 @@ const KINDS = {
     idCheck: { title: 'ID check waiting', url: '/id-checks', everyone: false, plural: (n) => `${n} ID checks waiting` },
     refund: { title: 'Refund to pay', url: '/refunds', everyone: false, plural: (n) => `${n} refunds to pay` },
     removal: { title: 'Removal requested', url: '/events', everyone: false, plural: (n) => `${n} removal requests` },
+    // For the record, not for action: listings that reached FIRA without an
+    // admin approval (a fast-tracked, verified organiser), so none go unseen.
+    eventPosted: { title: 'New event posted', url: '/events', everyone: true, plural: (n) => `${n} new events posted` },
+    venueListed: { title: 'New venue listed', url: '/venues', everyone: true, plural: (n) => `${n} new venues listed` },
 };
 
 // How long to gather a burst before sending one summary.

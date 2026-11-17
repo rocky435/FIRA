@@ -29,6 +29,7 @@ import BankDetails from '../components/BankDetails';
 import EventRejectDialog from '../components/EventRejectDialog';
 import EventStatusBadge from '../components/EventStatusBadge';
 import ListingSettlementPanel from '../components/ListingSettlementPanel';
+import AfterRazorpay from '../components/AfterRazorpay';
 
 const BUYERS_PER_PAGE = 10;
 
@@ -208,7 +209,20 @@ export default function EventDetail() {
                 </StatCard>
                 {/* Σ ticket prices, so before discounts, fee and GST - the
                     Settlement panel below breaks down what buyers paid. */}
-                <StatCard label="Ticket sales" value={formatInr(stats.totalRevenue || 0)} icon={IndianRupee} accent="green" hint="Full price, before discounts" />
+                <StatCard
+                    label="Ticket sales"
+                    value={formatInr(stats.totalRevenue || 0)}
+                    icon={IndianRupee}
+                    accent="green"
+                    hint={(
+                        <>
+                            Full price, before discounts
+                            {/* Razorpay's fee is on what buyers paid, not the full price. */}
+                            {stats.collected > 0 && <span className="mt-0.5 block">Buyers paid <span className="tabular-nums text-gray-300">{formatInr(stats.collected)}</span></span>}
+                            <AfterRazorpay amount={stats.collected} after={stats.afterGateway} fee={stats.gatewayFee} percent={stats.gatewayFeePercent} />
+                        </>
+                    )}
+                />
                 <StatCard label="Ticket price" value={<TierPriceRange event={event} />} icon={Tags} accent="violet" hint={totals.count > 1 ? 'Every category below' : (event.ticketType === 'free' ? 'Free event' : 'One category')} />
                 <StatCard label="Orders" value={(stats.totalBookings ?? tickets.length).toLocaleString('en-IN')} icon={UsersIcon} accent="amber" hint="Purchases, any size" />
             </div>

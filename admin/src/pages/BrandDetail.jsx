@@ -11,6 +11,7 @@ import { brandActions, brandAvailable, useConfirmedAction } from '../lib/listing
 import { PageHeader } from '../components/ui/PageHeader';
 import { Card } from '../components/ui/Card';
 import { StatCard } from '../components/ui/StatCard';
+import AfterRazorpay from '../components/AfterRazorpay';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { InfoList } from '../components/ui/InfoList';
 import { Button } from '../components/ui/Button';
@@ -126,7 +127,19 @@ export default function BrandDetail() {
                     accent="blue"
                     hint={`${(stats.totalEvents ?? events.length).toLocaleString('en-IN')} created in total`}
                 />
-                <StatCard label="Ticket sales" value={formatInr(stats.totalRevenue || 0)} icon={IndianRupee} accent="green" hint="All events, full price before discounts" />
+                <StatCard
+                    label="Ticket sales"
+                    value={formatInr(stats.totalRevenue || 0)}
+                    icon={IndianRupee}
+                    accent="green"
+                    hint={(
+                        <>
+                            All events, full price before discounts
+                            {stats.collected > 0 && <span className="mt-0.5 block">Buyers paid <span className="tabular-nums text-gray-300">{formatInr(stats.collected)}</span></span>}
+                            <AfterRazorpay amount={stats.collected} after={stats.afterGateway} fee={stats.gatewayFee} percent={stats.gatewayFeePercent} />
+                        </>
+                    )}
+                />
                 <StatCard label="Followers" value={(stats.followers || 0).toLocaleString('en-IN')} icon={UsersIcon} accent="violet" />
                 <StatCard label="Profile views" value={(stats.views || 0).toLocaleString('en-IN')} icon={Eye} accent="amber" />
             </div>

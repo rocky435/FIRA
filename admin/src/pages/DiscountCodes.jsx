@@ -19,6 +19,7 @@ import { EmptyState, ErrorState, TableSkeleton, Skeleton } from '../components/u
 import { useConfirm } from '../components/ui/confirmContext';
 import { useToast } from '../components/ui/toastContext';
 import BulkActionBar from '../components/BulkActionBar';
+import { useGatewayFeePercent, gatewaySplit } from '../lib/useGatewayFee';
 
 const PAGE_SIZE = 10;
 const STATUSES = ['all', 'active', 'inactive'];
@@ -38,6 +39,7 @@ const loadCodes = () => adminApi.getDiscountCodes();
 
 /** Level 3: usage figures for one code, fetched the first time it is opened. */
 function CodeAnalytics({ entry }) {
+    const feePercent = useGatewayFeePercent();
     if (!entry || entry.loading) {
         return (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3" role="status" aria-label="Loading analytics">
@@ -50,11 +52,14 @@ function CodeAnalytics({ entry }) {
     const tiles = [
         { label: 'Total uses', value: (a.totalUses || 0).toLocaleString('en-IN') },
         { label: 'Total revenue', value: formatInr(a.totalRevenue || 0) },
+        ...(feePercent != null && a.totalRevenue > 0
+            ? [{ label: `After Razorpay (−${feePercent}%)`, value: formatInr(gatewaySplit(a.totalRevenue, feePercent).after) }]
+            : []),
         { label: 'Purchases', value: (a.purchases?.length || 0).toLocaleString('en-IN') },
     ];
     return (
         <div>
-            <dl className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <dl className={`mb-4 grid grid-cols-2 gap-3 ${tiles.length > 3 ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
                 {tiles.map((t) => (
                     <div key={t.label} className="rounded-xl border border-line bg-surface-raised p-3">
                         <dt className="text-xs text-gray-400">{t.label}</dt>
