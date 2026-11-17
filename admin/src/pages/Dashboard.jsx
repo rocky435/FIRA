@@ -219,7 +219,7 @@ export default function Dashboard() {
                                     <dt className="text-gray-300">
                                         Razorpay fee <span className="text-xs text-gray-500">· {stats.gatewayFeePercent ?? 2}%, estimated</span>
                                     </dt>
-                                    <dd className="tabular-nums text-red-300">−{formatInr(stats.gatewayFee || 0)}</dd>
+                                    <dd className="whitespace-nowrap tabular-nums text-red-300">−{formatInr(stats.gatewayFee || 0)}</dd>
                                 </div>
                                 <div className="flex items-baseline justify-between gap-3 px-3.5 py-3">
                                     <dt className="font-medium text-white">After Razorpay</dt>

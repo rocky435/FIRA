@@ -183,9 +183,9 @@ export function moneyGroups({ kind, money = {}, state }) {
                     ...(hasCommission(money) ? { sign: '=' } : {}),
                     hint: hasCommission(money) ? 'The share minus the commission, in whole rupees' : 'The share above in whole rupees',
                 },
-                { label: 'Settled to date', value: money.settledToDate },
-                { label: 'Outstanding', value: pinnedOutstanding(money, state), emphasis: true },
-                ...(isOverSettled(state) ? [{ label: 'Excess settled', value: money.excessAmount }] : []),
+                { label: 'Paid so far', value: money.settledToDate },
+                { label: 'Still to pay', value: pinnedOutstanding(money, state), emphasis: true },
+                ...(isOverSettled(state) ? [{ label: 'Paid too much', value: money.excessAmount }] : []),
             ],
         },
     ];

@@ -90,9 +90,36 @@ router.get('/stats', async (req, res) => {
     }
 });
 
+// Transfers already made to organisers or venue owners (the "Past" tab).
+router.get('/payout-history', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        res.json(await adminService.getPayoutHistory(req.query));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Every payment: successful, failed, refunded, pending.
+router.get('/payments', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        res.json(await adminService.getPayments(req.query));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // The Razorpay fee rate the admin panel shows deductions with (estimate).
 router.get('/gateway-fee', (req, res) => {
     res.json(adminService.getGatewayFee());
+});
+
+// The top bar's universal search.
+router.get('/search', async (req, res) => {
+    try {
+        res.json(await adminService.search(req.query.q, req.user.adminRole || null));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ================== USERS ==================
@@ -221,6 +248,15 @@ router.get('/venue-owners', async (req, res) => {
 
 // Everyone who organises events, with their events, PAN status and bank details.
 // Bank details and PAN: admins and super admins only.
+// Remove someone's venue-owner side, keeping their account (they apply again to host).
+router.delete('/venue-owners/:id', roleGuard(['super_admin', 'admin']), async (req, res) => {
+    try {
+        res.json(await adminService.removeVenueOwnerAccess(req.params.id, req.user._id));
+    } catch (error) {
+        res.status(error.status || 400).json({ error: error.message });
+    }
+});
+
 router.get('/event-organisers', roleGuard(['super_admin', 'admin']), async (req, res) => {
     try {
         res.json(await adminService.getEventOrganisers(req.query));

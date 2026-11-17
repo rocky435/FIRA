@@ -65,7 +65,7 @@ const MONEY = {
     const buyer = groups[0].rows.map((r) => r.label);
     const owner = groups[1].rows.map((r) => r.label);
     assert.deepEqual(buyer, ['Ticket sales (full price)', 'Platform fee', 'GST on platform fee', 'Discounts', 'By organizer', 'Gross collected']);
-    assert.deepEqual(owner, ["Organizer's share", 'Net payable', 'Settled to date', 'Outstanding']);
+    assert.deepEqual(owner, ["Organizer's share", 'Net payable', 'Paid so far', 'Still to pay']);
     // No automatic commission row anywhere.
     assert.ok(![...buyer, ...owner].some((l) => /commission/i.test(l)), 'no commission row');
 
@@ -95,7 +95,7 @@ const MONEY = {
     assert.equal(byLabel['Net payable'], MONEY.netPayable);
     assert.equal(byLabel["Organizer's share"], MONEY.ownerShare);
     assert.equal(byLabel['Discounts'], MONEY.discountTotal);
-    assert.equal(byLabel['Outstanding'], MONEY.outstandingAmount);
+    assert.equal(byLabel['Still to pay'], MONEY.outstandingAmount);
 }
 
 /* ---- Requirement 5.6: the state badge, including over_settled ---- */
@@ -123,12 +123,12 @@ const MONEY = {
     assert.equal(pinnedOutstanding(MONEY, 'partially_settled'), MONEY.outstandingAmount, 'otherwise the real figure');
 
     const ownerRows = moneyGroups({ kind: 'event', money: over, state: 'over_settled' })[1].rows;
-    const excess = ownerRows.find((r) => r.label === 'Excess settled');
-    assert.ok(excess, 'over_settled adds an Excess settled row');
+    const excess = ownerRows.find((r) => r.label === 'Paid too much');
+    assert.ok(excess, 'over_settled adds a Paid too much row');
     assert.equal(excess.value, 7500);
-    assert.equal(ownerRows.find((r) => r.label === 'Outstanding').value, 0, 'and Outstanding shows ₹0');
+    assert.equal(ownerRows.find((r) => r.label === 'Still to pay').value, 0, 'and Still to pay shows ₹0');
     // A non-over-settled listing has no excess row.
-    assert.ok(!moneyGroups({ kind: 'event', money: MONEY, state: 'partially_settled' })[1].rows.some((r) => r.label === 'Excess settled'));
+    assert.ok(!moneyGroups({ kind: 'event', money: MONEY, state: 'partially_settled' })[1].rows.some((r) => r.label === 'Paid too much'));
 }
 
 /* ---- Requirement 1.7: nothing to settle when nothing is owed ---- */
@@ -180,7 +180,7 @@ const MONEY = {
 {
     const withRate = { ...MONEY, ownerShare: 20000, commissionPercentage: 4, commissionAmount: 800, netPayable: 19200, settledToDate: 0, outstandingAmount: 19200 };
     const rows = moneyGroups({ kind: 'event', money: withRate, state: 'not_settled' })[1].rows;
-    assert.deepEqual(rows.map((r) => r.label), ["Organizer's share", 'FIRA commission (4%)', 'Net payable', 'Settled to date', 'Outstanding']);
+    assert.deepEqual(rows.map((r) => r.label), ["Organizer's share", 'FIRA commission (4%)', 'Net payable', 'Paid so far', 'Still to pay']);
     assert.equal(rows[1].value, 800);
     assert.equal(rows[1].sign, '−', 'the commission is taken off the share');
     assert.equal(rows[2].sign, '=', 'net payable is the result');

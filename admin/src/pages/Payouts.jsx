@@ -16,6 +16,7 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { Table, THead, Th, TBody, Td } from '../components/ui/Table';
 import { Button } from '../components/ui/Button';
 import { EmptyState, ErrorState, Skeleton, TableSkeleton } from '../components/ui/States';
+import PayoutHistory from '../components/PayoutHistory';
 
 const KINDS = [
     { value: 'all', label: 'All' },
@@ -40,7 +41,37 @@ const FIXED = {
     venue: { title: 'Payouts to venue owners', description: 'What each venue owner is owed from bookings, most owed first.' },
 };
 
+// The two menu pages split into what is still to pay and what has been paid.
+const VIEWS = [
+    { value: 'due', label: 'To be done' },
+    { value: 'past', label: 'Past' },
+];
+
 export default function Payouts({ fixedKind }) {
+    const { params, set } = useListParams({ view: 'due' });
+    const fixed = FIXED[fixedKind];
+    const view = fixed && params.view === 'past' ? 'past' : 'due';
+    // q and page belong to the Past list; drop them when going back.
+    const tabs = fixed ? (
+        <FilterTabs label="Payouts shown" options={VIEWS} value={view} onChange={(v) => set({ view: v, q: '', page: '' })} className="mb-5" />
+    ) : null;
+
+    if (view === 'past') {
+        return (
+            <div className="p-4 sm:p-6 lg:p-8">
+                <PageHeader
+                    title={fixed.title}
+                    description={`Every transfer already made to ${fixedKind === 'venue' ? 'venue owners' : 'organisers'}, newest first.`}
+                />
+                {tabs}
+                <PayoutHistory kind={fixedKind} />
+            </div>
+        );
+    }
+    return <PayoutQueue fixedKind={fixedKind} tabs={tabs} />;
+}
+
+function PayoutQueue({ fixedKind, tabs }) {
     // Kind and the "show fully paid" switch live in the URL, so back/refresh keep them.
     const { params, set } = useListParams({ kind: 'all', settled: '' });
     const kind = FIXED[fixedKind] ? fixedKind : (KINDS.some((k) => k.value === params.kind) ? params.kind : 'all');
@@ -68,6 +99,7 @@ export default function Payouts({ fixedKind }) {
                     </Button>
                 )}
             />
+            {tabs}
 
             {totals ? (
                 <div className="mb-4 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">

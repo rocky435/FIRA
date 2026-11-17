@@ -255,6 +255,200 @@ const adminService = {
         }));
     },
 
+    /**
+     * Every payment, newest first: who paid, what for, how much, how, and how it
+     * ended. `status` pending covers processing too. `search` matches the
+     * payer's name, email or phone, or a Razorpay payment/order id.
+     */
+    async getPayments(query = {}) {
+        const Payment = require('../models/Payment');
+        const { status = 'all', kind = 'all', search } = query;
+        const pageNum = Math.max(1, parseInt(query.page) || 1);
+        const limitNum = Math.min(100, Math.max(1, parseInt(query.limit) || 20));
+
+        const base = {};
+        if (kind === 'venue') base.referenceModel = 'Booking';
+        if (kind === 'ticket') base.referenceModel = { $in: ['Event', 'Ticket'] };
+        if (search) {
+            const people = await User.find({ $or: [{ name: searchRegex(search) }, { email: searchRegex(search) }, { phone: searchRegex(search) }] }).distinct('_id');
+            base.$or = [
+                { user: { $in: people } },
+                { gatewayTransactionId: searchRegex(search) },
+                { gatewayOrderId: searchRegex(search) },
+            ];
+        }
+        const STATUS = { success: 'success', failed: 'failed', refunded: 'refunded', pending: { $in: ['pending', 'processing'] } };
+
+        const [countRows, sumRows] = await Promise.all([
+            Payment.aggregate([{ $match: base }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
+            Payment.aggregate([
+                { $match: { ...base, status: 'success' } },
+                { $group: { _id: null, total: { $sum: { $ifNull: ['$totalAmount', '$amount'] } } } },
+            ]),
+        ]);
+        const n = (k) => countRows.filter((r) => (Array.isArray(k) ? k : [k]).includes(r._id)).reduce((a, r) => a + r.n, 0);
+        const counts = {
+            all: countRows.reduce((a, r) => a + r.n, 0),
+            success: n('success'), failed: n('failed'), refunded: n('refunded'), pending: n(['pending', 'processing']),
+        };
+
+        const filter = STATUS[status] ? { ...base, status: STATUS[status] } : base;
+        const [rows, total] = await Promise.all([
+            Payment.find(filter)
+                .select('user referenceModel referenceId amount totalAmount status paymentMethod failureReason gatewayTransactionId gatewayOrderId discountCode discountAmount paidAt createdAt')
+                .populate('user', 'name email phone')
+                .sort({ createdAt: -1 })
+                .skip((pageNum - 1) * limitNum)
+                .limit(limitNum)
+                .lean(),
+            Payment.countDocuments(filter),
+        ]);
+
+        // What each payment was for: an event (directly or through a ticket), or
+        // a venue through its booking. Looked up in three batches, not per row.
+        const ids = (model) => rows.filter((r) => r.referenceModel === model).map((r) => r.referenceId);
+        const [tickets, bookings] = await Promise.all([
+            Ticket.find({ _id: { $in: ids('Ticket') } }).select('event').lean(),
+            Booking.find({ _id: { $in: ids('Booking') } }).select('venue').lean(),
+        ]);
+        const ticketEvent = new Map(tickets.map((t) => [String(t._id), t.event]));
+        const bookingVenue = new Map(bookings.map((b) => [String(b._id), b.venue]));
+        const eventIds = [...ids('Event'), ...tickets.map((t) => t.event)];
+        const [events, venues] = await Promise.all([
+            Event.find({ _id: { $in: eventIds } }).select('name').lean(),
+            Venue.find({ _id: { $in: bookings.map((b) => b.venue) } }).select('name').lean(),
+        ]);
+        const eventName = new Map(events.map((e) => [String(e._id), e.name]));
+        const venueName = new Map(venues.map((v) => [String(v._id), v.name]));
+
+        const payments = rows.map((p) => {
+            const isVenue = p.referenceModel === 'Booking';
+            const targetId = isVenue
+                ? bookingVenue.get(String(p.referenceId))
+                : p.referenceModel === 'Ticket' ? ticketEvent.get(String(p.referenceId)) : p.referenceId;
+            const name = targetId ? (isVenue ? venueName : eventName).get(String(targetId)) : null;
+            return {
+                _id: p._id,
+                user: p.user || null,
+                kind: isVenue ? 'venue' : 'ticket',
+                for: targetId ? { name: name || (isVenue ? 'Deleted venue' : 'Deleted event'), link: name ? `/${isVenue ? 'venues' : 'events'}/${targetId}` : null } : null,
+                amount: p.totalAmount ?? p.amount ?? 0,
+                status: p.status,
+                method: p.paymentMethod || null,
+                failureReason: p.failureReason || null,
+                discountCode: p.discountCode || null,
+                discountAmount: p.discountAmount || 0,
+                razorpayPaymentId: p.gatewayTransactionId || null,
+                razorpayOrderId: p.gatewayOrderId || null,
+                paidAt: p.paidAt || null,
+                createdAt: p.createdAt,
+            };
+        });
+
+        return {
+            payments,
+            counts,
+            successTotal: round2(sumRows[0]?.total || 0),
+            total,
+            totalPages: Math.ceil(total / limitNum),
+            currentPage: pageNum,
+        };
+    },
+
+    /**
+     * Transfers already made to organisers (kind 'event') or venue owners
+     * (kind 'venue'), newest first, from the settlement ledger. A transfer that
+     * was later reversed is listed once, marked reversed, and left out of
+     * totalPaid. `search` matches the person, the listing or the bank reference.
+     */
+    async getPayoutHistory(query = {}) {
+        const Settlement = require('../models/Settlement');
+        const kind = query.kind === 'venue' ? 'venue' : 'event';
+        const pageNum = Math.max(1, parseInt(query.page) || 1);
+        const limitNum = Math.min(100, Math.max(1, parseInt(query.limit) || 20));
+        const Listing = kind === 'venue' ? Venue : Event;
+
+        const filter = { listingKind: kind, isReversalOf: null };
+        if (query.search) {
+            const [people, listings] = await Promise.all([
+                User.find({ $or: [{ name: searchRegex(query.search) }, { email: searchRegex(query.search) }, { phone: searchRegex(query.search) }] }).distinct('_id'),
+                Listing.find({ name: searchRegex(query.search) }).distinct('_id'),
+            ]);
+            filter.$or = [
+                { recipient: { $in: people } },
+                { listing: { $in: listings } },
+                { settlementReference: searchRegex(query.search) },
+            ];
+        }
+
+        const [rows, total] = await Promise.all([
+            Settlement.find(filter)
+                .populate('recipient', 'name email phone')
+                .populate('recordedBy', 'name')
+                .sort({ settledAt: -1, _id: -1 })
+                .skip((pageNum - 1) * limitNum)
+                .limit(limitNum)
+                .lean(),
+            Settlement.countDocuments(filter),
+        ]);
+        const allIds = await Settlement.find(filter).distinct('_id');
+        const reversals = await Settlement.find({ isReversalOf: { $in: allIds } }).select('isReversalOf settledAt reversalReason').lean();
+        const reversalOf = new Map(reversals.map((r) => [String(r.isReversalOf), r]));
+        const [sumRow] = await Settlement.aggregate([
+            { $match: { _id: { $in: allIds.filter((id) => !reversalOf.has(String(id))) } } },
+            { $group: { _id: null, total: { $sum: '$settledAmount' } } },
+        ]);
+
+        const listings = await Listing.find({ _id: { $in: rows.map((r) => r.listing) } }).select('name').lean();
+        const listingName = new Map(listings.map((l) => [String(l._id), l.name]));
+
+        return {
+            payouts: rows.map((r) => {
+                const rev = reversalOf.get(String(r._id));
+                const name = listingName.get(String(r.listing));
+                return {
+                    _id: r._id,
+                    kind,
+                    listing: { name: name || (kind === 'venue' ? 'Deleted venue' : 'Deleted event'), link: name ? `/${kind === 'venue' ? 'venues' : 'events'}/${r.listing}` : null },
+                    recipient: r.recipient || null,
+                    amount: r.settledAmount,
+                    reference: r.settlementReference || null,
+                    method: r.method,
+                    settledAt: r.settledAt,
+                    notes: r.adminNotes || null,
+                    recordedBy: r.recordedBy?.name || null,
+                    reversed: rev ? { at: rev.settledAt, reason: rev.reversalReason || null } : null,
+                };
+            }),
+            totalPaid: round2(sumRow?.total || 0),
+            total,
+            totalPages: Math.ceil(total / limitNum),
+            currentPage: pageNum,
+        };
+    },
+
+    /**
+     * The admin's one search box: up to five each of people (name, email or
+     * phone), events, venues (name or city) and creators. Moderators cannot
+     * open user accounts, so people are left out for them.
+     */
+    async search(q, adminRole) {
+        const empty = { users: [], events: [], venues: [], brands: [] };
+        const term = String(q || '').trim();
+        if (term.length < 2) return empty;
+        const rx = searchRegex(term);
+        const LIMIT = 5;
+        const [users, events, venues, brands] = await Promise.all([
+            adminRole === 'moderator'
+                ? []
+                : User.find({ $or: [{ name: rx }, { email: rx }, { phone: rx }] }).select('name email phone isBlocked').sort({ createdAt: -1 }).limit(LIMIT).lean(),
+            Event.find({ name: rx, isDeleted: { $ne: true } }).select('name status startDateTime').sort({ startDateTime: -1 }).limit(LIMIT).lean(),
+            Venue.find({ $or: [{ name: rx }, { 'address.city': rx }], isDeleted: { $ne: true } }).select('name status address.city').sort({ createdAt: -1 }).limit(LIMIT).lean(),
+            BrandProfile.find({ name: rx }).select('name status type').sort({ createdAt: -1 }).limit(LIMIT).lean(),
+        ]);
+        return { users, events, venues, brands };
+    },
+
     /** The Razorpay fee rate the admin panel estimates with. */
     getGatewayFee() {
         return { percent: gatewayFeePercent() };
@@ -284,7 +478,8 @@ const adminService = {
         if (search) {
             filter.$or = [
                 { name: searchRegex(search) },
-                { email: searchRegex(search) }
+                { email: searchRegex(search) },
+                { phone: searchRegex(search) }
             ];
         }
         // `roles` is the source of truth (a user can be both user and venue_owner);
@@ -591,20 +786,19 @@ const adminService = {
             .select('name status address capacity owner createdAt')
             .sort({ createdAt: -1 });
 
+        // Everyone who is a host: owners of a venue, and everyone holding the
+        // venue-owner role - including those who have not listed one yet, who
+        // a venue-only list never showed.
         const ownerIds = [...new Set(venues.map((v) => String(v.owner)).filter(Boolean))];
-        if (ownerIds.length === 0) return { owners: [] };
-
-        const ownerFilter = { _id: { $in: ownerIds } };
-        if (search) {
-            ownerFilter.$or = [
-                { name: searchRegex(search) },
-                { email: searchRegex(search) }
-            ];
-        }
+        const ownerFilter = { $or: [{ _id: { $in: ownerIds } }, { roles: 'venue_owner' }, { role: 'venue_owner' }] };
+        const filter = search
+            ? { $and: [ownerFilter, { $or: [{ name: searchRegex(search) }, { email: searchRegex(search) }, { phone: searchRegex(search) }] }] }
+            : ownerFilter;
 
         // bankDetails is intentionally selected — admin-only read (Flow 8.6).
-        const owners = await User.find(ownerFilter)
-            .select('name email phone role roles adminRole bankDetails govIdStatus');
+        const owners = await User.find(filter)
+            .select('name email phone role roles adminRole bankDetails govIdStatus businessName createdAt')
+            .sort({ createdAt: -1 });
 
         const venuesByOwner = venues.reduce((acc, v) => {
             const key = String(v.owner);
@@ -626,23 +820,78 @@ const adminService = {
      * only once it is verified), bank details (admin-only read, Flow 8.6),
      * creator profile and verified badge.
      */
+    /**
+     * Take away someone's venue-owner side and keep their account: tickets,
+     * bookings, profile and bank details (also used for organiser payouts)
+     * stay. Their host details and ID are cleared, so "Become a host" starts
+     * again from the beginning, ID review included. Only once they have no
+     * venue left on FIRA - delete those first.
+     */
+    async removeVenueOwnerAccess(userId, adminUserId) {
+        const user = await User.findById(userId);
+        if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+        const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : [user.role];
+        if (!roles.includes('venue_owner') && user.role !== 'venue_owner') {
+            throw Object.assign(new Error('This person is not a venue owner.'), { status: 400 });
+        }
+        const venues = await Venue.countDocuments({ owner: user._id, isDeleted: { $ne: true } });
+        if (venues > 0) {
+            throw Object.assign(new Error(`They still have ${venues} venue${venues === 1 ? '' : 's'} on FIRA. Delete ${venues === 1 ? 'it' : 'them'} first.`), { status: 409 });
+        }
+
+        const nextRoles = roles.filter((r) => r !== 'venue_owner');
+        // A targeted update, not save(): older accounts can miss fields a full
+        // validation would demand, and only these fields are meant to change.
+        await User.updateOne({ _id: user._id }, {
+            $set: {
+                roles: nextRoles.length ? nextRoles : ['user'],
+                role: user.role === 'venue_owner' ? 'user' : user.role,
+                businessName: null, businessPhone: null,
+                govIdType: null, govIdNumber: null, govIdDocument: null,
+                govIdStatus: 'none', govIdVerified: false, govIdRejectionReason: null,
+                govIdReviewedAt: null, govIdReviewedBy: null,
+            },
+        });
+
+        await adminService.recordAdminAction({
+            adminUser: adminUserId,
+            action: 'update',
+            entityType: 'user',
+            entityId: user._id,
+            metadata: { name: user.name, field: 'venueOwnerAccess', from: 'venue_owner', to: 'removed' },
+        });
+        await require('./notificationService').createNotification({
+            userId: user._id,
+            channel: 'all',
+            title: 'Your venue owner access was removed',
+            message: 'Your FIRA account is unchanged. To list a venue again, use "Become a host" - your ID will be reviewed again.',
+            type: 'system',
+        }).catch((err) => console.error('venue-owner removal notification failed:', err.message));
+        return { _id: user._id, roles: nextRoles.length ? nextRoles : ['user'] };
+    },
+
     async getEventOrganisers(query = {}) {
         const { search } = query;
         const events = await Event.find({ isDeleted: { $ne: true }, organizer: { $ne: null } })
             .select('name status startDateTime endDateTime currentAttendees maxAttendees organizer eventType createdAt')
             .sort({ startDateTime: -1 })
             .lean();
-        const organiserIds = [...new Set(events.map((e) => String(e.organizer)).filter(Boolean))];
-        if (organiserIds.length === 0) return { organisers: [] };
-
-        const filter = { _id: { $in: organiserIds } };
-        if (search) filter.$or = [{ name: searchRegex(search) }, { email: searchRegex(search) }];
+        // Everyone who has organised an event, and everyone FIRA has marked as
+        // an organiser - a badge, or an approved creator profile - even before
+        // their first event. Any user can create an event, so plain users with
+        // no event are not organisers yet and stay off this list.
+        const approvedCreators = await BrandProfile.find({ status: 'approved' }).distinct('user');
+        const organiserIds = [...new Set([...events.map((e) => String(e.organizer)), ...approvedCreators.map(String)].filter(Boolean))];
+        const marked = { $or: [{ _id: { $in: organiserIds } }, { verificationBadge: { $in: ['organizer', 'brand', 'band'] } }] };
+        const filter = search
+            ? { $and: [marked, { $or: [{ name: searchRegex(search) }, { email: searchRegex(search) }, { phone: searchRegex(search) }] }] }
+            : marked;
 
         const [people, brands] = await Promise.all([
             User.find(filter)
                 .select('name email phone isVerified verificationBadge panStatus bankDetails isBlocked createdAt')
                 .lean(),
-            BrandProfile.find({ user: { $in: organiserIds } }).select('name user status').lean(),
+            BrandProfile.find({}).select('name user status').lean(),
         ]);
         const brandByUser = new Map(brands.map((b) => [String(b.user), b]));
         const eventsBy = events.reduce((acc, e) => {

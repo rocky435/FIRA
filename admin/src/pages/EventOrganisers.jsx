@@ -36,10 +36,10 @@ export default function EventOrganisers() {
 
     return (
         <div className="p-4 sm:p-6 lg:p-8">
-            <PageHeader title="Event Organisers" description="Organisers, their events, PAN and payouts" count={loading ? null : organisers.length} />
+            <PageHeader title="Event Organisers" description="Everyone who has created an event, and every marked organiser or approved creator" count={loading ? null : organisers.length} />
 
             <div className="mb-4 flex justify-end">
-                <SearchInput value={params.q} onSearch={(q) => set({ q })} placeholder="Search name or email" label="Search event organisers" />
+                <SearchInput value={params.q} onSearch={(q) => set({ q })} placeholder="Search name, email or phone" label="Search event organisers" />
             </div>
 
             <Card padded={false} aria-busy={loading || refreshing || undefined} className={cn('overflow-hidden transition-opacity', refreshing && 'opacity-60')}>
@@ -51,7 +51,7 @@ export default function EventOrganisers() {
                     <EmptyState
                         icon={Megaphone}
                         title={params.q ? 'No organisers match this search' : 'No event organisers yet'}
-                        message={params.q ? `Nothing found for "${params.q}".` : 'People appear here once they create an event.'}
+                        message={params.q ? `Nothing found for "${params.q}".` : 'People appear here once they create an event or are marked as an organiser.'}
                     />
                 ) : (
                     <ul className="divide-y divide-line">
@@ -73,7 +73,9 @@ export default function EventOrganisers() {
                                             <span className="flex flex-wrap items-center gap-2">
                                                 <span className="text-sm font-semibold text-white">{o.name || 'Unnamed'}</span>
                                                 {o.isVerified && <BadgeCheck className="h-4 w-4 text-violet-300" aria-label="Verified creator" />}
-                                                <StatusBadge tone="accent">{c.total} event{c.total === 1 ? '' : 's'}</StatusBadge>
+                                                {c.total
+                                                    ? <StatusBadge tone="accent">{c.total} event{c.total === 1 ? '' : 's'}</StatusBadge>
+                                                    : <StatusBadge tone="warning">No events yet</StatusBadge>}
                                                 {c.pending > 0 && <StatusBadge tone="warning">{c.pending} pending</StatusBadge>}
                                                 <PanStatus status={o.panStatus} />
                                                 {o.isBlocked && <StatusBadge value="blocked" />}

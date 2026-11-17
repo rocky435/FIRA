@@ -127,6 +127,26 @@ const adminApi = {
         return handle(res, 'Failed to fetch stats');
     },
 
+    /** The top bar's universal search: people, events, venues and creators. */
+    async search(q) {
+        const res = await fetch(`${API_BASE}/search?${new URLSearchParams({ q })}`, { headers: authHeaders() });
+        return handle(res, 'Search failed');
+    },
+
+    /** Every payment: status all/success/failed/refunded/pending, kind all/ticket/venue, search, page. */
+    async getPayments(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        const res = await fetch(`${API_BASE}/payments?${query}`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch payments');
+    },
+
+    /** Transfers already made: kind 'event' (organisers) or 'venue' (venue owners), search, page. */
+    async getPayoutHistory(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        const res = await fetch(`${API_BASE}/payout-history?${query}`, { headers: authHeaders() });
+        return handle(res, 'Failed to fetch past payouts');
+    },
+
     /** The Razorpay fee rate (percent) the admin panel estimates deductions with. */
     async getGatewayFee() {
         const res = await fetch(`${API_BASE}/gateway-fee`, { headers: authHeaders() });
@@ -206,6 +226,12 @@ const adminApi = {
         const query = new URLSearchParams(params).toString();
         const res = await fetch(`${API_BASE}/venue-owners?${query}`, { headers: authHeaders() });
         return handle(res, 'Failed to fetch venue owners');
+    },
+
+    /** Remove someone's venue-owner side; their account stays and they can apply again. */
+    async removeVenueOwnerAccess(userId) {
+        const res = await fetch(`${API_BASE}/venue-owners/${userId}`, { method: 'DELETE', headers: authHeaders() });
+        return handle(res, 'Failed to remove venue owner access');
     },
 
     async updateVenueStatus(venueId, status) {

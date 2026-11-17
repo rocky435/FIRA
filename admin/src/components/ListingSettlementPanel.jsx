@@ -9,6 +9,7 @@ import { buildEntryBody, initialSettlementState, settlementReducer } from '../li
 import {
     emptyLedgerMessage,
     formatLastPayment,
+    grossLabel,
     isModeratorHidden,
     isOverSettled,
     moneyGroups,
@@ -64,12 +65,19 @@ function MoneyRow({ label, value, emphasis, sign, indent, hint }) {
     );
 }
 
-function MoneyGroup({ title, children }) {
+// One numbered step of the breakdown, read top to bottom like a bill.
+function MoneyGroup({ step, title, note, children }) {
     return (
-        <div className="rounded-xl border border-line bg-surface-raised p-4 sm:p-5">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">{title}</h4>
+        <section className="rounded-xl border border-line bg-surface-raised p-4 sm:p-5">
+            <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-white">
+                {step != null && (
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-500/15 text-xs text-violet-200" aria-hidden="true">{step}</span>
+                )}
+                {title}
+            </h4>
+            {note && <p className="mb-2 text-xs text-gray-500">{note}</p>}
             <dl className="divide-y divide-line">{children}</dl>
-        </div>
+        </section>
     );
 }
 
@@ -277,7 +285,7 @@ function ReverseControl({ entryId, reversal, dispatch, onConfirm }) {
  * @param {{ kind: 'event' | 'venue', data: object, form: object, dispatch: Function,
  *          onRecord: Function, onReverse: Function, isSuperAdmin: boolean }} props
  */
-function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSuperAdmin }) {
+function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSuperAdmin, commission }) {
     const money = data?.money ?? {};
     const activity = data?.activity ?? {};
     const entries = data?.entries ?? [];
@@ -301,11 +309,11 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
         <div className="p-4 sm:p-6 space-y-8">
             {/* Requirement 1.4: the three headline figures, readable at a glance. */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <FigureCard label="Net Payable" value={formatInr(money.netPayable)} accent="orange" />
-                <FigureCard label="Settled To Date" value={formatInr(money.settledToDate)} accent="green" />
-                <FigureCard label="Outstanding" value={formatInr(outstanding)} accent="pink" />
+                <FigureCard label="Owed" value={formatInr(money.netPayable)} accent="orange" />
+                <FigureCard label="Paid so far" value={formatInr(money.settledToDate)} accent="green" />
+                <FigureCard label="Still to pay" value={formatInr(outstanding)} accent="pink" />
                 {overSettled && (
-                    <FigureCard label="Excess Settled" value={formatInr(money.excessAmount)} accent="red" />
+                    <FigureCard label="Paid too much" value={formatInr(money.excessAmount)} accent="red" />
                 )}
             </div>
 
@@ -315,37 +323,33 @@ function SettlementBody({ kind, data, form, dispatch, onRecord, onReverse, isSup
                 </p>
             )}
 
-            {/* Requirement 2.3: the supporting breakdown as two labeled groups.
-                Membership is decided in lib/settlementView.js. */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-                {groups.map((group) => (
-                    <MoneyGroup key={group.title} title={group.title}>
-                        {group.rows.map((row) => (
-                            <MoneyRow key={row.label} {...row} />
-                        ))}
+            {/* The breakdown as one bill, top to bottom: what buyers paid, what
+                Razorpay takes, then what the owner gets and how much is paid.
+                Which figure sits in which group is decided in
+                lib/settlementView.js (Requirement 2.3). */}
+            <div className="space-y-4">
+                <MoneyGroup step={1} title="What buyers paid">
+                    {groups[0].rows.map((row) => <MoneyRow key={row.label} {...row} />)}
+                    {/* Requirement 2.1/2.2: Refunded_Total is a figure of its own. */}
+                    <MoneyRow label="Refunded to buyers" value={money.refundedTotal} hint="Already returned to buyers" />
+                </MoneyGroup>
+
+                {feePercent != null && money.grossCollected > 0 && (
+                    <MoneyGroup
+                        step={2}
+                        title="Razorpay's fee"
+                        note={`Estimated at ${feePercent}%. Paid by FIRA: it does not change what the ${kind === 'venue' ? 'owner' : 'organiser'} gets.`}
+                    >
+                        <MoneyRow label={grossLabel(kind)} value={money.grossCollected} />
+                        <MoneyRow label={`Razorpay fee (${feePercent}%)`} value={razorpay.fee} sign="−" />
+                        <MoneyRow label="Reaches FIRA" value={razorpay.after} sign="=" emphasis />
                     </MoneyGroup>
-                ))}
-            </div>
+                )}
 
-            {/* Requirement 2.1/2.2: Refunded_Total is a figure of its own — it
-                belongs to neither group named in 2.3. */}
-            {feePercent != null && money.grossCollected > 0 && (
-                <div className="rounded-xl border border-line bg-surface-raised px-5 py-3 text-sm">
-                    <div className="flex items-baseline justify-between gap-4">
-                        <span className="text-gray-400">Razorpay fee <span className="text-xs text-gray-500">· {feePercent}% of {formatInr(money.grossCollected)}, estimated</span></span>
-                        <span className="tabular-nums text-red-300">−{formatInr(razorpay.fee)}</span>
-                    </div>
-                    <div className="mt-1.5 flex items-baseline justify-between gap-4">
-                        <span className="text-gray-300">Reaches FIRA after Razorpay</span>
-                        <span className="tabular-nums font-medium text-white">{formatInr(razorpay.after)}</span>
-                    </div>
-                    <p className="mt-1.5 text-xs text-gray-500">Paid by FIRA. It does not change what the {kind === 'venue' ? 'owner' : 'organiser'} is owed.</p>
-                </div>
-            )}
-
-            <div className="flex items-baseline justify-between gap-4 rounded-xl border border-line bg-surface-raised px-5 py-3">
-                <span className="text-sm text-gray-400">Refunded to buyers</span>
-                <span className="text-sm text-gray-200 tabular-nums">{formatInr(money.refundedTotal)}</span>
+                <MoneyGroup step={feePercent != null && money.grossCollected > 0 ? 3 : 2} title={`What the ${kind === 'venue' ? 'venue owner' : 'organiser'} gets`}>
+                    {commission && <div className="pb-3">{commission}</div>}
+                    {groups[1].rows.map((row) => <MoneyRow key={row.label} {...row} />)}
+                </MoneyGroup>
             </div>
 
             {/* Requirement 3.2/3.3: the six activity figures. */}
@@ -656,7 +660,7 @@ export default function ListingSettlementPanel({ kind, listingId }) {
                 in - including a listing with no sales yet, so a rate can be set
                 before the first payment. The server answers a change with the
                 whole settlement, which replaces the figures below at once. */}
-            {view.data && (
+            {view.data && view.status !== 'ready' && (
                 <div className="px-4 pt-4 sm:px-6 sm:pt-6">
                     <ListingCommission
                         kind={kind}
@@ -702,6 +706,14 @@ export default function ListingSettlementPanel({ kind, listingId }) {
                     onRecord={recordSettlement}
                     onReverse={reverseEntry}
                     isSuperAdmin={adminRole === 'super_admin'}
+                    commission={(
+                        <ListingCommission
+                            kind={kind}
+                            listingId={listingId}
+                            settlement={view.data}
+                            onChanged={(data) => dispatch({ type: 'resolved', data })}
+                        />
+                    )}
                 />
             )}
         </div>

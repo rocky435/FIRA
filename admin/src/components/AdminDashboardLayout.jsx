@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
-    LayoutDashboard, Building2, CalendarDays, Ticket, Star, IdCard, Wallet, Undo2, Tag, Megaphone, HandCoins,
-    Users, UsersRound, ClipboardList, LogOut, PanelLeftClose, PanelLeftOpen, Menu, X, ChevronDown, Search,
+    LayoutDashboard, Building2, CalendarDays, Ticket, Star, IdCard, Wallet, Undo2, Tag, Megaphone, HandCoins, CreditCard,
+    Users, UsersRound, ClipboardList, LogOut, PanelLeftClose, PanelLeftOpen, Menu, X, ChevronDown,
 } from 'lucide-react';
 import logo from '../assets/logo.png';
 import ErrorBoundary from './ErrorBoundary';
@@ -10,6 +10,7 @@ import adminApi from '../api/adminApi';
 import { getAdminRoleFromToken, storeAdminRole, ROLE_EVENT } from '../lib/adminRole';
 import InstallApp from './InstallApp';
 import AlertsControl from './AlertsControl';
+import GlobalSearch from './GlobalSearch';
 import { humanize } from '../lib/statusStyles';
 import { cn } from '../lib/cn';
 
@@ -38,6 +39,7 @@ const navGroups = [
         label: 'Money',
         color: 'var(--section-money)',
         items: [
+            { href: '/payments', icon: CreditCard, label: 'Payments' },
             { href: '/bookings', icon: CalendarDays, label: 'Venue Bookings' },
             { href: '/payouts/organisers', icon: HandCoins, label: 'Organiser payouts' },
             { href: '/payouts/venue-owners', icon: Wallet, label: 'Venue owner payouts' },
@@ -70,7 +72,7 @@ const navGroups = [
  *   money), ID Checks or Payouts - the server limits all of those to admin and
  *   super_admin.
  */
-const MODERATOR_HIDDEN = new Set(['/users', '/audit-trail', '/refunds', '/id-checks', '/payouts/organisers', '/payouts/venue-owners', '/organisers']);
+const MODERATOR_HIDDEN = new Set(['/users', '/audit-trail', '/refunds', '/id-checks', '/payments', '/payouts/organisers', '/payouts/venue-owners', '/organisers']);
 
 function getVisibleNavGroups(adminRole) {
     if (adminRole !== 'moderator') return navGroups;
@@ -219,16 +221,12 @@ export default function AdminDashboardLayout({ children, onLogout }) {
         adminApi.getMe().then((me) => storeAdminRole(me?.adminRole ?? null)).catch(() => {});
         return () => window.removeEventListener(ROLE_EVENT, onRole);
     }, []);
-    const [navQuery, setNavQuery] = useState('');
     const visibleGroups = useMemo(() => getVisibleNavGroups(adminRole), [adminRole]);
-    // The sidebar search narrows the menu to matching pages.
-    const shownGroups = useMemo(() => {
-        const q = navQuery.trim().toLowerCase();
-        if (!q) return visibleGroups;
-        return visibleGroups
-            .map((g) => ({ ...g, items: g.items.filter((i) => i.label.toLowerCase().includes(q) || g.label.toLowerCase().includes(q)) }))
-            .filter((g) => g.items.length > 0);
-    }, [visibleGroups, navQuery]);
+    // The pages the top bar's search can jump to: the menu this admin sees.
+    const searchPages = useMemo(
+        () => visibleGroups.flatMap((g) => g.items.map((i) => ({ href: i.href, label: i.label, group: g.label }))),
+        [visibleGroups]
+    );
     const roleLabel = adminRole ? humanize(adminRole) : 'Admin';
 
     useEffect(() => {
@@ -282,21 +280,7 @@ export default function AdminDashboardLayout({ children, onLogout }) {
 
     const nav = (
         <nav aria-label="Admin navigation" className="flex-1 overflow-y-auto px-3 py-4">
-            {!rail && (
-                <div className="relative mb-4">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden="true" />
-                    <input
-                        type="search"
-                        value={navQuery}
-                        onChange={(e) => setNavQuery(e.target.value)}
-                        placeholder="Search"
-                        aria-label="Search the menu"
-                        className="h-9 w-full rounded-xl border border-line bg-surface-raised pl-9 pr-3 text-sm text-white placeholder-gray-500 focus:border-violet-500/60 focus:outline-none focus:ring-2 focus:ring-violet-500/25"
-                    />
-                </div>
-            )}
-            {shownGroups.length === 0 && <p className="px-3 text-sm text-gray-500">No page matches "{navQuery}".</p>}
-            {shownGroups.map((group) => (
+            {visibleGroups.map((group) => (
                 <div key={group.label} className="mb-5 last:mb-0">
                     {rail ? (
                         <div className="mx-auto mb-2 h-px w-6 bg-line" aria-hidden="true" />
@@ -431,6 +415,7 @@ export default function AdminDashboardLayout({ children, onLogout }) {
                             </p>
                         )}
                     </div>
+                    <GlobalSearch pages={searchPages} />
                     <InstallApp />
                     <AlertsControl />
                     <UserMenu user={user} roleLabel={roleLabel} onLogout={handleLogout} />

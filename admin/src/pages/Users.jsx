@@ -11,6 +11,7 @@ import { PageHeader } from '../components/ui/PageHeader';
 import { Card } from '../components/ui/Card';
 import { FilterTabs } from '../components/ui/FilterTabs';
 import { SearchInput } from '../components/ui/SearchInput';
+import { Select } from '../components/ui/Select';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Table, THead, Th, TBody, Td } from '../components/ui/Table';
 import { IconButton, RowCheckbox } from '../components/ui/IconButton';
@@ -23,6 +24,11 @@ import SignupsCard from '../components/SignupsCard';
 
 const ITEMS_PER_PAGE = 10;
 const STATUSES = ['all', 'active', 'blocked'];
+const ROLES = [
+    { value: 'all', label: 'All accounts' },
+    { value: 'venue_owner', label: 'Venue owners' },
+    { value: 'admin', label: 'Admins' },
+];
 
 // Prefer the `roles` array (source of truth); fall back to legacy `role`.
 // Surface adminRole (super_admin/admin/moderator) as its own badge when set.
@@ -44,15 +50,17 @@ export default function Users() {
     const navigate = useNavigate();
     const confirm = useConfirm();
     const toast = useToast();
-    const { params, set } = useListParams({ status: 'all', q: '', page: 1 });
+    const { params, set } = useListParams({ status: 'all', role: 'all', q: '', page: 1 });
     const status = STATUSES.includes(params.status) ? params.status : 'all';
+    const role = ROLES.some((r) => r.value === params.role) ? params.role : 'all';
 
     const loadUsers = useCallback(() => {
         const query = { page: params.page, limit: ITEMS_PER_PAGE };
         if (status !== 'all') query.status = status;
+        if (role !== 'all') query.role = role;
         if (params.q) query.search = params.q;
         return adminApi.getUsers(query);
-    }, [params.page, params.q, status]);
+    }, [params.page, params.q, status, role]);
     const { data, loading, refreshing, error, reload: fetchUsers } = useRemote(loadUsers);
     const users = data?.users || [];
     const totalPages = data?.totalPages || 1;
@@ -116,7 +124,12 @@ export default function Users() {
 
             <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <FilterTabs label="Account status" options={STATUSES} value={status} onChange={(v) => set({ status: v })} />
-                <SearchInput value={params.q} onSearch={(q) => set({ q })} placeholder="Search name or email" label="Search users" />
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="sm:w-48">
+                        <Select aria-label="Account type" value={role} onChange={(e) => set({ role: e.target.value })} options={ROLES} />
+                    </div>
+                    <SearchInput value={params.q} onSearch={(q) => set({ q })} placeholder="Search name, email or phone" label="Search users" />
+                </div>
             </div>
 
             <BulkActionBar count={bulk.count} actions={bulkActions} onClear={bulk.clear} busy={bulkBusy} />
@@ -133,7 +146,7 @@ export default function Users() {
                 ) : users.length === 0 ? (
                     <EmptyState
                         icon={UsersIcon}
-                        title={params.q || status !== 'all' ? 'No users match these filters' : 'No users yet'}
+                        title={params.q || status !== 'all' || role !== 'all' ? 'No users match these filters' : 'No users yet'}
                         message={params.q ? `Nothing found for "${params.q}".` : undefined}
                     />
                 ) : (
