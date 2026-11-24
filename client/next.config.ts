@@ -42,20 +42,23 @@ const nextConfig: NextConfig = {
    */
   /**
    * App links: Android reads /.well-known/assetlinks.json and iOS reads
-   * /.well-known/apple-app-site-association (no extension) to let letsfira.com
-   * links open in the FIRA app. Both must be served as JSON with no redirect;
-   * without an extension the Apple file would otherwise go out as a binary
-   * download. Short cache so a changed app id or fingerprint takes effect.
+   * /.well-known/apple-app-site-association to let letsfira.com links open in
+   * the FIRA app. Both must be 200 JSON with no redirect, so these are rewrites
+   * (internal) to route handlers - see src/lib/appLinks.ts for why they aren't
+   * plain files in public/.well-known (Amplify drops dot-folders on deploy).
    */
-  async headers() {
-    const json = [
-      { key: 'Content-Type', value: 'application/json' },
-      { key: 'Cache-Control', value: 'public, max-age=3600' },
-    ];
-    return [
-      { source: '/.well-known/apple-app-site-association', headers: json },
-      { source: '/.well-known/assetlinks.json', headers: json },
-    ];
+  async rewrites() {
+    return {
+      beforeFiles: [
+        { source: '/.well-known/assetlinks.json', destination: '/app-links/assetlinks' },
+        {
+          source: '/.well-known/apple-app-site-association',
+          destination: '/app-links/apple-app-site-association',
+        },
+      ],
+      afterFiles: [],
+      fallback: [],
+    };
   },
   async redirects() {
     return [
